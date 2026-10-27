@@ -1,5 +1,7 @@
 # 进阶配置与迁移
 
+首次安装看 [新人快速开始](quickstart.md)，按参数使用 `scripts/setup_host.py` 见 [参数示例](quickstart.md#按参数安装)。它在 uv 准备环境后配对宿主机服务与薄插件；重复配置保留密钥、任务和日常 Codex，配置不一致或缺少密钥且已有状态时拒绝自动处理，不负责迁移。本版为 0.5.0，尚无 Release，实际 Linux + Docker 安装未验收。
+
 0.4.0 为 external-only：`service/` 在宿主机独立运行，插件仅连接服务。插件不管理本地 Codex，也不随加载、卸载或配置更新启停宿主机服务。部署步骤见 [Linux / Docker](host-service.md) 和 [Windows](manual-setup.md)。
 
 ## 宿主机服务配置
@@ -11,14 +13,13 @@
 | `binary` | 省略或留空自动查找原生 Codex；也可显式指定程序路径 |
 | `home` | 省略或留空复用 `CODEX_HOME` 或 `~/.codex`；显式路径优先 |
 | `state` | 可写的持久化绝对路径，保存任务、图片与隔离绘图目录 |
-| `allowed_users` | 允许的 `平台:用户ID`，与插件白名单一致 |
 | `host` / `port` | 默认 `127.0.0.1` / `8765`；跨容器时匹配实际访问地址 |
 | `model` | 默认空，使用隔离绘图客户端默认模型 |
 | `timeout` / `rpc_timeout` | 默认 300 / 30 秒，分别为绘图等待与 RPC 超时 |
 | `max_queue` | 默认 10，待处理队列上限 |
 | `max_image_bytes` | 默认 20971520，单图字节上限 |
 
-`state` 和 `allowed_users` 必填；其余字段可省略或按模板配置。以 [服务模板](../service/config.example.toml) 为起点，已有服务保留既有配置，不为升级重置它。
+`state` 必填；其余字段可省略或按模板配置。以 [服务模板](../service/config.example.toml) 为起点，已有服务保留既有配置，不为升级重置它。0.5.0 不再使用服务端 `allowed_users`；旧 `service.toml` 中此项读取时会警告并忽略，建议删除。允许用户只配置在插件 `connection.allowed_users`，安装工具的 `--allowed-user` 也只写入插件配置。
 
 登录默认复用宿主机服务用户已有的目录：`home` 省略或留空时选择服务进程的 `CODEX_HOME`，未设置时选择 `~/.codex`。显式配置 `home` 则使用该目录，不展开 TOML 内的环境变量文本。以同一个系统用户和目录执行 `codex login status`；仅未登录时手动执行 `codex login --device-auth`。专用目录可选，旧有 `~/.codex-maibot-image` 也可显式继续使用。
 
@@ -36,7 +37,9 @@
 
 ## 网络与权限
 
-插件只配置 `connection.url/secret/allowed_users/poll_seconds/watch_seconds` 及 `plugin.enabled/config_version`。两端密钥、白名单与访问地址配对后，还需在 MaiBot 授予用户本插件命令及文字、图片发送权限。
+插件只配置 `connection.url/secret/allowed_users/poll_seconds/watch_seconds` 及 `plugin.enabled/config_version`。两端密钥与访问地址配对后，由插件 `connection.allowed_users` 唯一控制谁可发请求；还需在 MaiBot 授予对应用户本插件命令及 `send.text` / `send.image` 能力。
+
+服务不维护用户白名单，仍校验 Bearer、HMAC 签名、有效期、scope 完整性与任务归属。持有共享密钥的调用方视为可信；不要将密钥交给不可信调用方。
 
 服务默认只监听本机。Docker bridge 使用容器实际网络的宿主机 Gateway，服务绑定该地址，插件 URL 使用相同地址与端口，以匹配 MCP Host 检查。`0.0.0.0` 不是请求 Host 的通配许可。容器只通过 MCP 取图，无需 Codex 凭证或图片目录挂载。
 
@@ -48,14 +51,14 @@ MaiBot 原生 MCP 不能直接代替当前插件的身份签名、任务轮询�
 
 ### 原来使用内置服务的 0.2.x / 0.3.x 用户
 
-升级到 0.4.0 **需要另行准备并启动宿主机新服务**；插件不会再自动启动 MCP。旧 `service.mode` 和插件 `codex.*` 已退出配置范围，不能靠保留旧字段继续运行内置服务。
+升级到当前 0.5.0 **需要另行准备并启动宿主机新服务**；插件不会再自动启动 MCP。旧 `service.mode` 和插件 `codex.*` 已退出配置范围，不能靠保留旧字段继续运行内置服务。
 
 插件中的 `login.py` 已移除。请在宿主机直接运行 `codex login status` 或手动 `codex login --device-auth`；专用目录改由宿主机服务 `home` 指定。
 
 1. 先停止提交新任务，尽可能在原环境查询并取回旧任务结果，记录尚未确认的任务编号；不要通过重复提交来补图。
 2. 停止旧插件及其内置服务后，备份原插件配置和实际 Host 分配的整个插件数据目录。常见位置为 `data/plugins/pargosaks.maibot-codex-image`；以实际路径为准。保留其中的 `embedded/state`、旧密钥及 `delivery.sqlite3`，不要清空、覆盖或删除。
 3. 按部署指南在宿主机准备 `service/`，手动确认该宿主机用户的 Codex 登录，新建独立的服务配置、密钥和 `state` 目录。容器内原有登录不会自动变成宿主机登录，也无需复制凭证。
-4. 将插件改为 README 中的 0.4.0 连接配置，配对 URL、密钥和白名单，再重新加载插件。移除已废弃的插件服务模式及 Codex 配置字段；保留前一步的备份。
+4. 将插件改为 README 中的 0.5.0 连接配置，配对 URL 与密钥，在插件设置允许用户，再重新加载插件。移除已废弃的插件服务模式及 Codex 配置字段；保留前一步的备份。
 5. 先验证 MCP 连接，再按需进行一次真实绘图验收。查询旧编号返回未找到，可能只是当前连接的是新任务库，不代表旧任务已被删除。
 
 **不会自动拷贝、导入、搬迁或删除旧数据与旧任务。** 新服务默认使用自己的新任务库，旧任务不会自动出现在其中，也不会自动接管旧任务或承诺续跑。服务的产物记录含文件路径，不能只复制 SQLite 就假定迁移完成。
@@ -64,7 +67,7 @@ MaiBot 原生 MCP 不能直接代替当前插件的身份签名、任务轮询�
 
 ### 原来已使用独立服务的用户
 
-继续使用原宿主机服务配置、`home`、`state`、共享密钥与插件发送记录。更新源码前备份，保持单实例，插件仅保留 0.4.0 的连接字段。不要为升级另建任务库或更换密钥；服务路径改变前先核对持久化文件和原产物路径。
+继续使用原宿主机服务配置、`home`、`state`、共享密钥与插件发送记录。更新源码前备份，保持单实例，插件使用 0.5.0 的配置版本和连接字段。允许用户只保留在插件；服务旧 `allowed_users` 读取时会警告并忽略，建议删除。不要为升级另建任务库或更换密钥；服务路径改变前先核对持久化文件和原产物路径。
 
 ## 任务与数据保留
 
@@ -75,6 +78,8 @@ MaiBot 原生 MCP 不能直接代替当前插件的身份签名、任务轮询�
 服务暂不自动清理图片。备份时停止相应服务及插件，分别保留宿主机完整 `state` 和 MaiBot 插件数据目录；不要只备份数据库或删除 SQLite 强制重试。
 
 ## 高级可选工具
+
+新用户优先使用 [快速指南中的 `setup_host.py`](quickstart.md)，或按详细指南手动配置。下文所述为原有高级工具，其行为与新工具不同，不能用来替代新工具的挂载验证、Gateway 选择和不改 MaiBot 授权约定。
 
 `install.sh`、`install.ps1`、`deploy.py` 和配套管理脚本继续保留为高级可选工具，常规安装使用手动克隆与独立启动流程，不要求一键安装或自动下载 Codex。
 

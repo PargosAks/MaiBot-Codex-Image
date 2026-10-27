@@ -36,14 +36,13 @@ def settings(tmp_path):
         home=tmp_path / "home",
         state=tmp_path / "state",
         secret=SECRET,
-        allowed_users=("qq:123",),
         timeout=2,
         rpc_timeout=1,
     ).validated()
 
 
 def envelope(op, args, scope=None):
-    return sign(SECRET, scope or SCOPE, op, args)
+    return sign(SECRET, SCOPE if scope is None else scope, op, args)
 
 
 @pytest.fixture

@@ -75,7 +75,7 @@ class Service:
         return task.result()
 
     def authorize(self, envelope: str, operation: str):
-        request = unpack(envelope, self.cfg.secret, operation, self.cfg.allowed_users)
+        request = unpack(envelope, self.cfg.secret, operation)
         return owner_key(request["scope"]), request["args"]
 
     async def submit(self, envelope: str) -> dict:

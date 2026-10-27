@@ -7,8 +7,8 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = json.loads((ROOT / "_manifest.json").read_text(encoding="utf-8"))["version"]
 PLUGIN_FILES = ("plugin.py", "bridge.py", "delivery.py", "_manifest.json", "config.example.toml",
-                "requirements.txt", "README.md", "LICENSE", "CHANGELOG.md")
-ROOT_FILES = (*PLUGIN_FILES, "pyproject.toml", "deploy.py", "install.ps1", "install.sh", ".gitignore")
+                "requirements.txt", "README.md", "LICENSE", "CHANGELOG.md", ".gitignore")
+ROOT_FILES = (*PLUGIN_FILES, "pyproject.toml", "deploy.py", "install.ps1", "install.sh")
 
 
 def entries():

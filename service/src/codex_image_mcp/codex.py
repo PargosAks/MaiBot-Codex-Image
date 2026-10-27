@@ -161,7 +161,7 @@ class Codex:
 
     async def initialize(self, rpc: Rpc):
         await rpc.start()
-        await rpc.call("initialize", {"clientInfo": {"name": "maibot_image_mcp", "version": "0.4.0"},
+        await rpc.call("initialize", {"clientInfo": {"name": "maibot_image_mcp", "version": "0.5.0"},
                                       "capabilities": {"experimentalApi": True}})
         await rpc.send({"method": "initialized"})
 

@@ -8,7 +8,8 @@ home = ""
 state = "/var/lib/maibot-image/state"
 # Supply a secret of at least 32 characters through CODEX_IMAGE_SECRET or a UTF-8
 # file named by CODEX_IMAGE_SECRET_FILE. CODEX_IMAGE_SECRET takes precedence.
-allowed_users = ["qq:YOUR_USER_ID"]
+# User authorization belongs to the MaiBot plugin's connection.allowed_users only.
+# This service verifies signed identity scopes and isolates jobs by user and chat stream.
 model = ""
 timeout = 300
 rpc_timeout = 30

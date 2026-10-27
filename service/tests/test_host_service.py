@@ -37,7 +37,7 @@ def host_config(tmp_path, monkeypatch):
 
     def write(extra=""):
         path.write_text(
-            f'state = "{(tmp_path / "state").as_posix()}"\nallowed_users = ["qq:123"]\n' + extra,
+            f'state = "{(tmp_path / "state").as_posix()}"\n' + extra,
             encoding="utf-8",
         )
         return path
@@ -51,9 +51,24 @@ def test_settings_load_discovers_native_and_reuses_default_home(host_config, tmp
     cfg = Settings.load(write(extra))
     assert cfg.binary == str(native.resolve())
     assert cfg.home == (tmp_path / "os-user" / ".codex").resolve()
-    assert cfg.allowed_users == ("qq:123",)
+    assert not hasattr(cfg, "allowed_users")
     assert not cfg.home.exists()
     assert not cfg.state.exists()
+
+
+@pytest.mark.parametrize("legacy_users", ['["qq:123"]', "[]"])
+def test_settings_warns_and_ignores_legacy_allowed_users(host_config, legacy_users):
+    write, _ = host_config
+    with pytest.warns(UserWarning, match=r"allowed_users.*ignored.*plugin.*connection.allowed_users"):
+        cfg = Settings.load(write(f"allowed_users = {legacy_users}\n"))
+    assert not hasattr(cfg, "allowed_users")
+    assert cfg.validated() is cfg
+
+
+def test_settings_without_legacy_allowed_users_does_not_warn(host_config, recwarn):
+    write, _ = host_config
+    Settings.load(write())
+    assert not recwarn
 
 
 @pytest.mark.parametrize("extra", ["", 'home = ""\n'])

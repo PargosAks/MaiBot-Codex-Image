@@ -12,7 +12,7 @@ from .delivery import Deliveries
 
 
 class PluginSection(PluginConfigBase):
-    config_version: str = "0.4.0"
+    config_version: str = "0.5.0"
     enabled: bool = True
 
 

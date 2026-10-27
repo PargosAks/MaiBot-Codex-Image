@@ -63,7 +63,8 @@ def test_configuration_is_scoped_and_repeatable(instance, tmp_path):
     assert bot["plugin"]["command_permissions"][deploy.COMMAND_ID]["allow_users"] == ["qq:123"]
     service = tomllib.loads((runtime / "service.toml").read_text(encoding="utf-8"))
     plugin = tomllib.loads((instance / "plugins/codex_image/config.toml").read_text(encoding="utf-8"))
-    assert service["allowed_users"] == plugin["connection"]["allowed_users"] == ["qq:123"]
+    assert "allowed_users" not in service
+    assert plugin["connection"]["allowed_users"] == ["qq:123"]
     assert service["home"] == str(auth)
     assert plugin["connection"]["secret"].encode() == first.strip()
     assert set(plugin) == {"plugin", "connection"}

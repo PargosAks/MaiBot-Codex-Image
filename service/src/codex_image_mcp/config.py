@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import os
 import tomllib
+import warnings
 
 from .client import auth_home, find_codex
 
@@ -25,7 +26,6 @@ class Settings:
     home: Path
     state: Path
     secret: str
-    allowed_users: tuple[str, ...]
     model: str = ""
     timeout: float = 300
     rpc_timeout: float = 30
@@ -37,6 +37,14 @@ class Settings:
     @classmethod
     def load(cls, path: Path) -> "Settings":
         data = tomllib.loads(path.read_text(encoding="utf-8"))
+        if "allowed_users" in data:
+            data.pop("allowed_users")
+            warnings.warn(
+                "Service setting 'allowed_users' is ignored; configure user authorization "
+                "in the plugin's connection.allowed_users instead.",
+                UserWarning,
+                stacklevel=2,
+            )
         # Discovery belongs to configuration loading, not direct Settings construction.
         data.setdefault("binary", "")
         data["home"] = auth_home(data.get("home", ""))
@@ -50,11 +58,8 @@ class Settings:
                 "Configure CODEX_IMAGE_SECRET or CODEX_IMAGE_SECRET_FILE with a non-empty secret "
                 "of at least 32 characters"
             )
-        if not self.allowed_users:
-            raise ValueError("Configure explicit allowed_users")
         if self.max_queue < 1 or self.timeout <= 0 or self.rpc_timeout <= 0:
             raise ValueError("Invalid queue or timeout settings")
         object.__setattr__(self, "home", Path(self.home).expanduser().resolve())
         object.__setattr__(self, "state", Path(self.state).expanduser().resolve())
-        object.__setattr__(self, "allowed_users", tuple(self.allowed_users))
         return self

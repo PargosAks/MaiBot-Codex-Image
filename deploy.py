@@ -206,11 +206,12 @@ def configure(instance, runtime, binary, allowed, port, grant_command, maibot_ex
     old_settings = tomllib.loads(service_config.read_text(encoding="utf-8")) if service_config.exists() else {}
     home = old_settings.get("home") or os.environ.get("CODEX_HOME") or str(Path.home() / ".codex")
     settings = {"binary": str(binary), "home": home, "state": str(runtime / "state"),
-                "allowed_users": allowed, "host": "127.0.0.1", "port": port, "model": "",
+                "host": "127.0.0.1", "port": port, "model": "",
                 "timeout": 300, "rpc_timeout": 30}
     if service_config.exists():
         settings = tomllib.loads(service_config.read_text(encoding="utf-8")) | settings
-    plugin = {"plugin": {"config_version": "0.4.0", "enabled": True},
+    settings.pop("allowed_users", None)
+    plugin = {"plugin": {"config_version": "0.5.0", "enabled": True},
               "connection": {"url": f"http://127.0.0.1:{port}/mcp", "secret": secret,
                              "allowed_users": allowed, "poll_seconds": 2, "watch_seconds": 360}}
     botpath = instance / "config/bot_config.toml"

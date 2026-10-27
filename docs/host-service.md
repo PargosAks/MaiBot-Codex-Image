@@ -1,5 +1,9 @@
 # 宿主机独立 MCP 部署（Linux / Docker）
 
+首次安装优先看 [新人快速开始](quickstart.md)：主路径为 Linux 宿主机 + Docker MaiBot，使用 `scripts/setup_host.py` 交互配对；普通 Linux root、系统级 Docker 可选 `--systemd` 安装并启用服务。工具不自动登录、不改 MaiBot 授权，最后仍需 WebUI 授权与重载。本版为 0.5.0，尚无 Release，实际 Linux + Docker 安装未验收。以下保留完整手动流程；Windows 见 [手动指南](manual-setup.md)。
+
+0.5.0 的允许用户仅在插件 `connection.allowed_users` 配置；服务不再维护白名单。旧 `service.toml` 的 `allowed_users` 读取时会警告并忽略，建议删除旧项。服务仍校验 Bearer、HMAC、有效期、scope 完整性与任务归属，持钥调用方视为可信。
+
 0.4.0 统一使用 external-only 架构。MaiBot 无论直接部署还是运行在 Docker 中，插件都连接单独运行的宿主机 `service/`：
 
 ```text
@@ -63,7 +67,6 @@ cp -n service/config.example.toml service.toml
 binary = ""
 home = ""
 state = "/你的持久化目录/maibot-image/state"
-allowed_users = ["qq:123456789"]
 model = ""
 host = "172.18.0.1"
 port = 8765
@@ -72,7 +75,7 @@ port = 8765
 - `binary` 省略或留空时从 PATH 查找原生 Codex；找不到时填写实际原生可执行程序路径。`command -v codex` 可提供线索，若返回启动脚本，还需确认对应的原生程序。
 - `home` 省略或留空时优先使用服务进程的 `CODEX_HOME`，否则使用该用户的 `~/.codex`；显式路径优先，升级时保留既有值。不要在 TOML 中填写字面量 `$CODEX_HOME`，它不会展开。
 - `state` 使用可写的绝对路径；服务的任务数据库、产物和隔离绘图目录都保存在这里。
-- `allowed_users` 与插件一致。直接部署时将 `host` 改为 `127.0.0.1`，插件也用相应地址。
+- 直接部署时将 `host` 改为 `127.0.0.1`，插件也用相应地址。
 
 服务其余字段继续沿用模板或既有配置，见 [服务配置说明](advanced.md#宿主机服务配置)。
 
@@ -101,7 +104,7 @@ uv run --project service --no-dev codex-image-mcp --config "$PWD/service.toml"
 
 ```toml
 [plugin]
-config_version = "0.4.0"
+config_version = "0.5.0"
 enabled = true
 
 [connection]
