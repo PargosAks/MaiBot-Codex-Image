@@ -1,7 +1,13 @@
-# Copy to service.toml (ignored). home selects an existing Codex login; config is isolated for drawing.
-binary = "/home/maibot-image/.local/bin/codex"
-home = "~/.codex" # Or a dedicated login directory; use the MaiBot service user's home.
+# Copy to service.toml (ignored). Run on the host as the OS user with the existing Codex login.
+# If needed, run `codex login` manually as that same user; drawing config stays isolated.
+# Omit or leave empty to find the native Codex binary on PATH.
+binary = ""
+# Omit or leave empty to reuse CODEX_HOME, then ~/.codex. Explicit home wins.
+home = ""
+# One service process owns this state directory, starting at app construction.
 state = "/var/lib/maibot-image/state"
+# Supply a secret of at least 32 characters through CODEX_IMAGE_SECRET or a UTF-8
+# file named by CODEX_IMAGE_SECRET_FILE. CODEX_IMAGE_SECRET takes precedence.
 allowed_users = ["qq:YOUR_USER_ID"]
 model = ""
 timeout = 300

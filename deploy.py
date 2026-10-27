@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import platform
@@ -19,7 +20,7 @@ import urllib.request
 ROOT = Path(__file__).resolve().parent
 PLUGIN_ID = "pargosaks.maibot-codex-image"
 COMMAND_ID = PLUGIN_ID + ".codex_image_command"
-PLUGIN_FILES = ("plugin.py", "bridge.py", "delivery.py", "client.py", "embedded.py", "login.py", "_manifest.json", "requirements.txt", "README.md")
+PLUGIN_FILES = ("plugin.py", "bridge.py", "delivery.py", "_manifest.json", "requirements.txt", "README.md")
 
 
 def run(argv, **kwargs):
@@ -122,14 +123,16 @@ def extract_package(archive, destination):
 
 
 def codex_binary(runtime, supplied=None):
-    if supplied:
-        binary = Path(supplied).expanduser().resolve()
-        if not binary.is_file() or binary.suffix.lower() in {".cmd", ".bat", ".ps1"}:
-            raise ValueError("CodexBinary must name a native executable, not a shell shim")
-        return binary
-    candidate = shutil.which("codex.exe" if os.name == "nt" else "codex")
-    if candidate and Path(candidate).suffix.lower() not in {".cmd", ".bat", ".ps1"}:
-        return Path(candidate).resolve()
+    # This helper is stdlib-only and available before the service venv exists.
+    # Reuse native discovery so npm links never become explicit .js settings.
+    spec = importlib.util.spec_from_file_location("host_codex_client", ROOT / "service/src/codex_image_mcp/client.py")
+    client = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(client)
+    try:
+        return Path(client.find_codex(str(supplied) if supplied else ""))
+    except ValueError:
+        if supplied:
+            raise
     manifest = json.loads((ROOT / "scripts/codex-assets.json").read_text(encoding="utf-8"))
     entry = manifest["assets"][asset_name()]
     package_root = runtime / "codex" / manifest["version"]
@@ -207,7 +210,7 @@ def configure(instance, runtime, binary, allowed, port, grant_command, maibot_ex
                 "timeout": 300, "rpc_timeout": 30}
     if service_config.exists():
         settings = tomllib.loads(service_config.read_text(encoding="utf-8")) | settings
-    plugin = {"plugin": {"config_version": "0.3.0", "enabled": True}, "service": {"mode": "external"},
+    plugin = {"plugin": {"config_version": "0.4.0", "enabled": True},
               "connection": {"url": f"http://127.0.0.1:{port}/mcp", "secret": secret,
                              "allowed_users": allowed, "poll_seconds": 2, "watch_seconds": 360}}
     botpath = instance / "config/bot_config.toml"
@@ -232,8 +235,6 @@ def configure(instance, runtime, binary, allowed, port, grant_command, maibot_ex
     target.mkdir(parents=True, exist_ok=True)
     for name in PLUGIN_FILES:
         private_write(target / name, (ROOT / name).read_bytes())
-    for source in (ROOT / "service/src").rglob("*.py"):
-        private_write(target / source.relative_to(ROOT), source.read_bytes())
     private_write(secret_path, secret + "\n")
     private_write(service_config, tomlkit.dumps(settings))
     private_write(target / "config.toml", tomlkit.dumps(plugin))

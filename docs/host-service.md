@@ -1,61 +1,84 @@
-# 宿主机 Codex 部署指南（Linux VPS）
+# 宿主机独立 MCP 部署（Linux / Docker）
 
-适用于：MaiBot 在 Docker 内或直接部署，但 Codex 始终安装并登录在宿主机。
+0.4.0 统一使用 external-only 架构。MaiBot 无论直接部署还是运行在 Docker 中，插件都连接单独运行的宿主机 `service/`：
 
 ```text
-MaiBot 插件（容器内或宿主机） → 宿主机 MCP 服务 → 宿主机 Codex
+MaiBot 插件 → 宿主机 MCP 服务 → 宿主机 Codex
 ```
 
-这是已有 external 模式的部署方式。无需修改 MaiBot 本体、Dockerfile、镜像或 Compose 配置。容器只需标准插件及 Python 依赖；登录凭证和图片保存在宿主机，通过 MCP 返回图片。
+宿主机负责 Codex 登录、任务和图片；插件通过 MCP 取回图片，无需共享图片目录。无需修改 MaiBot 本体、Dockerfile、Compose、镜像，也无需在 MaiBot 容器安装 Codex、挂载凭证或授予 Docker 控制权限。
 
-宿主机 MCP 需要单独启动并保持运行；容器内的插件不会直接启动宿主机程序。
+以下为新安装示例，目录按实际用户的权限调整。升级时先看 [迁移说明](advanced.md#从旧版本迁移)，不要覆盖原服务配置、密钥或数据。
 
-## 1. 在宿主机准备服务
+## 1. 准备两份仓库
 
-宿主机需要 Git、uv、Python 3.12+ 和已安装的官方 Codex CLI。以下命令均在宿主机执行，使用已登录 Codex 的系统用户：
+宿主机需要 Git、uv、Python 3.12+ 和已安装的官方 Codex CLI。使用计划运行 MCP 的系统用户执行：
 
 ```sh
-git clone https://github.com/PargosAks/MaiBot-Codex-Image.git /opt/maibot-codex-image-host
-cd /opt/maibot-codex-image-host
-uv sync --project service --locked --no-dev --python 3.13
-python3 login.py --status
+git clone https://github.com/PargosAks/MaiBot-Codex-Image.git ~/maibot-codex-image-host
+cd ~/maibot-codex-image-host
+uv sync --project service --no-dev
+codex login status
 ```
 
-已有 ChatGPT 登录无需重登；没有登录时手动执行 `codex login --device-auth`。MCP 服务用户应与宿主机登录用户一致，与容器内用户无关。目录可按该用户的写入权限调整。
+已有 ChatGPT 登录无需重新登录；未登录时手动执行 `codex login --device-auth`。服务配置的 `home` 留空时复用这个用户当前的 `CODEX_HOME`，未设置时使用 `~/.codex`。不复制凭证，不删除日常 Codex 配置；专用登录目录可选。
 
-## 2. 选择容器可达的宿主机地址
+在 MaiBot 实际使用的插件持久化目录另行安装插件：
 
-常见 Linux Docker Engine bridge 网络可使用容器所连网络的宿主机网桥网关地址。先只读查看，maibot 替换为实际容器名：
+```sh
+git clone https://github.com/PargosAks/MaiBot-Codex-Image.git /你的MaiBot实例/plugins/codex_image
+```
+
+该目录须已通过现有机制供 MaiBot 发现；不要仅在宿主机任意目录克隆后就假定容器会加载。将插件依赖安装到 MaiBot 实际使用的环境，声明见仓库根目录 `_manifest.json` 和 `requirements.txt`。
+
+直接部署的 MaiBot 若与 MCP 在同机、仓库可被服务用户访问，可省略第二份仓库，复用 `plugins/codex_image/service/`，仍单独启动服务。运行数据应放在源码目录外，更新源码不会替代服务的数据备份。
+
+## 2. 选择插件可达的监听地址
+
+MaiBot 直接运行在宿主机，或容器已有 host 网络时，可以使用 `127.0.0.1`。
+
+Linux Docker Engine bridge 网络下，先只读查看实际容器的网络信息，`maibot` 替换为容器名：
 
 ```sh
 docker inspect --type=container maibot --format '{{json .NetworkSettings.Networks}}'
 ```
 
-从结果中找所属网络的 Gateway，例如 **172.18.0.1**。多个网络时选用实际要连接的那一个，不要直接照抄示例 IP。
+选取该容器实际连接网络的宿主机 `Gateway`，例如 `172.18.0.1`。**服务的 `host` 与插件 URL 均使用同一个实际 Gateway 地址和端口。** 不要照抄示例 IP，不要把容器内 `127.0.0.1` 当作宿主机。
 
-宿主机 MCP 监听这个地址，插件 URL 也使用同一地址。无需新增端口映射或 host.docker.internal 映射；不要把容器内 127.0.0.1 当作宿主机。
+当前服务会校验 HTTP Host：将监听改为 `0.0.0.0` 并不等于允许通过任意 IP 或域名访问。按本指南直接绑定选定 Gateway，可使监听与请求 Host 匹配。仅允许实际 Docker 子网访问此端口，无需端口映射或开放公网端口。
 
-若 MaiBot 仅直接部署，或已有容器使用 host 网络，可使用 127.0.0.1。Docker Desktop、rootless、无网桥地址或受限网络，需要另行确认实际可达的宿主机地址；本例不代表已验证这些环境。
+本指南不要求改 Compose 或添加 `host.docker.internal` 映射。Docker Desktop、rootless、无宿主机网桥地址及受限网络环境需另行核对可达地址与 Host 校验，不能直接套用此例。
 
-## 3. 配置宿主机服务
+## 3. 创建宿主机配置
 
-在仓库根目录创建 service.toml，替换 binary、home 和 host：
+在宿主机仓库根目录，仅在尚无配置时复制模板：
 
-```toml
-binary = "/实际路径/codex"
-home = "~/.codex"
-state = "/opt/maibot-codex-image-host/runtime/state"
-allowed_users = ["qq:123456789"]
-host = "172.18.0.1"
-port = 8765
-model = ""
+```sh
+cp -n service/config.example.toml service.toml
 ```
 
-binary 必须是原生程序路径，可在此目录执行 `python3 -c 'from client import find_codex; print(find_codex())'` 查询。home 填宿主机实际登录目录；若使用自定义 CODEX_HOME，请填对应路径。
+编辑 `service.toml`。以下为 Docker bridge 示例，持久化路径和 Gateway 均需替换；`binary/home` 留空使用自动查找与已有登录：
 
-只监听所需的宿主机网桥地址。当前服务会校验 HTTP Host，因此插件访问地址应与 host 一致，不要把 host 改成 0.0.0.0 后仍照用本示例 URL。宿主机防火墙需允许实际 Docker 子网访问此端口，无需开放公网访问。
+```toml
+binary = ""
+home = ""
+state = "/你的持久化目录/maibot-image/state"
+allowed_users = ["qq:123456789"]
+model = ""
+host = "172.18.0.1"
+port = 8765
+```
 
-首次生成共享密钥，保存为被 Git 忽略的 secret.txt；以后启动复用同一文件：
+- `binary` 省略或留空时从 PATH 查找原生 Codex；找不到时填写实际原生可执行程序路径。`command -v codex` 可提供线索，若返回启动脚本，还需确认对应的原生程序。
+- `home` 省略或留空时优先使用服务进程的 `CODEX_HOME`，否则使用该用户的 `~/.codex`；显式路径优先，升级时保留既有值。不要在 TOML 中填写字面量 `$CODEX_HOME`，它不会展开。
+- `state` 使用可写的绝对路径；服务的任务数据库、产物和隔离绘图目录都保存在这里。
+- `allowed_users` 与插件一致。直接部署时将 `host` 改为 `127.0.0.1`，插件也用相应地址。
+
+服务其余字段继续沿用模板或既有配置，见 [服务配置说明](advanced.md#宿主机服务配置)。
+
+## 4. 提供密钥并启动
+
+在宿主机仓库根目录首次生成随机密钥，已有文件时复用：
 
 ```sh
 umask 077
@@ -63,45 +86,46 @@ if [ ! -f secret.txt ]; then
   ./service/.venv/bin/python -c 'import secrets; print(secrets.token_urlsafe(40))' > secret.txt
 fi
 export CODEX_IMAGE_SECRET="$(cat secret.txt)"
-./service/.venv/bin/python -m codex_image_mcp.server --config ./service.toml
+uv run --project service --no-dev codex-image-mcp --config "$PWD/service.toml"
 ```
 
-保持此进程运行；正式使用可自行交给进程管理器。MaiBot 或容器重启不会替宿主机启动 MCP。
+`CODEX_IMAGE_SECRET` 至少 32 字符，由环境变量读取，不写入 `service.toml`。保管好同一个密钥文件；不要每次启动生成新密钥，也不要将它贴入公开日志或提交到 Git。
 
-## 4. 配置 MaiBot 插件
+也可不设置 `CODEX_IMAGE_SECRET`，改设 `CODEX_IMAGE_SECRET_FILE` 为该密钥文件的绝对路径。两者同时存在时，直接密钥变量优先，空值也不会回退到文件。密钥文件应为 UTF-8，不能把密钥本身填进文件路径变量。
 
-按标准方式将插件安装到 MaiBot 实例的 plugins/codex_image。Docker 部署时，使用 MaiBot 现有的插件安装或持久化目录机制，不需要把宿主机 Codex 目录挂载进容器。
+前台关闭即停止服务。正式运行可交给已有进程管理器，保持相同的系统用户、配置绝对路径、登录目录和密钥环境变量。每个 `state` 目录只启动一个服务实例；MaiBot 或容器重启不会代为启动宿主机 MCP。
 
-在插件设置中选择 external，并配置以下值；若直接编辑 config.toml，请保留原来的 [plugin] 与 config_version：
+## 5. 配对插件
+
+在 MaiBot 插件设置或插件 `config.toml` 中填写：
 
 ```toml
-[service]
-mode = "external"
+[plugin]
+config_version = "0.4.0"
+enabled = true
 
 [connection]
 url = "http://172.18.0.1:8765/mcp"
 secret = "填写宿主机 secret.txt 中的完整密钥"
 allowed_users = ["qq:123456789"]
+poll_seconds = 2
+watch_seconds = 360
 ```
 
-共享密钥至少 32 字符，两端白名单一致。同时授予对应用户本插件命令和文字、图片发送权限，重新加载插件。external 模式不使用容器内的 codex.binary、codex.home 或其他 codex.* 设置。
+这是完整的插件配置范围，不再配置服务模式或本地 Codex。直接部署且服务监听 `127.0.0.1` 时，相应修改 URL。授予白名单用户本插件 `codex_image_command` 命令及文字、图片发送权限，保存并重新加载插件。
 
-直接部署的 MaiBot 也可以使用这份连接配置；如果宿主机服务仅监听 127.0.0.1，则相应将 URL 改为 http://127.0.0.1:8765/mcp。
+## 6. 分层验证
 
-## 5. 验证
+1. 宿主机以服务用户执行 `codex login status`，确保命令使用的登录目录与服务 `home` 一致。
+2. 在 MaiBot 中执行 `/画图诊断`，检查 MCP 连接与授权；它不检查 Codex 登录，不创建绘图任务。
+3. 需要验收真实绘图时，仅提交一次 `/画图 一个绿色三角形，白色背景`，记录任务编号，检查状态、自动发图和实际聊天中的图片。此步骤会使用订阅额度。
 
-- 宿主机执行 `python3 login.py --status` 确认相应目录的 ChatGPT 登录。
-- 在 MaiBot 中执行 `/画图诊断`。当前 external 模式只检查 MCP 连接，登录会在绘图时再次检查。
-- 执行 `/画图 一个绿色三角形，白色背景`，核对任务和自动发图。
-
-排查网络时，可利用容器已有 Python 发起一次不带密钥的请求，无需额外安装 curl：
+排查容器网络时，可利用容器已有 Python 发起一次不带密钥的请求，地址换成实际 Gateway：
 
 ```sh
 docker exec maibot python3 -c 'import http.client; c=http.client.HTTPConnection("172.18.0.1",8765,timeout=5); c.request("GET","/mcp"); print(c.getresponse().status)'
 ```
 
-返回 **401** 说明服务已可达且拒绝未认证请求；这不代表登录或绘图已通过。连接拒绝通常是服务未启动或监听地址不对；超时需检查网络和防火墙；403 需核对 MCP 访问地址与 Host 校验。
+返回 `401` 仅说明有可达的鉴权端点拒绝了未认证请求；Bearer 校验先于 MCP Host 检查，因此这还不能证明 Host 匹配、签名请求、登录或绘图成功。连接拒绝时检查服务和监听地址；超时检查网络与防火墙；带认证的请求出现 `403` 时核对 URL 的 Host 与监听配置。
 
-本地已有 external 模式的 MCP 传输、鉴权和发图回归验证；本文的 Linux Docker 宿主机网络步骤仍需目标 VPS 实测。本次未修改或启动 Docker 容器。
-
-参考：[Docker bridge 网络](https://docs.docker.com/engine/network/drivers/bridge/)、[docker inspect](https://docs.docker.com/reference/cli/docker/inspect/)。
+本文是部署操作指南。Docker / VPS 网络及 0.4.0 真实绘图仍需在目标环境验收，本次文档更新未执行这些验证。历史事实见 [验证记录](validation.md)。

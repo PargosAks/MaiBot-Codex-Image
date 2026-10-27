@@ -32,9 +32,9 @@ class Bridge:
             or parsed.username
             or parsed.password
         ):
-            raise ValueError("Invalid MCP URL")
+            raise ValueError("请填写可访问的宿主机 MCP 地址（http 或 https）。")
         if parsed.query or parsed.fragment or len(secret) < 32:
-            raise ValueError("Invalid MCP settings")
+            raise ValueError("请检查 MCP 地址，并填写与宿主机服务一致的共享密钥（至少 32 字符）。")
         self.url, self.secret = url, secret
 
     async def call(self, operation: str, scope: dict, args: dict):

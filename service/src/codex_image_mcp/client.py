@@ -1,4 +1,4 @@
-"""Native Codex discovery shared by the plugin and the manual login helper."""
+"""Native Codex discovery and existing login selection for the host service."""
 
 from pathlib import Path
 import os
@@ -16,9 +16,10 @@ def find_codex(value: str = "") -> str:
         candidate = Path(value).expanduser()
         if not candidate.is_file():
             candidate = Path(shutil.which(value) or value)
+        candidate = candidate.resolve()
         if not candidate.is_file() or candidate.suffix.lower() in {".cmd", ".bat", ".ps1", ".js"}:
-            raise ValueError("codex.binary 必须指向 Codex 原生程序；不能填写 .cmd 或 .ps1。")
-        return str(candidate.resolve())
+            raise ValueError("binary 必须指向 Codex 原生程序；不能填写 .cmd 或 .ps1。")
+        return str(candidate)
 
     name = "codex.exe" if os.name == "nt" else "codex"
     candidate = shutil.which(name)
@@ -35,7 +36,9 @@ def find_codex(value: str = "") -> str:
         if resolved.parent.name == "bin":
             roots.append(resolved.parent.parent)
         arch = "aarch64" if platform.machine().lower() in {"arm64", "aarch64"} else "x86_64"
-        suffix = {"Windows": "pc-windows-msvc", "Darwin": "apple-darwin", "Linux": "unknown-linux-musl"}.get(platform.system())
+        suffix = {"Windows": "pc-windows-msvc", "Darwin": "apple-darwin", "Linux": "unknown-linux-musl"}.get(
+            platform.system()
+        )
         target = f"{arch}-{suffix}"
         for root in roots:
             for vendor in [root / "vendor", *root.glob("node_modules/@openai/codex-*/vendor"),
@@ -43,4 +46,4 @@ def find_codex(value: str = "") -> str:
                 native = vendor / target / "codex" / name
                 if native.is_file():
                     return str(native.resolve())
-    raise ValueError("未找到 Codex 原生客户端。请安装官方 Codex CLI，或设置 codex.binary 后重新加载插件。")
+    raise ValueError("未找到 Codex 原生客户端。请安装官方 Codex CLI，或设置 binary 后重新启动服务。")

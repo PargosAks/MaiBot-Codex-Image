@@ -161,14 +161,14 @@ class Codex:
 
     async def initialize(self, rpc: Rpc):
         await rpc.start()
-        await rpc.call("initialize", {"clientInfo": {"name": "maibot_image_mcp", "version": "0.3.0"},
+        await rpc.call("initialize", {"clientInfo": {"name": "maibot_image_mcp", "version": "0.4.0"},
                                       "capabilities": {"experimentalApi": True}})
         await rpc.send({"method": "initialized"})
 
     async def tokens(self, broker: Rpc, expected_account: str | None = None) -> dict:
         account = await broker.call("account/read", {"refreshToken": False})
         if (account.get("account") or {}).get("type") != "chatgpt":
-            raise ValueError("未找到 ChatGPT 登录。请使用运行 MaiBot 的系统用户手动登录（codex login）；可选目录需与 codex.home 一致。")
+            raise ValueError("未找到 ChatGPT 登录。请使用运行宿主机 MCP 服务的系统用户手动登录（codex login）；可选目录需与服务 home 一致。")
         # Native Codex owns refresh and persistence in the original file/keyring store.
         auth = await broker.call("getAuthStatus", {"includeToken": True, "refreshToken": True})
         token = auth.get("authToken")
@@ -208,7 +208,7 @@ class Codex:
         runtime_home = self.output_root / job["id"]
         await asyncio.to_thread(runtime_home.mkdir, parents=True, exist_ok=True, mode=0o700)
         if await asyncio.to_thread((runtime_home / "config.toml").exists):
-            raise ValueError("绘图运行目录中出现未知 config.toml，请检查插件数据。")
+            raise ValueError("绘图运行目录中出现未知 config.toml，请检查宿主机服务数据。")
         rpc = Rpc(
             [
                 self.cfg.binary,

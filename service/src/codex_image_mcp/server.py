@@ -33,8 +33,17 @@ class BearerGuard:
 
 
 def create_app(settings: Settings, driver=None):
-    settings.validated()
     service = Service(settings, driver)
+    try:
+        return _create_app(settings, service)
+    except BaseException:
+        # App construction is synchronous and precedes the lifespan. Release the
+        # database and ownership here if transport setup fails before startup.
+        service._close_resources()
+        raise
+
+
+def _create_app(settings: Settings, service: Service):
     mcp = FastMCP(
         "Codex image jobs",
         stateless_http=True,
@@ -79,8 +88,8 @@ def create_app(settings: Settings, driver=None):
 
     @asynccontextmanager
     async def lifespan(app):
-        await service.start()
         try:
+            await service.start()
             async with mcp.session_manager.run():
                 yield
         finally:

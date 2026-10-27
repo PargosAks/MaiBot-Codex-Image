@@ -1,80 +1,90 @@
-# 手动配置外部服务
+# 手动部署独立 MCP 服务（Windows）
 
-本页仅适用于可选的外部 MCP 模式。0.2.0 新安装默认内置服务，通常只需按根目录 README 手动登录并授权，无需本页步骤。以下以同一台 Windows 机器为例；目录请替换成自己的位置。
+0.4.0 统一使用宿主机独立运行的 `service/`。插件仅保存连接设置，不负责启动服务或管理 Codex。以下是同一台 Windows 机器直接运行 MaiBot 的新安装示例；Docker / Linux 见 [宿主机指南](host-service.md)，旧安装先看 [迁移说明](advanced.md#从旧版本迁移)。
 
-Linux VPS / Docker 使用宿主机 Codex 的步骤见 [宿主机部署指南](host-service.md)。
+## 1. 准备仓库和已有登录
 
-## 1 手动登录 Codex
-
-按 [官方说明](https://learn.chatgpt.com/docs/codex/cli) 安装 CLI。确认 codex --version 可运行，并用 Get-Command codex.exe 查询原生客户端路径。
-
-默认复用现有登录，在 PowerShell 执行；已经登录则无需再次登录：
+需要 Git、uv、Python 3.12+ 和已安装的官方 Codex CLI。使用将运行 MCP 的系统用户，在 PowerShell 中执行，路径换成自己的位置：
 
 ```powershell
+git clone https://github.com/PargosAks/MaiBot-Codex-Image.git 'D:\MaiBot\plugins\codex_image'
+git clone https://github.com/PargosAks/MaiBot-Codex-Image.git 'D:\MaiBotImageService'
+Set-Location 'D:\MaiBotImageService'
+uv sync --project service --no-dev
 codex login status
-# 仅未登录时执行：codex login --device-auth
 ```
 
-使用 ChatGPT 订阅账号登录，结果应为 Logged in using ChatGPT。服务配置 home 指向该用户的 CODEX_HOME 或 ~/.codex。可选专用目录时，先设置 CODEX_HOME 再手动登录；无需复制凭证或删除 config.toml，绘图配置会单独隔离。
+已有 ChatGPT 登录无需重新登录；未登录才手动执行 `codex login --device-auth`。插件依赖另需安装到 MaiBot 的实际环境，见插件 `_manifest.json` 和 `requirements.txt`。
 
-## 2 准备服务
+同机部署可只克隆插件一份，改为进入 `D:\MaiBot\plugins\codex_image` 复用其中的 `service/`，后续相对路径均以该目录为准。服务仍是独立进程，运行数据放在源码目录外。
 
-进入插件仓库目录，在 PowerShell 执行：
+## 2. 配置服务
+
+在所选仓库根目录，仅在尚无配置时复制模板：
 
 ```powershell
-uv sync --project service --locked --no-dev --python 3.13
-Copy-Item service\config.example.toml 'D:\MaiBotImageService\service.toml'
+if (-not (Test-Path -LiteralPath '.\service.toml')) {
+    Copy-Item -LiteralPath '.\service\config.example.toml' -Destination '.\service.toml'
+}
 ```
 
-修改复制后的 service.toml：binary 填实际 codex.exe 路径，home 填现有登录目录，state 填独立任务目录，allowed_users 填实际平台与用户 ID；model 可留空。Windows TOML 路径建议使用正斜线。
-
-例如：
+编辑 `service.toml`，Windows 的 TOML 路径建议使用正斜线：
 
 ```toml
-binary = "C:/实际路径/codex.exe"
-home = "~/.codex"
-state = "D:/MaiBotImageService/state"
+binary = ""
+home = ""
+state = "D:/MaiBotImageData/state"
 allowed_users = ["qq:123456789"]
 model = ""
 host = "127.0.0.1"
 port = 8765
 ```
 
-生成至少 32 字符的随机共享密钥，自行保管。在当前启动服务的 PowerShell 中设置对应环境变量：
+`binary` 省略或留空时自动查找原生 Codex；找不到时可用 `Get-Command codex.exe` 查询，并填写实际原生程序路径，不要填写 `.cmd` 或 `.ps1` 启动脚本。`home` 省略或留空时优先使用服务进程的 `CODEX_HOME`，未设置则选该用户目录下的 `.codex`；显式路径优先，升级时保留已有值。TOML 不会展开字面量 `$env:CODEX_HOME`。
+
+专用登录目录可选；若使用它，先在手动登录的终端设置对应 `CODEX_HOME`，再将同一路径填入 `home`。不复制凭证、不覆盖或删除原 Codex `config.toml`。服务其他配置见 [进阶说明](advanced.md#宿主机服务配置)。
+
+## 3. 复用密钥并启动
+
+在仓库根目录首次生成共享密钥，文件存在时复用；限制该文件只供运行服务的用户访问：
 
 ```powershell
-$imageSecret = & '.\service\.venv\Scripts\python.exe' -c 'import secrets; print(secrets.token_urlsafe(40))'
-$env:CODEX_IMAGE_SECRET = $imageSecret
-uv run --project service --locked --no-dev codex-image-mcp --config 'D:\MaiBotImageService\service.toml'
+if (-not (Test-Path -LiteralPath '.\secret.txt')) {
+    $imageSecret = & '.\service\.venv\Scripts\python.exe' -c 'import secrets; print(secrets.token_urlsafe(40))'
+    Set-Content -LiteralPath '.\secret.txt' -Value $imageSecret -Encoding ascii
+}
+$env:CODEX_IMAGE_SECRET = (Get-Content -LiteralPath '.\secret.txt' -Raw).Trim()
+$imageConfig = (Resolve-Path -LiteralPath '.\service.toml').Path
+uv run --project service --no-dev codex-image-mcp --config $imageConfig
 ```
 
-重开终端后需重新提供同一个密钥，不要每次启动都生成新密钥。若希望自动保管和配对，请使用可选部署工具。
+密钥至少 32 字符，只通过环境变量提供给服务，不写入 `service.toml`。重开终端后读取同一文件再启动，不要重新生成密钥。不要输出或提交它。
 
-## 3 配置插件
+也可不设置 `CODEX_IMAGE_SECRET`，改设 `CODEX_IMAGE_SECRET_FILE` 为同一个 UTF-8 密钥文件的绝对路径。直接密钥变量存在时优先，空值也不会回退到文件。
 
-在 MaiBot WebUI 插件设置中填写：
+保留运行窗口；关闭即停止服务。需要后台常驻时交给已有进程管理器，并明确同一个系统用户、密钥环境和配置绝对路径。每个 `state` 只运行一个实例；插件重载、MaiBot 重启均不会代为启动服务。
 
-- connection.url：http://127.0.0.1:8765/mcp。
-- connection.secret：与服务启动环境变量相同的密钥。
-- connection.allowed_users：与服务相同的实际用户列表。
+## 4. 配对插件
 
-插件配置示例见仓库根目录 config.example.toml。然后在 MaiBot 命令权限中给对应用户授权本插件的绘图命令，并重启 MaiBot。
-
-## 4 验证
-
-发送 /画图 和描述，等待任务编号和图片。保留 MCP 服务窗口，关闭服务后插件无法新建任务或取图。
-
-Linux/macOS 的步骤一致：设置 CODEX_HOME，用官方 CLI 手动登录，uv sync 准备服务环境；设置 CODEX_IMAGE_SECRET 后启动服务。原生 codex 路径可由 command -v codex 查询。
-
-容器与跨机器配置见 [进阶配置](advanced.md)。
-# 适用范围
-
-本页介绍可选的**外部 MCP 服务模式**。0.2.0 新安装默认内置服务，通常只需按根目录 README 手动登录并授权，无需本页步骤。
-
-外部模式请在插件配置增加：
+在 MaiBot 插件设置或插件 `config.toml` 中填写：
 
 ```toml
-[service]
-mode = "external"
+[plugin]
+config_version = "0.4.0"
+enabled = true
+
+[connection]
+url = "http://127.0.0.1:8765/mcp"
+secret = "填写服务 secret.txt 中的完整密钥"
+allowed_users = ["qq:123456789"]
+poll_seconds = 2
+watch_seconds = 360
 ```
 
+两端白名单一致，再给对应用户授予本插件 `codex_image_command` 命令权限及文字、图片发送权限，保存后重新加载插件。插件不再提供服务模式或 Codex 配置项。
+
+## 5. 验证
+
+先执行 `/画图诊断` 检查 MCP 连接与授权；它不检查 Codex 登录，也不生成图片。需要实际绘图验收时，发送一次 `/画图` 和描述，记录任务编号并核对状态、自动发图及聊天中实际显示的图片。
+
+若超时、断线或结果未知，使用原编号查询；不要重复提交，也不要通过删除数据库强制重试。历史 Windows 结果不等于 0.4.0 新架构验收，见 [验证记录](validation.md)。

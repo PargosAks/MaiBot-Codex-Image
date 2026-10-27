@@ -1,9 +1,9 @@
 {
   "manifest_version": 2,
   "id": "pargosaks.maibot-codex-image",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "name": "Codex 订阅绘图",
-  "description": "内置 MCP 服务，复用已有 Codex 登录并隔离绘图配置，生成图片后发回聊天",
+  "description": "连接宿主机 MCP 绘图服务，调用宿主机 Codex 并将图片发回聊天",
   "author": {"name": "PargosAks / OpenAI Codex", "url": "https://github.com/PargosAks"},
   "urls": {"repository": "https://github.com/PargosAks/MaiBot-Codex-Image", "homepage": "https://github.com/PargosAks/MaiBot-Codex-Image"},
   "license": "MIT",
@@ -11,9 +11,7 @@
   "sdk": {"min_version": "2.16.0", "max_version": "2.17.99"},
   "dependencies": [
     {"type": "python_package", "name": "httpx", "version_spec": ">=0.28,<1"},
-    {"type": "python_package", "name": "mcp", "version_spec": ">=1.28.1,<2"},
-    {"type": "python_package", "name": "pillow", "version_spec": ">=11,<14"},
-    {"type": "python_package", "name": "uvicorn", "version_spec": ">=0.35,<1"}
+    {"type": "python_package", "name": "mcp", "version_spec": ">=1.28.1,<2"}
   ],
   "capabilities": ["send.text", "send.image"],
   "i18n": {"default_locale": "zh-CN"}

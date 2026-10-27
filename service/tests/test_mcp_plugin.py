@@ -1,39 +1,14 @@
-from dataclasses import replace
 from types import SimpleNamespace
 import asyncio
 import base64
-import socket
 
 import httpx
 import pytest
-import uvicorn
 
-from codex_image_mcp.server import create_app
 from image_plugin_under_test.bridge import Bridge
 from image_plugin_under_test.delivery import Deliveries
 from image_plugin_under_test import CodexImagePlugin, trusted_identity
 from conftest import SECRET, SCOPE
-
-
-@pytest.fixture
-async def live_service(settings, driver_factory):
-    sock = socket.socket()
-    sock.bind(("127.0.0.1", 0))
-    cfg = replace(settings, port=sock.getsockname()[1])
-    app = create_app(cfg, driver_factory())
-    server = uvicorn.Server(uvicorn.Config(app, log_level="critical", lifespan="on"))
-    task = asyncio.create_task(server.serve(sockets=[sock]))
-    try:
-        async with asyncio.timeout(5):
-            while not server.started:
-                if task.done():
-                    await task
-                await asyncio.sleep(0.02)
-        yield cfg
-    finally:
-        server.should_exit = True
-        await asyncio.wait_for(task, 5)
-        sock.close()
 
 
 async def test_real_mcp_transport_auth_and_image(live_service):

@@ -1,14 +1,12 @@
 """Login reuse and drawing isolation; fake credentials only, no paid calls."""
 
 from pathlib import Path
-import importlib.util
-import sys
 
 import pytest
 
+from codex_image_mcp.client import auth_home
 from codex_image_mcp.codex import Codex
 from codex_image_mcp.service import Service
-from image_plugin_under_test.client import auth_home
 from conftest import envelope
 from test_service import wait_job
 
@@ -43,7 +41,9 @@ async def test_login_accepts_existing_config_without_changing_it(settings, drive
 
 
 @pytest.mark.parametrize("mode,expected", [("refresh", "completed"), ("account-change", "outcome_unknown")])
-async def test_refresh_uses_original_login_and_rejects_account_switch(settings, driver_factory, mode, expected):
+async def test_refresh_uses_original_login_and_rejects_account_switch(
+    settings, driver_factory, mode, expected
+):
     service = Service(settings, driver_factory(mode))
     await service.start()
     try:
@@ -75,25 +75,3 @@ async def test_runtime_home_rejects_unknown_config_before_any_inference(settings
 
     with pytest.raises(ValueError, match="未知 config.toml"):
         await driver_factory().generate(job, no_output, no_output)
-
-
-def test_login_helper_preserves_default_config_and_credential_backend(tmp_path, monkeypatch):
-    # Import the standalone helper with the same stdlib client module it uses as a script.
-    root = Path(__file__).resolve().parents[2]
-    monkeypatch.syspath_prepend(str(root))
-    spec = importlib.util.spec_from_file_location("login_helper_under_test", root / "login.py")
-    login = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(login)
-    home = tmp_path / "existing"
-    home.mkdir()
-    config = home / "config.toml"
-    config.write_text('cli_auth_credentials_store="keyring"\n', encoding="utf-8")
-    monkeypatch.setenv("CODEX_HOME", str(home))
-    monkeypatch.setattr(sys, "argv", ["login.py", "--status"])
-    monkeypatch.setattr(login, "find_codex", lambda _: "native-codex")
-    received = []
-    monkeypatch.setattr(login.subprocess, "call", lambda argv, env: received.append((argv, env)) or 0)
-    assert login.main() == 0
-    assert received[0][0] == ["native-codex", "login", "status"]
-    assert received[0][1]["CODEX_HOME"] == str(home.resolve())
-    assert config.read_text() == 'cli_auth_credentials_store="keyring"\n'

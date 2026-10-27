@@ -1,7 +1,6 @@
 """Command-only first release. Host identity never comes from model parameters."""
 
 from pathlib import Path
-from typing import Literal
 import asyncio
 import hashlib
 import re
@@ -10,11 +9,10 @@ from maibot_sdk import Command, Field, MaiBotPlugin, PluginConfigBase
 
 from .bridge import Bridge
 from .delivery import Deliveries
-from .embedded import EmbeddedMCP
 
 
 class PluginSection(PluginConfigBase):
-    config_version: str = "0.3.0"
+    config_version: str = "0.4.0"
     enabled: bool = True
 
 
@@ -32,25 +30,9 @@ class Connection(PluginConfigBase):
     watch_seconds: float = Field(default=360, ge=1, le=3600)
 
 
-class ServiceConfig(PluginConfigBase):
-    mode: Literal["auto", "embedded", "external"] = Field(
-        default="auto", description="auto：新安装自动启动内置 MCP；已有共享密钥时沿用外部服务"
-    )
-
-
-class CodexConfig(PluginConfigBase):
-    binary: str = Field(default="", description="Codex 原生程序路径；留空自动从 PATH 检测")
-    home: str = Field(default="", description="登录目录；留空复用 CODEX_HOME 或当前用户 ~/.codex；可填专用目录")
-    model: str = Field(default="", description="留空使用 Codex 默认模型")
-    timeout: float = Field(default=300, ge=10, le=1800)
-    rpc_timeout: float = Field(default=30, ge=1, le=120)
-
-
 class Config(PluginConfigBase):
     plugin: PluginSection = Field(default_factory=PluginSection)
     connection: Connection = Field(default_factory=Connection)
-    service: ServiceConfig = Field(default_factory=ServiceConfig)
-    codex: CodexConfig = Field(default_factory=CodexConfig)
 
 
 def trusted_identity(kwargs: dict) -> tuple[dict, str]:
@@ -90,7 +72,6 @@ class CodexImagePlugin(MaiBotPlugin):
         super().__init__()
         self.bridge = None
         self.journal = None
-        self.embedded = None
         self.startup_error = ""
         self.lifecycle = asyncio.Lock()
         self.watchers: dict[str, asyncio.Task] = {}
@@ -106,14 +87,7 @@ class CodexImagePlugin(MaiBotPlugin):
         self.startup_error = ""
         try:
             if self.config.plugin.enabled and cfg.allowed_users:
-                external = self.config.service.mode == "external" or (
-                    self.config.service.mode == "auto" and bool(cfg.secret)
-                )
-                if external:
-                    self.bridge = Bridge(cfg.url, cfg.secret)
-                else:
-                    self.embedded = EmbeddedMCP(Path(self.ctx.paths.data_dir))
-                    self.bridge = await self.embedded.start(self.config.codex, cfg.allowed_users)
+                self.bridge = Bridge(cfg.url, cfg.secret)
             self.journal = await asyncio.to_thread(
                 Deliveries, Path(self.ctx.paths.data_dir) / "delivery.sqlite3"
             )
@@ -136,14 +110,9 @@ class CodexImagePlugin(MaiBotPlugin):
         await asyncio.gather(*tasks, return_exceptions=True)
         self.watchers.clear()
         self.bridge = None
-        try:
-            if self.embedded:
-                await self.embedded.close()
-        finally:
-            self.embedded = None
-            if self.journal:
-                await asyncio.to_thread(self.journal.close)
-                self.journal = None
+        if self.journal:
+            await asyncio.to_thread(self.journal.close)
+            self.journal = None
 
     async def on_config_update(self, scope, config_data, version):
         del scope, config_data, version
@@ -183,17 +152,12 @@ class CodexImagePlugin(MaiBotPlugin):
                 raise ValueError("不支持的绘图命令。")
             if action == "画图诊断":
                 await self.bridge.call("health", scope, {})
-                if self.embedded:
-                    await self.embedded.check_login()
-                    return True, "内置 MCP 服务正常，Codex ChatGPT 登录有效。诊断没有生成图片。", 2
-                return True, "外部 MCP 服务正常；登录状态会在绘图时检查。诊断没有生成图片。", 2
+                return True, "宿主机 MCP 服务连接正常；Codex 登录状态会在绘图时检查。诊断没有生成图片。", 2
             if not text:
                 raise ValueError(
                     "用法：/画图 描述；/画图状态 任务编号；/重发画图 任务编号"
                 )
             if action == "画图":
-                if self.embedded:
-                    await self.embedded.check_login()
                 key = hashlib.sha256(
                     (scope["platform"] + ":" + message_id + ":draw").encode()
                 ).hexdigest()

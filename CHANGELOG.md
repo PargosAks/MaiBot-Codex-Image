@@ -1,5 +1,26 @@
 # 更新记录
 
+## 0.4.0（宿主机独立 MCP 架构，未发布 Release）
+
+### 主要功能
+
+- 统一为 external-only：宿主机独立运行 `service/` 和 Codex，MaiBot 插件仅连接、提交任务与取图发送。
+- 插件配置收敛为 `connection.url/secret/allowed_users/poll_seconds/watch_seconds` 与 `plugin.enabled/config_version`，移除内置模式及插件 Codex 设置。
+- 宿主机继续使用现有服务配置与 `CODEX_IMAGE_SECRET`，默认复用服务用户已有 Codex 登录，未登录时由用户手动登录。
+
+### 文档与迁移细节
+
+- README 改为六部分简短指南，主推两份仓库或同机复用 `service/`，使用现有 CLI 入口单独启动服务。
+- 补齐 Windows 与 Linux / Docker 指南；Docker 使用实际 Gateway 绑定并匹配请求 Host，无需改动 MaiBot 本体、Dockerfile、Compose 或镜像。
+- 明确旧内置用户须准备宿主机新服务，保留原数据与旧任务，不自动拷贝、导入或删除；已有独立服务保留原配置、密钥和状态目录。
+- 安装和部署脚本保留为高级可选工具，已同步插件复制名单与连接配置；插件包不再携带宿主机服务代码。
+- 服务自动发现原生 Codex，登录目录按显式值、CODEX_HOME、~/.codex 选择，支持从密钥文件读取共享密钥。
+- 服务在打开任务库前取得数据目录独占锁，重复启动不会改写正在处理的任务。
+- 关闭时等待图片复制和产物登记完成再释放目录；安装器与服务共用原生程序发现，避免误选 npm 启动脚本。
+- 保留原生 MCP 可行性和历史实测事实；本版自动测试与真实绘图证据单独记录。
+
+未发布 Release。已完成本机独立服务真实绘图验证；Docker / VPS、实际 MaiBot 聊天收图和用户验收待完成。
+
 ## 0.3.0（源码更新，未发布 Release）
 
 - 默认复用 CODEX_HOME 或 ~/.codex 中已有的 ChatGPT 登录，专用登录目录改为可选。

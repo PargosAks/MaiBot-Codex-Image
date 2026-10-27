@@ -2,6 +2,9 @@ from pathlib import Path
 import importlib.util
 import io
 import json
+import os
+import platform
+import shutil
 import tarfile
 import tomllib
 import zipfile
@@ -63,6 +66,9 @@ def test_configuration_is_scoped_and_repeatable(instance, tmp_path):
     assert service["allowed_users"] == plugin["connection"]["allowed_users"] == ["qq:123"]
     assert service["home"] == str(auth)
     assert plugin["connection"]["secret"].encode() == first.strip()
+    assert set(plugin) == {"plugin", "connection"}
+    assert not (instance / "plugins/codex_image/service").exists()
+    assert not (instance / "plugins/codex_image/embedded.py").exists()
     assert (runtime / "backups").is_dir()
 
 
@@ -120,3 +126,27 @@ def test_bundle_does_not_include_runtime_secrets(tmp_path):
         assert not names.intersection({"auth.json", "secret.txt", "config.toml", "deployment.json"})
     with zipfile.ZipFile(results[1][0]) as archive:
         assert "plugin.py" in archive.namelist() and "install.ps1" not in archive.namelist()
+
+
+def test_installer_and_service_resolve_npm_launcher_to_native(tmp_path, monkeypatch):
+    # Model a Linux npm link without requiring Windows symlink creation privileges.
+    link = tmp_path / "bin/codex"
+    shim = tmp_path / "lib/node_modules/@openai/codex/bin/codex.js"
+    for path in (link, shim):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("npm launcher; never execute", encoding="utf-8")
+    native = shim.parent.parent / "node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/codex" / (
+        "codex.exe" if os.name == "nt" else "codex"
+    )
+    native.parent.mkdir(parents=True)
+    native.write_bytes(b"native; never execute")
+    resolve = Path.resolve
+    monkeypatch.setattr(Path, "resolve", lambda path, *a, **kw: shim if path == link else resolve(path, *a, **kw))
+    monkeypatch.setattr(shutil, "which", lambda name: str(link) if name == "codex" else None)
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    monkeypatch.setattr(platform, "machine", lambda: "x86_64")
+    assert deploy.codex_binary(tmp_path / "runtime") == native.resolve()
+    from codex_image_mcp.client import find_codex
+    assert find_codex() == str(native.resolve())
+    with pytest.raises(ValueError, match="原生程序"):
+        find_codex(str(link))

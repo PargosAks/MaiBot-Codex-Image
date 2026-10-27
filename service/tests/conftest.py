@@ -1,11 +1,16 @@
 from pathlib import Path
+from dataclasses import replace
+import asyncio
+import socket
 import sys
 import importlib.util
 
 import pytest
+import uvicorn
 
 from codex_image_mcp.config import Settings
 from codex_image_mcp.codex import Codex, Rpc
+from codex_image_mcp.server import create_app
 import codex_image_mcp.codex as driver_module
 
 PLUGIN = Path(__file__).resolve().parents[2]
@@ -56,3 +61,24 @@ def driver_factory(monkeypatch, settings):
         return Codex(settings)
 
     return factory
+
+
+@pytest.fixture
+async def live_service(settings, driver_factory):
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    cfg = replace(settings, port=sock.getsockname()[1])
+    app = create_app(cfg, driver_factory())
+    server = uvicorn.Server(uvicorn.Config(app, log_level="critical", lifespan="on"))
+    task = asyncio.create_task(server.serve(sockets=[sock]))
+    try:
+        async with asyncio.timeout(5):
+            while not server.started:
+                if task.done():
+                    await task
+                await asyncio.sleep(0.02)
+        yield cfg
+    finally:
+        server.should_exit = True
+        await asyncio.wait_for(task, 5)
+        sock.close()
