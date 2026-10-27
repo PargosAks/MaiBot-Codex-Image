@@ -1,0 +1,27 @@
+[project]
+name = "maibot-codex-image-mcp"
+version = "0.2.0"
+description = "Subscription-only Codex image jobs over MCP"
+requires-python = ">=3.12"
+dependencies = ["mcp>=1.28.1,<2", "httpx>=0.28,<1", "pillow>=11,<14", "uvicorn>=0.35,<1", "tomlkit>=0.13,<1"]
+
+[project.scripts]
+codex-image-mcp = "codex_image_mcp.server:main"
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "pytest-asyncio>=1,<2", "maibot-plugin-sdk @ git+https://github.com/Mai-with-u/maibot-plugin-sdk.git@835e0e9d1f70ea00885fb49d059f7f2864976d05", "ruff>=0.12,<1"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/codex_image_mcp"]
+

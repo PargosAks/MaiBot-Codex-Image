@@ -1,0 +1,21 @@
+[plugin]
+config_version = "0.2.0"
+enabled = true
+
+[service]
+mode = "auto" # New install: embedded MCP. Existing external secret: preserve external mode.
+
+[codex]
+binary = "" # Detect native executable on PATH; set an absolute path if needed.
+home = "" # Default: ~/.codex-maibot-image; manually log in using login.py.
+model = ""
+timeout = 300
+rpc_timeout = 30
+
+[connection]
+url = "http://127.0.0.1:8765/mcp"
+secret = "" # External mode only. Embedded mode creates and pairs its own key.
+allowed_users = [] # Add actual platform:user_id, e.g. qq:123456; empty denies everyone.
+poll_seconds = 2
+watch_seconds = 360
+

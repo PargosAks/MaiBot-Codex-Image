@@ -1,0 +1,13 @@
+# Copy to config.toml (ignored). Use an auth-only CODEX_HOME for this service.
+binary = "/home/maibot-image/.local/bin/codex"
+home = "/var/lib/maibot-image/codex-home"
+state = "/var/lib/maibot-image/state"
+allowed_users = ["qq:YOUR_USER_ID"]
+model = ""
+timeout = 300
+rpc_timeout = 30
+max_queue = 10
+max_image_bytes = 20971520
+host = "127.0.0.1"
+port = 8765
+
