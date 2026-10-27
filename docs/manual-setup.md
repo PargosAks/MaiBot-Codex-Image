@@ -2,6 +2,8 @@
 
 本页仅适用于可选的外部 MCP 模式。0.2.0 新安装默认内置服务，通常只需按根目录 README 手动登录并授权，无需本页步骤。以下以同一台 Windows 机器为例；目录请替换成自己的位置。
 
+Linux VPS / Docker 使用宿主机 Codex 的步骤见 [宿主机部署指南](host-service.md)。
+
 ## 1 手动登录 Codex
 
 按 [官方说明](https://learn.chatgpt.com/docs/codex/cli) 安装 CLI。确认 codex --version 可运行，并用 Get-Command codex.exe 查询原生客户端路径。
