@@ -1,5 +1,5 @@
 [plugin]
-config_version = "0.2.0"
+config_version = "0.3.0"
 enabled = true
 
 [service]
@@ -7,7 +7,7 @@ mode = "auto" # New install: embedded MCP. Existing external secret: preserve ex
 
 [codex]
 binary = "" # Detect native executable on PATH; set an absolute path if needed.
-home = "" # Default: ~/.codex-maibot-image; manually log in using login.py.
+home = "" # Reuse CODEX_HOME or ~/.codex. Optional: set a dedicated login directory.
 model = ""
 timeout = 300
 rpc_timeout = 30

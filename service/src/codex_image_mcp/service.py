@@ -88,7 +88,7 @@ class Service:
                 data, mime = await asyncio.to_thread(
                     copy_output,
                     saved_path,
-                    self.cfg.home / "generated_images",
+                    self.driver.output_root,
                     target,
                     self.cfg.max_image_bytes,
                 )

@@ -45,8 +45,9 @@ def envelope(op, args, scope=None):
 def driver_factory(monkeypatch, settings):
     def factory(mode="ok"):
         def rpc(argv, env, timeout):
+            role = "worker" if 'cli_auth_credentials_store="ephemeral"' in argv else "broker"
             return Rpc(
-                [sys.executable, str(Path(__file__).with_name("fake_codex.py")), mode],
+                [sys.executable, str(Path(__file__).with_name("fake_codex.py")), mode, role],
                 env,
                 timeout,
             )

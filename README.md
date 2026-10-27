@@ -4,6 +4,8 @@
 
 在 MaiBot 中通过本机 Codex CLI 使用 ChatGPT 订阅绘图，并将图片发回聊天。内置 MCP 服务随插件自动启动和停止，无需修改 MaiBot 本体。
 
+默认复用已有 Codex 登录，绘图进程使用独立配置；专用登录目录可选。
+
 由 Codex 进行开发。
 
 ## 目前能做到什么
@@ -26,10 +28,10 @@
 ~~~sh
 git clone https://github.com/PargosAks/MaiBot-Codex-Image.git codex_image
 cd codex_image
-python3 login.py --device-auth
+codex login status
 ~~~
 
-使用与运行 MaiBot 相同的系统用户手动完成登录。Windows 可将 python3 换成 python；有浏览器时也可直接运行 `python login.py`。
+使用与运行 MaiBot 相同的系统用户。已有 ChatGPT 登录无需重登；未登录时手动运行 `codex login --device-auth`。也可用 `python3 login.py --status` 检查插件默认读取的目录，Windows 将 python3 换成 python。
 
 也可下载仓库 ZIP，解压为 plugins/codex_image。重启 MaiBot 加载插件，Python 依赖见 _manifest.json 与 requirements.txt，需安装到 MaiBot 实际使用的环境。当前尚未上架插件中心。
 
@@ -46,7 +48,7 @@ python3 login.py --device-auth
 
 ~~~toml
 [plugin]
-config_version = "0.2.0"
+config_version = "0.3.0"
 enabled = true
 
 [service]
@@ -57,7 +59,9 @@ allowed_users = ["qq:123456789"]
 secret = ""
 ~~~
 
-默认登录目录为 `~/.codex-maibot-image`，与日常 Codex 登录目录独立，需要手动登录一次，目录中不要放 config.toml。使用 `python3 login.py --status` 检查登录状态。
+`codex.home` 留空时，优先复用 MaiBot 进程的 `CODEX_HOME`，未设置则使用当前系统用户的 `~/.codex`。已有 config.toml 可以保留，绘图不继承其中的 Provider、MCP、钩子或模型设置。认证读取与刷新交由原 Codex 客户端管理，绘图进程只使用内存中的访问令牌。
+
+可选专用目录：设置 `codex.home = "/你的路径/codex-image-home"`，再运行 `python3 login.py --home "/你的路径/codex-image-home" --device-auth`。之前已在 `~/.codex-maibot-image` 登录的用户，也可把这个路径填入 codex.home 继续使用。
 
 若找不到客户端，设置 `codex.binary` 为原生程序路径，并用 `python3 login.py --binary "客户端路径"` 登录。自定义登录目录时，`login.py --home "目录"` 必须与 `codex.home` 一致。
 
@@ -67,13 +71,13 @@ secret = ""
 
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
-| plugin.config_version | `"0.2.0"` | 配置版本，通常无需修改 |
+| plugin.config_version | `"0.3.0"` | 配置版本，通常无需修改 |
 | plugin.enabled | `true` | 是否启用插件 |
 | service.mode | `"auto"` | auto：密钥为空时使用内置服务，否则沿用外部服务；embedded：强制内置；external：外部服务 |
 | connection.allowed_users | `[]` | 允许使用的用户列表；为空时拒绝所有人 |
 | codex.binary | `""` | 留空从 PATH 检测；也可填写原生 Codex 程序路径，不接受 .cmd / .ps1 |
-| codex.home | `""` | 留空使用 ~/.codex-maibot-image；必须与手动登录目录一致 |
-| codex.model | `""` | 留空使用 Codex 默认模型 |
+| codex.home | `""` | 留空复用 CODEX_HOME 或 ~/.codex；填写路径时使用该目录的登录 |
+| codex.model | `""` | 留空使用隔离绘图客户端默认模型，不继承日常模型设置 |
 | codex.timeout | `300` | 单次绘图超时，单位秒 |
 | codex.rpc_timeout | `30` | Codex RPC 请求超时，单位秒 |
 | connection.poll_seconds | `2` | 任务查询间隔，单位秒 |

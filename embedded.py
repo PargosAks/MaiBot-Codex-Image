@@ -86,9 +86,6 @@ class EmbeddedMCP:
             secret=secret, allowed_users=tuple(users), model=cfg.model,
             timeout=cfg.timeout, rpc_timeout=cfg.rpc_timeout,
         ).validated()
-        if (self.settings.home / "config.toml").exists():
-            raise ValueError("codex.home 必须是专用登录目录，不能包含 config.toml。")
-        self.settings.home.mkdir(parents=True, exist_ok=True, mode=0o700)
 
     async def start(self, cfg, users):
         try:

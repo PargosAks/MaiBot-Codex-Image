@@ -92,8 +92,6 @@ def preflight(instance, runtime):
         manifest = target / "_manifest.json"
         if not manifest.exists() or json.loads(manifest.read_text(encoding="utf-8")).get("id") != PLUGIN_ID:
             raise ValueError("Destination contains a different or unrecognized plugin")
-    if (runtime / "codex-home" / "config.toml").exists():
-        raise ValueError("Dedicated codex-home must not contain config.toml")
     state_path = runtime / "deployment.json"
     previous = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
     if previous and Path(previous["instance"]).resolve() != instance:
@@ -201,13 +199,15 @@ def configure(instance, runtime, binary, allowed, port, grant_command, maibot_ex
         raise ValueError("Existing secret.txt is invalid")
     if (target / "config.toml").exists() and not previous:
         raise ValueError("An existing configured plugin needs its original service directory; refusing to replace its key")
-    settings = {"binary": str(binary), "home": str(runtime / "codex-home"), "state": str(runtime / "state"),
+    service_config = runtime / "service.toml"
+    old_settings = tomllib.loads(service_config.read_text(encoding="utf-8")) if service_config.exists() else {}
+    home = old_settings.get("home") or os.environ.get("CODEX_HOME") or str(Path.home() / ".codex")
+    settings = {"binary": str(binary), "home": home, "state": str(runtime / "state"),
                 "allowed_users": allowed, "host": "127.0.0.1", "port": port, "model": "",
                 "timeout": 300, "rpc_timeout": 30}
-    service_config = runtime / "service.toml"
     if service_config.exists():
         settings = tomllib.loads(service_config.read_text(encoding="utf-8")) | settings
-    plugin = {"plugin": {"config_version": "0.2.0", "enabled": True}, "service": {"mode": "external"},
+    plugin = {"plugin": {"config_version": "0.3.0", "enabled": True}, "service": {"mode": "external"},
               "connection": {"url": f"http://127.0.0.1:{port}/mcp", "secret": secret,
                              "allowed_users": allowed, "poll_seconds": 2, "watch_seconds": 360}}
     botpath = instance / "config/bot_config.toml"
@@ -239,11 +239,10 @@ def configure(instance, runtime, binary, allowed, port, grant_command, maibot_ex
     private_write(target / "config.toml", tomlkit.dumps(plugin))
     if grant_command:
         private_write(botpath, tomlkit.dumps(bot))
-    (runtime / "codex-home").mkdir(exist_ok=True)
-    (runtime / "codex-home").chmod(0o700)
     private_write(runtime / "manage.py", (ROOT / "scripts/manage.py").read_bytes())
     metadata = {"instance": str(instance), "runtime": str(runtime), "binary": str(binary),
-                "port": port, "allowed_users": allowed, "maibot_exe": maibot_exe or previous.get("maibot_exe")}
+                "port": port, "allowed_users": allowed, "auth_home": home,
+                "maibot_exe": maibot_exe or previous.get("maibot_exe")}
     private_write(runtime / "deployment.json", json.dumps(metadata, ensure_ascii=False, indent=2))
     python = runtime / "service/.venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     for stem, command in (("Login-Codex", "login"), ("Start-Service", "start"), ("Check-Installation", "doctor"),

@@ -1,5 +1,14 @@
 # 验证记录
 
+## 0.3.0 登录复用与配置隔离（2026-10-28，Asia/Hong_Kong）
+
+- 48 项自动测试通过，覆盖默认目录优先级、保留专用目录、保留原配置和凭证后端、令牌刷新、账号切换拒绝、运行目录隔离及原有 MCP/发送链路。
+- 本机已有 Codex 0.164.0-alpha.11.1 实测默认登录复用、隔离进程的 chatgptAuthTokens 认证和零额外 MCP 配置，未生成 worker auth.json，没有为验证重新登录。
+- 下载并校验官方 Codex 0.156.1 Windows 完整包，再次验证同样的认证接口；这仅是与 VPS 相同版本的本机兼容检查，Linux VPS 仍由用户部署验收。
+- 使用默认登录仅提交一次真实绘图，得到 completed / completed 的 PNG。此次验证覆盖原生认证和隔离绘图服务，不将它表述为新版完整聊天界面验收。
+- 图片 SHA256：`752c6b1b24d81758be7f4db25edf6408fb6ab44a01175bb551b601269dbc78c0`；原 Codex config.toml 哈希保持不变，绘图运行目录未生成 auth.json。
+- 本次没有发布 GitHub Release；只更新源码、文档和本地构建包。
+
 ## 0.2.0 内置 MCP（2026-10-27，Asia/Hong_Kong）
 
 - 本地 Windows 实例，官方 MaiBot 1.3.15、SDK 2.17.0、Codex CLI 0.164.0-alpha.11.1。

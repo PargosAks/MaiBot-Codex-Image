@@ -1,9 +1,9 @@
 {
   "manifest_version": 2,
   "id": "pargosaks.maibot-codex-image",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "name": "Codex 订阅绘图",
-  "description": "内置并自动管理 MCP 服务，通过手动登录的 Codex 客户端绘图并发回聊天",
+  "description": "内置 MCP 服务，复用已有 Codex 登录并隔离绘图配置，生成图片后发回聊天",
   "author": {"name": "PargosAks / OpenAI Codex", "url": "https://github.com/PargosAks"},
   "urls": {"repository": "https://github.com/PargosAks/MaiBot-Codex-Image", "homepage": "https://github.com/PargosAks/MaiBot-Codex-Image"},
   "license": "MIT",

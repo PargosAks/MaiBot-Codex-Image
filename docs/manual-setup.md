@@ -6,16 +6,14 @@
 
 按 [官方说明](https://learn.chatgpt.com/docs/codex/cli) 安装 CLI。确认 codex --version 可运行，并用 Get-Command codex.exe 查询原生客户端路径。
 
-建立专用登录目录，在 PowerShell 执行：
+默认复用现有登录，在 PowerShell 执行；已经登录则无需再次登录：
 
 ```powershell
-$env:CODEX_HOME = 'D:\MaiBotImageService\codex-home'
-New-Item -ItemType Directory -Force $env:CODEX_HOME
-codex login -c 'cli_auth_credentials_store="file"'
 codex login status
+# 仅未登录时执行：codex login --device-auth
 ```
 
-使用 ChatGPT 订阅账号登录，结果应为 Logged in using ChatGPT。无浏览器时加 --device-auth。当前服务要求专用目录中不含 config.toml；不要复制日常客户端的整套配置和凭证。
+使用 ChatGPT 订阅账号登录，结果应为 Logged in using ChatGPT。服务配置 home 指向该用户的 CODEX_HOME 或 ~/.codex。可选专用目录时，先设置 CODEX_HOME 再手动登录；无需复制凭证或删除 config.toml，绘图配置会单独隔离。
 
 ## 2 准备服务
 
@@ -26,13 +24,13 @@ uv sync --project service --locked --no-dev --python 3.13
 Copy-Item service\config.example.toml 'D:\MaiBotImageService\service.toml'
 ```
 
-修改复制后的 service.toml：binary 填实际 codex.exe 路径，home 填上面的专用登录目录，state 填独立任务目录，allowed_users 填实际平台与用户 ID；model 可留空。Windows TOML 路径建议使用正斜线。
+修改复制后的 service.toml：binary 填实际 codex.exe 路径，home 填现有登录目录，state 填独立任务目录，allowed_users 填实际平台与用户 ID；model 可留空。Windows TOML 路径建议使用正斜线。
 
 例如：
 
 ```toml
 binary = "C:/实际路径/codex.exe"
-home = "D:/MaiBotImageService/codex-home"
+home = "~/.codex"
 state = "D:/MaiBotImageService/state"
 allowed_users = ["qq:123456789"]
 model = ""

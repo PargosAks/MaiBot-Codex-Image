@@ -1,7 +1,9 @@
-"""One owned app-server process per job; no shell, user config, or API-key environment."""
+"""Native auth broker reuses login; an ephemeral-auth worker owns each isolated drawing."""
 
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 import asyncio
+import base64
 import json
 import os
 import signal
@@ -17,6 +19,7 @@ class Rpc:
         self.serial = 0
         self.proc = None
         self.tasks = []
+        self.request_handler = None
 
     async def start(self):
         self.proc = await asyncio.create_subprocess_exec(
@@ -44,15 +47,23 @@ class Rpc:
                 msg = json.loads(line)
                 if "method" in msg:
                     if "id" in msg:
-                        await self.send(
-                            {
-                                "id": msg["id"],
-                                "error": {
-                                    "code": -32601,
-                                    "message": "Client actions are disabled",
-                                },
-                            }
-                        )
+                        if self.request_handler and msg["method"] == "account/chatgptAuthTokens/refresh":
+                            try:
+                                result = await asyncio.wait_for(self.request_handler(msg["params"]), 9)
+                                await self.send({"id": msg["id"], "result": result})
+                            except Exception:
+                                await self.send({"id": msg["id"], "error": {
+                                    "code": -32000, "message": "ChatGPT authentication refresh unavailable"}})
+                        else:
+                            await self.send(
+                                {
+                                    "id": msg["id"],
+                                    "error": {
+                                        "code": -32601,
+                                        "message": "Client actions are disabled",
+                                    },
+                                }
+                            )
                     elif msg["method"] in {"item/completed", "turn/completed", "error"}:
                         self.events.put_nowait(msg)
                 elif msg.get("id") in self.pending:
@@ -113,7 +124,11 @@ class Codex:
     def __init__(self, settings: Settings):
         self.cfg = settings
 
-    def environment(self) -> dict[str, str]:
+    @property
+    def output_root(self) -> Path:
+        return self.cfg.state / "codex-runtime"
+
+    def environment(self, home: Path | None = None) -> dict[str, str]:
         # Keep networking and OS runtime settings, never inherit provider keys or model overrides.
         keep = {
             "PATH",
@@ -129,26 +144,54 @@ class Codex:
             "NO_PROXY",
             "SSL_CERT_FILE",
             "SSL_CERT_DIR",
+            "CODEX_CA_CERTIFICATE",
+            "DBUS_SESSION_BUS_ADDRESS",
+            "XDG_RUNTIME_DIR",
+            "LOCALAPPDATA",
         }
         env = {k: v for k, v in os.environ.items() if k.upper() in keep}
-        env["CODEX_HOME"] = str(self.cfg.home)
+        env["CODEX_HOME"] = str(home or self.cfg.home)
         return env
 
-    async def check_login(self):
-        """Read-only account probe: never creates a thread or starts an inference turn."""
-        if await asyncio.to_thread((self.cfg.home / "config.toml").exists):
-            raise ValueError("codex.home 必须是专用登录目录，不能包含 config.toml。")
-        rpc = Rpc(
-            [self.cfg.binary, "-c", 'cli_auth_credentials_store="file"', "app-server", "--listen", "stdio://"],
-            self.environment(), self.cfg.rpc_timeout,
-        )
+    def broker(self) -> Rpc:
+        # The broker only performs auth RPCs. It never creates a thread or invokes tools.
+        # Leave credential-store configuration to Codex so file and keyring logins both work.
+        return Rpc([self.cfg.binary, "-c", 'model_provider="openai"',
+                    "app-server", "--listen", "stdio://"], self.environment(), self.cfg.rpc_timeout)
+
+    async def initialize(self, rpc: Rpc):
+        await rpc.start()
+        await rpc.call("initialize", {"clientInfo": {"name": "maibot_image_mcp", "version": "0.3.0"},
+                                      "capabilities": {"experimentalApi": True}})
+        await rpc.send({"method": "initialized"})
+
+    async def tokens(self, broker: Rpc, expected_account: str | None = None) -> dict:
+        account = await broker.call("account/read", {"refreshToken": False})
+        if (account.get("account") or {}).get("type") != "chatgpt":
+            raise ValueError("未找到 ChatGPT 登录。请使用运行 MaiBot 的系统用户手动登录（codex login）；可选目录需与 codex.home 一致。")
+        # Native Codex owns refresh and persistence in the original file/keyring store.
+        auth = await broker.call("getAuthStatus", {"includeToken": True, "refreshToken": True})
+        token = auth.get("authToken")
+        if auth.get("authMethod") not in {"chatgpt", "chatgptAuthTokens"} or not isinstance(token, str):
+            raise ValueError("Codex 未能提供 ChatGPT 登录，请检查客户端版本并重新登录。")
         try:
-            await rpc.start()
-            await rpc.call("initialize", {"clientInfo": {"name": "maibot_image_check", "version": "0.2.0"}})
-            await rpc.send({"method": "initialized"})
-            account = await rpc.call("account/read", {"refreshToken": False})
-            if (account.get("account") or {}).get("type") != "chatgpt":
-                raise ValueError("请先用 login.py 手动登录 ChatGPT 账号；登录目录需与 codex.home 一致。")
+            payload = token.split(".")[1]
+            claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+            identity = claims["https://api.openai.com/auth"]["chatgpt_account_id"]
+            if not isinstance(identity, str) or not identity:
+                raise ValueError
+        except (IndexError, KeyError, ValueError, TypeError) as exc:
+            raise ValueError("Codex 返回的 ChatGPT 账号信息无效。") from exc
+        if expected_account is not None and identity != expected_account:
+            raise ValueError("绘图期间登录账号发生变化，请查询原任务；不会自动切换账号重画。")
+        return {"accessToken": token, "chatgptAccountId": identity}
+
+    async def check_login(self):
+        """Non-inference account probe; native Codex may refresh its existing login."""
+        rpc = self.broker()
+        try:
+            await self.initialize(rpc)
+            await self.tokens(rpc)
         except (OSError, ConnectionError, RuntimeError, TimeoutError) as exc:
             raise ValueError("Codex 客户端或登录检查失败，请检查客户端版本、登录状态和网络。") from exc
         finally:
@@ -160,16 +203,22 @@ class Codex:
         on_ids: Callable[..., Awaitable],
         on_image: Callable[[str], Awaitable],
     ) -> str:
-        # A dedicated auth-only home avoids loading an operator's MCP servers, hooks and providers.
-        if await asyncio.to_thread((self.cfg.home / "config.toml").exists):
-            raise ValueError("CODEX_HOME_MUST_BE_AUTH_ONLY")
         work = self.cfg.state / "work" / job["id"]
         await asyncio.to_thread(work.mkdir, parents=True, exist_ok=True)
+        runtime_home = self.output_root / job["id"]
+        await asyncio.to_thread(runtime_home.mkdir, parents=True, exist_ok=True, mode=0o700)
+        if await asyncio.to_thread((runtime_home / "config.toml").exists):
+            raise ValueError("绘图运行目录中出现未知 config.toml，请检查插件数据。")
         rpc = Rpc(
             [
                 self.cfg.binary,
                 "-c",
-                'cli_auth_credentials_store="file"',
+                'cli_auth_credentials_store="ephemeral"',
+                "-c", 'model_provider="openai"',
+                "-c", "features.hooks=false",
+                "-c", "features.plugins=false",
+                "-c", "features.apps=false",
+                "-c", "project_doc_max_bytes=0",
                 "-c",
                 "features.shell_tool=false",
                 "-c",
@@ -178,20 +227,24 @@ class Codex:
                 "--listen",
                 "stdio://",
             ],
-            self.environment(),
+            self.environment(runtime_home),
             self.cfg.rpc_timeout,
         )
         thread = turn = None
+        broker = self.broker()
         try:
-            await rpc.start()
-            await rpc.call(
-                "initialize",
-                {"clientInfo": {"name": "maibot_image_mcp", "version": "0.1.0"}},
-            )
-            await rpc.send({"method": "initialized"})
-            account = await rpc.call("account/read", {"refreshToken": False})
-            if (account.get("account") or {}).get("type") != "chatgpt":
-                raise ValueError("CHATGPT_LOGIN_REQUIRED")
+            await self.initialize(broker)
+            tokens = await self.tokens(broker)
+
+            async def refresh(params):
+                previous = params.get("previousAccountId")
+                if previous is not None and previous != tokens["chatgptAccountId"]:
+                    raise ValueError("AUTH_ACCOUNT_CHANGED")
+                return await self.tokens(broker, tokens["chatgptAccountId"])
+
+            rpc.request_handler = refresh
+            await self.initialize(rpc)
+            await rpc.call("account/login/start", {"type": "chatgptAuthTokens", **tokens})
             params = {
                 "cwd": str(work),
                 "approvalPolicy": "never",
@@ -249,4 +302,7 @@ class Codex:
                     pass
             raise
         finally:
-            await rpc.close()
+            try:
+                await rpc.close()
+            finally:
+                await broker.close()

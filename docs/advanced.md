@@ -8,13 +8,23 @@
 
 内部共享密钥只在首次启动创建，后续保留；同一数据目录使用操作系统文件锁拒绝重复实例。插件源码更新不会替换任务和发送数据库。运行数据默认位于 `data/plugins/pargosaks.maibot-codex-image`，以实际 Host 分配路径为准。内置任务在 embedded/state，发送日志仍为 delivery.sqlite3。
 
-专用 Codex 登录目录默认 `~/.codex-maibot-image`，可通过 codex.home 配置。需由运行 MaiBot 的同一用户手动登录。切换外部模式或登录目录不会自动搬迁历史任务、图片或凭证。
+0.3.0 起，codex.home 留空时，优先使用 MaiBot 进程的 CODEX_HOME，否则使用当前用户的 ~/.codex。也可配置专用目录。必须由运行 MaiBot 的同一系统用户登录，容器内外、root 与普通用户的默认登录彼此独立。旧用户可显式保留 ~/.codex-maibot-image；切换目录不会搬迁凭证或历史任务。
+
+## 登录复用与绘图隔离
+
+原生 Codex 认证进程使用所选登录目录，仅读取账号与刷新访问令牌，不创建线程、不发起绘图或调用工具。它沿用原凭证后端（文件或 keyring），插件不读取或复制 auth.json，不写回用户 config.toml。
+
+每个任务另起隔离的绘图进程，CODEX_HOME 位于插件 state/codex-runtime/任务编号；使用官方实验性 chatgptAuthTokens 接口和 ephemeral 凭证存储。短期访问令牌只通过本机标准输入传递，不放进命令行、日志或配置。需要刷新时由认证进程处理；若账号已变化则拒绝继续，不自动切换账号重画。
+
+绘图运行目录没有日常用户配置，显式使用 OpenAI Provider，并关闭钩子、插件、Apps、Shell 工具与网页搜索，关闭项目文档注入。系统或组织管理的要求仍由 Codex 执行。运行缓存与图片可以落盘，但不应生成 auth.json；这些数据保存在被打包白名单排除的运行目录。
+
+本方案需要客户端支持 getAuthStatus 和实验性 chatgptAuthTokens；若认证检查不通过，先检查客户端版本和 ChatGPT 登录。它不接受 API Key 作为订阅绘图认证。
 
 ## 外部服务
 
-服务配置中的 binary 指向 Codex 原生程序，home 是本服务专用登录目录，state 保存 SQLite 任务与图片。两端的随机共享密钥、允许用户和访问地址必须匹配。
+服务配置中的 binary 指向 Codex 原生程序，home 选择已有登录目录，state 保存 SQLite 任务与图片。外部模式同样使用认证复用与绘图隔离。两端的随机共享密钥、允许用户和访问地址必须匹配。
 
-Codex 专用 home 不应含 config.toml，以免加载其他模型 Provider、MCP 和工具。登录命令的 cli_auth_credentials_store 参数只作用于当前调用，不需要保存到配置文件。
+可选安装器新部署默认选取现有 CODEX_HOME 或 ~/.codex；更新部署时保留原服务配置中的 home。生成的登录助手会使用这一目录，不强制改成文件存储。
 
 MCP 默认只监听 127.0.0.1。跨容器或跨机器部署时，需要设置受限内网和正确的 host、插件 url；服务的 MCP Host 检查需要访问地址与监听配置一致。跨不可信网络应配置 TLS，密钥不能放在 URL 查询参数中。
 

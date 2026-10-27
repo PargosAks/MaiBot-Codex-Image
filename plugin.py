@@ -14,7 +14,7 @@ from .embedded import EmbeddedMCP
 
 
 class PluginSection(PluginConfigBase):
-    config_version: str = "0.2.0"
+    config_version: str = "0.3.0"
     enabled: bool = True
 
 
@@ -40,7 +40,7 @@ class ServiceConfig(PluginConfigBase):
 
 class CodexConfig(PluginConfigBase):
     binary: str = Field(default="", description="Codex 原生程序路径；留空自动从 PATH 检测")
-    home: str = Field(default="", description="专用登录目录；留空为当前用户 ~/.codex-maibot-image")
+    home: str = Field(default="", description="登录目录；留空复用 CODEX_HOME 或当前用户 ~/.codex；可填专用目录")
     model: str = Field(default="", description="留空使用 Codex 默认模型")
     timeout: float = Field(default=300, ge=10, le=1800)
     rpc_timeout: float = Field(default=30, ge=1, le=120)

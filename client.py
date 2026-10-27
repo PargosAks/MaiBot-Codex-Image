@@ -7,7 +7,8 @@ import shutil
 
 
 def auth_home(value: str = "") -> Path:
-    return Path(value).expanduser().resolve() if value else Path.home() / ".codex-maibot-image"
+    selected = value or os.environ.get("CODEX_HOME") or str(Path.home() / ".codex")
+    return Path(selected).expanduser().resolve()
 
 
 def find_codex(value: str = "") -> str:

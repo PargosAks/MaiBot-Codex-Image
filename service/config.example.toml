@@ -1,6 +1,6 @@
-# Copy to config.toml (ignored). Use an auth-only CODEX_HOME for this service.
+# Copy to service.toml (ignored). home selects an existing Codex login; config is isolated for drawing.
 binary = "/home/maibot-image/.local/bin/codex"
-home = "/var/lib/maibot-image/codex-home"
+home = "~/.codex" # Or a dedicated login directory; use the MaiBot service user's home.
 state = "/var/lib/maibot-image/state"
 allowed_users = ["qq:YOUR_USER_ID"]
 model = ""

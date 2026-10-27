@@ -15,12 +15,12 @@ def main():
     root = Path(__file__).resolve().parent
     state = json.loads((root / "deployment.json").read_text(encoding="utf-8"))
     env = dict(os.environ)
-    env["CODEX_HOME"] = str(root / "codex-home")
+    env["CODEX_HOME"] = state.get("auth_home", str(root / "codex-home"))
     env["PYTHONUTF8"] = "1"
     for key in ("OPENAI_API_KEY", "OPENAI_ACCESS_TOKEN", "CODEX_ACCESS_TOKEN"):
         env.pop(key, None)
     if args.command in {"login", "login-status"}:
-        command = [state["binary"], "login", "-c", 'cli_auth_credentials_store="file"']
+        command = [state["binary"], "login"]
         if args.command == "login-status":
             command.append("status")
         elif args.device_auth:
@@ -33,25 +33,14 @@ def main():
         return subprocess.call([state["maibot_exe"], "run", "--directory", state["instance"]], env=env)
     secret = (root / "secret.txt").read_text(encoding="utf-8").strip()
     env["CODEX_IMAGE_SECRET"] = secret
-    from codex_image_mcp.codex import Codex, Rpc
+    from codex_image_mcp.codex import Codex
     from codex_image_mcp.config import Settings
     os.environ["CODEX_IMAGE_SECRET"] = secret
     settings = Settings.load(root / "service.toml")
 
     async def check():
-        if (settings.home / "config.toml").exists():
-            raise ValueError("Dedicated CODEX_HOME contains config.toml; use an auth-only home")
         driver = Codex(settings)
-        rpc = Rpc([settings.binary, "app-server", "--listen", "stdio://"], driver.environment(), settings.rpc_timeout)
-        try:
-            await rpc.start()
-            await rpc.call("initialize", {"clientInfo": {"name": "maibot_image_setup_check", "version": "0.1.0"}})
-            await rpc.send({"method": "initialized"})
-            account = await rpc.call("account/read", {"refreshToken": False})
-            if (account.get("account") or {}).get("type") != "chatgpt":
-                raise ValueError("ChatGPT login required. Run Login-Codex first; no API key is accepted.")
-        finally:
-            await rpc.close()
+        await driver.check_login()
     try:
         asyncio.run(check())
     except Exception as exc:

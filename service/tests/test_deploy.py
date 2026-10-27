@@ -36,12 +36,19 @@ def test_configuration_is_scoped_and_repeatable(instance, tmp_path):
     binary.write_bytes(b"unused")
     deploy.configure(instance, runtime, binary, ["qq:123"], 18765, True)
     first = (runtime / "secret.txt").read_bytes()
-    (runtime / "codex-home/auth.json").write_text('{"test":"credential-preserved"}', encoding="utf-8")
+    auth = tmp_path / "custom-auth"
+    auth.mkdir()
+    (auth / "auth.json").write_text('{"test":"credential-preserved"}', encoding="utf-8")
+    # Existing deployments keep their explicitly configured login home across upgrades.
+    service_path = runtime / "service.toml"
+    service_path.write_text(service_path.read_text(encoding="utf-8").replace(
+        next(line for line in service_path.read_text(encoding="utf-8").splitlines() if line.startswith("home =")),
+        "home = " + json.dumps(str(auth))), encoding="utf-8")
     (runtime / "state").mkdir()
     (runtime / "state/important-job").write_bytes(b"never replay or delete")
     deploy.configure(instance, runtime, binary, ["qq:123"], 18765, True)
     assert (runtime / "secret.txt").read_bytes() == first
-    assert (runtime / "codex-home/auth.json").read_text() == '{"test":"credential-preserved"}'
+    assert (auth / "auth.json").read_text() == '{"test":"credential-preserved"}'
     assert (runtime / "state/important-job").read_bytes() == b"never replay or delete"
     assert (instance / "core.py").read_bytes() == b"UNMODIFIED CORE"
     assert (instance / "config/model_config.toml").read_text() == "# preserve model settings\n"
@@ -54,6 +61,7 @@ def test_configuration_is_scoped_and_repeatable(instance, tmp_path):
     service = tomllib.loads((runtime / "service.toml").read_text(encoding="utf-8"))
     plugin = tomllib.loads((instance / "plugins/codex_image/config.toml").read_text(encoding="utf-8"))
     assert service["allowed_users"] == plugin["connection"]["allowed_users"] == ["qq:123"]
+    assert service["home"] == str(auth)
     assert plugin["connection"]["secret"].encode() == first.strip()
     assert (runtime / "backups").is_dir()
 

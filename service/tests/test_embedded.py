@@ -27,7 +27,10 @@ def fake_embedded(monkeypatch):
 
     class RecordedRpc(Rpc):
         def __init__(self, argv, env, timeout):
-            super().__init__([sys.executable, str(Path(__file__).with_name("fake_codex.py")), mode[0]], env, timeout)
+            role = "worker" if 'cli_auth_credentials_store="ephemeral"' in argv else "broker"
+            super().__init__([sys.executable, str(Path(__file__).with_name("fake_codex.py")), mode[0], role], env, timeout)
+            self.requested_argv = argv
+            self.role = role
             processes.append(self)
 
         async def call(self, method, params):
@@ -82,7 +85,7 @@ async def test_embedded_lifecycle_diagnostic_and_real_transport(tmp_path, fake_e
             assert (await http.post(plugin.bridge.url, json={})).status_code == 401
         diagnostic = await plugin.command(**command("画图诊断"))
         assert diagnostic[0] and "登录有效" in diagnostic[1]
-        assert fake_embedded.calls == ["initialize", "account/read"]
+        assert fake_embedded.calls == ["initialize", "account/read", "getAuthStatus"]
         result = await plugin.command(**command("画图", arg="a green circle"))
         assert result[0], result
         await asyncio.wait_for(asyncio.gather(*list(plugin.watchers.values())), 10)

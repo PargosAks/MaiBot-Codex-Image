@@ -32,7 +32,7 @@ class Settings:
             )
         if self.max_queue < 1 or self.timeout <= 0 or self.rpc_timeout <= 0:
             raise ValueError("Invalid queue or timeout settings")
-        object.__setattr__(self, "home", Path(self.home).resolve())
+        object.__setattr__(self, "home", Path(self.home).expanduser().resolve())
         object.__setattr__(self, "state", Path(self.state).resolve())
         object.__setattr__(self, "allowed_users", tuple(self.allowed_users))
         return self
