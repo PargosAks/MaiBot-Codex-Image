@@ -93,7 +93,7 @@ uv run --project service --no-dev codex-image-mcp --config "$PWD/service.toml"
 
 也可不设置 `CODEX_IMAGE_SECRET`，改设 `CODEX_IMAGE_SECRET_FILE` 为该密钥文件的绝对路径。两者同时存在时，直接密钥变量优先，空值也不会回退到文件。密钥文件应为 UTF-8，不能把密钥本身填进文件路径变量。
 
-前台关闭即停止服务。正式运行可交给已有进程管理器，保持相同的系统用户、配置绝对路径、登录目录和密钥环境变量。每个 `state` 目录只启动一个服务实例；MaiBot 或容器重启不会代为启动宿主机 MCP。
+前台关闭即停止服务。后台运行和开机自启见 [systemd 配置](#7-systemd-后台运行与开机自启)。每个 `state` 目录只启动一个服务实例；MaiBot 或容器重启不会代为启动宿主机 MCP。
 
 ## 5. 配对插件
 
@@ -128,4 +128,149 @@ docker exec maibot python3 -c 'import http.client; c=http.client.HTTPConnection(
 
 返回 `401` 仅说明有可达的鉴权端点拒绝了未认证请求；Bearer 校验先于 MCP Host 检查，因此这还不能证明 Host 匹配、签名请求、登录或绘图成功。连接拒绝时检查服务和监听地址；超时检查网络与防火墙；带认证的请求出现 `403` 时核对 URL 的 Host 与监听配置。
 
-本文是部署操作指南。Docker / VPS 网络及 0.4.0 真实绘图仍需在目标环境验收，本次文档更新未执行这些验证。历史事实见 [验证记录](validation.md)。
+## 7. systemd 后台运行与开机自启
+
+先完成前面的配置与手动测试。本节以普通 Linux systemd、root 用户、仓库位于 `/opt/maibot-codex-image-host` 为例，复用现有 `service.toml`、`secret.txt` 和任务目录，不重新生成密钥。
+
+若前面使用的是 `~/maibot-codex-image-host`，将本节所有服务目录替换为实际绝对路径，不必搬迁仓库或数据。若用其他系统用户登录 Codex，服务 `User`、`Group`、`HOME`、`PATH` 及文件访问权限也要对应调整。Docker 启动顺序配置适用于系统级 Docker；不直接套用 rootless Docker。
+
+### 7.1 停止前台实例，固定程序与登录目录
+
+先等待正在绘图的任务结束，在原前台窗口按 `Ctrl+C`。不要让前台实例和 systemd 同时使用同一个 `state`。
+
+使用已登录 Codex 的 root 用户执行：
+
+```sh
+cd /opt/maibot-codex-image-host
+uv sync --project service --locked --no-dev --python 3.13
+
+unset CODEX_IMAGE_SECRET
+export CODEX_IMAGE_SECRET_FILE="$PWD/secret.txt"
+
+uv run --project service --locked --no-dev python - <<'PY'
+import json
+from pathlib import Path
+from codex_image_mcp.config import Settings
+
+settings = Settings.load(Path("service.toml"))
+print("binary = " + json.dumps(settings.binary))
+print("home = " + json.dumps(str(settings.home)))
+PY
+```
+
+这只解析配置并显示路径，不登录或生成图片。编辑 `service.toml`，将 `binary`、`home` 替换成输出的绝对路径，保留其他字段；不要重复添加同名字段。这样 npm/nvm 安装的 Codex 和专用登录目录也不依赖 SSH 终端的 PATH 或 CODEX_HOME。
+
+```sh
+nano service.toml
+chmod 600 secret.txt service.toml
+```
+
+### 7.2 创建服务文件
+
+在同一个 SSH 窗口获取 uv 的实际路径，确认最后一行检查成功后继续：
+
+```sh
+UV_BIN="$(command -v uv)"
+printf 'uv 路径：%s\n' "$UV_BIN"
+test -n "$UV_BIN" && test -x "$UV_BIN"
+```
+
+`UV_BIN` 应为绝对可执行文件路径，例如 `/root/.local/bin/uv`，不能是 shell 别名或函数。下面未加引号的 `EOF` 会在创建文件时把该路径写入 `ExecStart`；systemd 无需继承这个 shell 变量。
+
+已有同名服务时先备份，然后写入配置：
+
+```sh
+if [ -f /etc/systemd/system/maibot-codex-image.service ]; then
+  cp -a /etc/systemd/system/maibot-codex-image.service \
+    "/etc/systemd/system/maibot-codex-image.service.bak.$(date +%Y%m%d-%H%M%S)"
+fi
+
+cat > /etc/systemd/system/maibot-codex-image.service <<EOF
+[Unit]
+Description=MaiBot Codex Image MCP Service
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/maibot-codex-image-host
+
+Environment="HOME=/root"
+Environment="PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+Environment="CODEX_IMAGE_SECRET_FILE=/opt/maibot-codex-image-host/secret.txt"
+UnsetEnvironment=CODEX_IMAGE_SECRET
+
+ExecStart="$UV_BIN" run --project /opt/maibot-codex-image-host/service --locked --no-dev codex-image-mcp --config /opt/maibot-codex-image-host/service.toml
+
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=90
+KillMode=mixed
+UMask=0077
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+- `CODEX_IMAGE_SECRET_FILE` 只记录密钥文件路径，不把密钥正文写进服务文件；`UnsetEnvironment` 避免旧的直接密钥变量覆盖它。
+- `Restart=on-failure` 在异常退出后等待 5 秒重启；手动 `systemctl stop` 不触发自动重启。
+- `KillMode=mixed` 先通知主进程停止，uv 在 Unix 下转发停止信号，最多等待 90 秒后清理剩余进程。
+- `After` 规定启动顺序，不保证 Docker 网关或 Codex 已经可用。网关尚未建立时查看失败日志；服务异常退出会按重启策略再尝试。
+
+若 MaiBot 直接部署且不使用 Docker，删除 `Wants`、`After` 中的 `docker.service`，保留 `network-online.target`。如果前台运行依赖代理或自定义 CA 环境变量，也需在服务中显式配置实际值；systemd 不会自动继承 SSH 会话环境，不要把含凭据的值贴到公开日志。
+
+### 7.3 检查并启用开机自启
+
+先检查配置；若报错，修正后再启动：
+
+```sh
+systemd-analyze verify /etc/systemd/system/maibot-codex-image.service
+```
+
+检查通过后执行：
+
+```sh
+systemctl daemon-reload
+systemctl enable --now maibot-codex-image.service
+systemctl status maibot-codex-image.service --no-pager -l
+systemctl is-active maibot-codex-image.service
+systemctl is-enabled maibot-codex-image.service
+```
+
+后两项预期分别为 `active`、`enabled`。此后断开 SSH 不会停止服务。无需为配置自启立即重启 VPS；真实开机恢复需在下次重启后检查，不能仅凭 `enabled` 视为已验证。
+
+### 7.4 日志与日常管理
+
+```sh
+# 实时日志；Ctrl+C 只退出日志查看。
+journalctl -u maibot-codex-image.service -f
+
+# 最近 100 行。
+journalctl -u maibot-codex-image.service -n 100 --no-pager
+
+# 按需执行其中一条。
+systemctl restart maibot-codex-image.service
+systemctl stop maibot-codex-image.service
+systemctl start maibot-codex-image.service
+```
+
+修改 systemd 服务文件后，先 `systemctl daemon-reload` 再重启服务。只修改 `service.toml` 或密钥文件内容时重启服务即可；两端共享密钥必须保持一致。
+
+取消开机自启并停止，不删除配置、登录或任务：
+
+```sh
+systemctl disable --now maibot-codex-image.service
+```
+
+切换或重启服务尽量选在没有绘图进行时；结果未知的任务不会自动重画。`active` 仅表示进程运行，还需按第 6 节检查 `/画图诊断` 和实际聊天收图。
+
+systemd 行为参考：[服务与重启策略](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html)、[执行环境](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html)、[进程停止方式](https://www.freedesktop.org/software/systemd/man/latest/systemd.kill.html)、[uv 信号处理](https://docs.astral.sh/uv/concepts/projects/run/#signal-handling)。
+
+本文是部署操作指南。systemd 配置仅做本地静态核对，未在 VPS 执行启动或重启验证。Docker / VPS 网络、目标环境真实绘图与开机恢复仍需分别验收。历史事实见 [验证记录](validation.md)。
