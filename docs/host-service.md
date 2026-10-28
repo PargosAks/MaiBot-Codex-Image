@@ -1,34 +1,34 @@
-# ���������� MCP ����Linux / Docker��
+# 宿主机独立 MCP 部署（Linux / Docker）
 
-�״ΰ�װ���ȿ� [���˿��ٿ�ʼ](quickstart.md)������Դ��Ž����Ŀ¼����������ִ�� `bash setup.sh`��Linux root Ĭ������ systemd������밲װ����Ϊ 0.6.3������������Ϊ 0.5.0����������������������� MCP���ű���Ҫ�������û���װ�ú��� MaiBot ���������ð����������µ� 1��7 ���ǿ�ѡ���ֶ����𼰾ɷ��벼�ֹ������̣��������û��ıؾ����衣���߲��Զ���¼������ MaiBot ��Ȩ��������� WebUI ��Ȩ�����ء����� Release������ VPS ��ȷ������������������Docker ��ͨ����ʵ��ͼ��ͼ�Դ���֤��Windows �� [�ֶ�ָ��](manual-setup.md)��
+首次安装优先看 [新人快速开始](quickstart.md)：完整源码放进插件目录，在宿主机执行 `bash setup.sh`，Linux root 默认设置 systemd。插件与安装工具为 0.6.3，独立服务仍为 0.5.0；仅插件升级无需重启兼容 MCP。脚本不要求允许用户，装好后在 MaiBot 插件面板设置白名单。以下第 1～7 节是可选的手动部署及旧分离布局管理流程，不是新用户的必经步骤。工具不自动登录、不改 MaiBot 授权，最后仍需 WebUI 授权与重载。尚无 Release；本次 VPS 已确认宿主机服务启动，Docker 连通与真实绘图收图仍待验证。Windows 见 [手动指南](manual-setup.md)。
 
-**���� `setup.sh` ��װ���û���Ҫ�յ� 3��4��7 ���������á���Կ�򸲸Ƿ����ļ���** Linux root �°�װĬ��ʹ������·�������а�װ�� `--data-dir` ָ����Ŀ¼ʱ����ԭ����Ϊ׼��
+**已用 `setup.sh` 安装的用户不要照第 3、4、7 节另建配置、密钥或覆盖服务文件。** Linux root 新安装默认使用以下路径；已有安装或 `--data-dir` 指定过目录时，以原配置为准：
 
-| ���� | `setup.sh` Ĭ�ϲ��� |
+| 内容 | `setup.sh` 默认布局 |
 | --- | --- |
-| Դ�� | MaiBot ʵ�ʲ��Ŀ¼������ VPS Ϊ `/opt/maibot/plugins/codex_image` |
-| �������á���Կ | `/var/lib/maibot-codex-image/service.toml`��`secret.txt` |
-| ������ͼƬ | `/var/lib/maibot-codex-image/runtime/state` |
-| ���񻷾� | `/var/lib/maibot-codex-image/venv` |
-| ���ɵ� unit / �Ѱ�װ�� unit | `/var/lib/maibot-codex-image/runtime/maibot-codex-image.service` / `/etc/systemd/system/maibot-codex-image.service` |
+| 源码 | MaiBot 实际插件目录；本次 VPS 为 `/opt/maibot/plugins/codex_image` |
+| 服务配置、密钥 | `/var/lib/maibot-codex-image/service.toml`、`secret.txt` |
+| 任务与图片 | `/var/lib/maibot-codex-image/runtime/state` |
+| 服务环境 | `/var/lib/maibot-codex-image/venv` |
+| 生成的 unit / 已安装的 unit | `/var/lib/maibot-codex-image/runtime/maibot-codex-image.service` / `/etc/systemd/system/maibot-codex-image.service` |
 
-������������� [����״̬����־](#����������״̬����־)���������ɷ��ʶ�������ʱ�� [Docker �������ӳ�ʱ](#docker-�������ӳ�ʱ)��root ������uv `.lock`��systemd ��װ����QQ ��Ȩ��δ֪����Ĵ����� [�����Ų�](troubleshooting.md)��
+服务运行问题见 [服务状态与日志](#宿主机服务状态与日志)，宿主机可访问而容器超时见 [Docker 容器连接超时](#docker-容器连接超时)。root 属主、uv `.lock`、systemd 安装错误、QQ 授权及未知任务的处理见 [故障排查](troubleshooting.md)。
 
-0.5.0 �������û����ڲ�� `connection.allowed_users` ���ã�������ά������������ `service.toml` �� `allowed_users` ��ȡʱ�ᾯ�沢���ԣ�����ɾ�����������У�� Bearer��HMAC����Ч�ڡ�scope �������������������Կ���÷���Ϊ���š�
+0.5.0 的允许用户仅在插件 `connection.allowed_users` 配置；服务不再维护白名单。旧 `service.toml` 的 `allowed_users` 读取时会警告并忽略，建议删除旧项。服务仍校验 Bearer、HMAC、有效期、scope 完整性与任务归属，持钥调用方视为可信。
 
-0.4.0 ͳһʹ�� external-only �ܹ���MaiBot ����ֱ�Ӳ����������� Docker �У���������ӵ������е������� `service/`��
+0.4.0 统一使用 external-only 架构。MaiBot 无论直接部署还是运行在 Docker 中，插件都连接单独运行的宿主机 `service/`：
 
 ```text
-MaiBot ��� �� ������ MCP ���� �� ������ Codex
+MaiBot 插件 → 宿主机 MCP 服务 → 宿主机 Codex
 ```
 
-���������� Codex ��¼�������ͼƬ�����ͨ�� MCP ȡ��ͼƬ�����蹲��ͼƬĿ¼�������޸� MaiBot ���塢Dockerfile��Compose������Ҳ������ MaiBot ������װ Codex������ƾ֤������ Docker ����Ȩ�ޡ�
+宿主机负责 Codex 登录、任务和图片；插件通过 MCP 取回图片，无需共享图片目录。无需修改 MaiBot 本体、Dockerfile、Compose、镜像，也无需在 MaiBot 容器安装 Codex、挂载凭证或授予 Docker 控制权限。
 
-����Ϊ�ֶ����벼�ֵ��°�װʾ����Ŀ¼��ʵ���û���Ȩ�޵���������ʾ�������ú���Կ�����ֶ��ֿ��ڣ����ϱ��� `setup.sh` Ĭ������Ŀ¼��ͬ������ʱ�ȿ� [Ǩ��˵��](advanced.md#�Ӿɰ汾Ǩ��)����Ҫ����ԭ�������á���Կ�����ݡ�
+以下为手动分离布局的新安装示例，目录按实际用户的权限调整。这套示例把配置和密钥放在手动仓库内，与上表的 `setup.sh` 默认数据目录不同。升级时先看 [迁移说明](advanced.md#从旧版本迁移)，不要覆盖原服务配置、密钥或数据。
 
-## 1. ׼��Դ�루�ֶ����벼�֣�
+## 1. 准备源码（手动分离布局）
 
-��������Ҫ Git��uv��Python 3.12+ ���Ѱ�װ�Ĺٷ� Codex CLI��ʹ�üƻ����� MCP ��ϵͳ�û�ִ�У�
+宿主机需要 Git、uv、Python 3.12+ 和已安装的官方 Codex CLI。使用计划运行 MCP 的系统用户执行：
 
 ```sh
 git clone https://github.com/PargosAks/MaiBot-Codex-Image.git ~/maibot-codex-image-host
@@ -37,63 +37,63 @@ uv sync --project service --no-dev
 codex login status
 ```
 
-���� ChatGPT ��¼�������µ�¼��δ��¼ʱ�ֶ�ִ�� `codex login --device-auth`���������õ� `home` ����ʱ��������û���ǰ�� `CODEX_HOME`��δ����ʱʹ�� `~/.codex`��������ƾ֤����ɾ���ճ� Codex ���ã�ר�õ�¼Ŀ¼��ѡ��
+已有 ChatGPT 登录无需重新登录；未登录时手动执行 `codex login --device-auth`。服务配置的 `home` 留空时复用这个用户当前的 `CODEX_HOME`，未设置时使用 `~/.codex`。不复制凭证，不删除日常 Codex 配置；专用登录目录可选。
 
-�� MaiBot ʵ��ʹ�õĲ���־û�Ŀ¼���а�װ�����
+在 MaiBot 实际使用的插件持久化目录另行安装插件：
 
 ```sh
-git clone https://github.com/PargosAks/MaiBot-Codex-Image.git /���MaiBotʵ��/plugins/codex_image
+git clone https://github.com/PargosAks/MaiBot-Codex-Image.git /你的MaiBot实例/plugins/codex_image
 ```
 
-��Ŀ¼����ͨ�����л��ƹ� MaiBot ���֣���Ҫ��������������Ŀ¼��¡��ͼٶ���������ء������������װ�� MaiBot ʵ��ʹ�õĻ������������ֿ��Ŀ¼ `_manifest.json` �� `requirements.txt`��
+该目录须已通过现有机制供 MaiBot 发现；不要仅在宿主机任意目录克隆后就假定容器会加载。将插件依赖安装到 MaiBot 实际使用的环境，声明见仓库根目录 `_manifest.json` 和 `requirements.txt`。
 
-ֱ�Ӳ���� MaiBot ���� MCP ��ͬ�����ֿ�ɱ������û����ʣ���ʡ�Եڶ��ݲֿ⣬���� `plugins/codex_image/service/`���Ե�������������������Ӧ����Դ��Ŀ¼�⣬����Դ�벻�������������ݱ��ݡ�
+直接部署的 MaiBot 若与 MCP 在同机、仓库可被服务用户访问，可省略第二份仓库，复用 `plugins/codex_image/service/`，仍单独启动服务。运行数据应放在源码目录外，更新源码不会替代服务的数据备份。
 
-## 2. ѡ�����ɴ�ļ�����ַ
+## 2. 选择插件可达的监听地址
 
-MaiBot ֱ�������������������������� host ����ʱ������ʹ�� `127.0.0.1`��
+MaiBot 直接运行在宿主机，或容器已有 host 网络时，可以使用 `127.0.0.1`。
 
-Linux Docker Engine bridge �����£���ֻ���鿴ʵ��������������Ϣ��`maibot` �滻Ϊ��������
+Linux Docker Engine bridge 网络下，先只读查看实际容器的网络信息，`maibot` 替换为容器名：
 
 ```sh
 docker inspect --type=container maibot --format '{{json .NetworkSettings.Networks}}'
 ```
 
-ѡȡ������ʵ����������������� `Gateway`������ `172.18.0.1`��**����� `host` ���� URL ��ʹ��ͬһ��ʵ�� Gateway ��ַ�Ͷ˿ڡ�** ��Ҫ�ճ�ʾ�� IP����Ҫ�������� `127.0.0.1` ������������
+选取该容器实际连接网络的宿主机 `Gateway`，例如 `172.18.0.1`。**服务的 `host` 与插件 URL 均使用同一个实际 Gateway 地址和端口。** 不要照抄示例 IP，不要把容器内 `127.0.0.1` 当作宿主机。
 
-��ǰ�����У�� HTTP Host����������Ϊ `0.0.0.0` ������������ͨ������ IP ���������ʡ�����ָ��ֱ�Ӱ�ѡ�� Gateway����ʹ���������� Host ƥ�䡣����Ҫ����ǽ���У����Ƚ�������ǰ MaiBot ���� IP ���ʸ� Gateway �ķ���˿ڣ��� [Docker �������ӳ�ʱ](#docker-�������ӳ�ʱ)������˿�ӳ��򿪷Ź����˿ڣ����������ص�ַ�²�������
+当前服务会校验 HTTP Host：将监听改为 `0.0.0.0` 并不等于允许通过任意 IP 或域名访问。按本指南直接绑定选定 Gateway，可使监听与请求 Host 匹配。若需要防火墙放行，优先仅允许当前 MaiBot 容器 IP 访问该 Gateway 的服务端口，见 [Docker 容器连接超时](#docker-容器连接超时)；无需端口映射或开放公网端口，不根据网关地址猜测子网。
 
-��ָ�ϲ�Ҫ��� Compose ������ `host.docker.internal` ӳ�䡣Docker Desktop��rootless�������������ŵ�ַ���������绷�������к˶Կɴ��ַ�� Host У�飬����ֱ�����ô�����
+本指南不要求改 Compose 或添加 `host.docker.internal` 映射。Docker Desktop、rootless、无宿主机网桥地址及受限网络环境需另行核对可达地址与 Host 校验，不能直接套用此例。
 
-## 3. ��������������
+## 3. 创建宿主机配置
 
-���������ֿ��Ŀ¼��������������ʱ����ģ�壺
+在宿主机仓库根目录，仅在尚无配置时复制模板：
 
 ```sh
 cp -n service/config.example.toml service.toml
 ```
 
-�༭ `service.toml`������Ϊ Docker bridge ʾ�����־û�·���� Gateway �����滻��`binary/home` ����ʹ���Զ����������е�¼��
+编辑 `service.toml`。以下为 Docker bridge 示例，持久化路径和 Gateway 均需替换；`binary/home` 留空使用自动查找与已有登录：
 
 ```toml
 binary = ""
 home = ""
-state = "/��ĳ־û�Ŀ¼/maibot-image/state"
+state = "/你的持久化目录/maibot-image/state"
 model = ""
 host = "172.18.0.1"
 port = 8765
 ```
 
-- `binary` ʡ�Ի�����ʱ�� PATH ����ԭ�� Codex���Ҳ���ʱ��дʵ��ԭ����ִ�г���·����`command -v codex` ���ṩ�����������������ű�������ȷ�϶�Ӧ��ԭ������
-- `home` ʡ�Ի�����ʱ����ʹ�÷�����̵� `CODEX_HOME`������ʹ�ø��û��� `~/.codex`����ʽ·�����ȣ�����ʱ��������ֵ����Ҫ�� TOML ����д������ `$CODEX_HOME`��������չ����
-- `state` ʹ�ÿ�д�ľ���·����������������ݿ⡢����͸����ͼĿ¼�����������
-- ֱ�Ӳ���ʱ�� `host` ��Ϊ `127.0.0.1`�����Ҳ����Ӧ��ַ��
+- `binary` 省略或留空时从 PATH 查找原生 Codex；找不到时填写实际原生可执行程序路径。`command -v codex` 可提供线索，若返回启动脚本，还需确认对应的原生程序。
+- `home` 省略或留空时优先使用服务进程的 `CODEX_HOME`，否则使用该用户的 `~/.codex`；显式路径优先，升级时保留既有值。不要在 TOML 中填写字面量 `$CODEX_HOME`，它不会展开。
+- `state` 使用可写的绝对路径；服务的任务数据库、产物和隔离绘图目录都保存在这里。
+- 直接部署时将 `host` 改为 `127.0.0.1`，插件也用相应地址。
 
-���������ֶμ�������ģ���������ã��� [��������˵��](advanced.md#��������������)��
+服务其余字段继续沿用模板或既有配置，见 [服务配置说明](advanced.md#宿主机服务配置)。
 
-## 4. �ṩ��Կ������
+## 4. 提供密钥并启动
 
-���������ֿ��Ŀ¼�״����������Կ�������ļ�ʱ���ã�
+在宿主机仓库根目录首次生成随机密钥，已有文件时复用：
 
 ```sh
 umask 077
@@ -104,15 +104,15 @@ export CODEX_IMAGE_SECRET="$(cat secret.txt)"
 uv run --project service --no-dev codex-image-mcp --config "$PWD/service.toml"
 ```
 
-`CODEX_IMAGE_SECRET` ���� 32 �ַ����ɻ���������ȡ����д�� `service.toml`�����ܺ�ͬһ����Կ�ļ�����Ҫÿ��������������Կ��Ҳ��Ҫ�������빫����־���ύ�� Git��
+`CODEX_IMAGE_SECRET` 至少 32 字符，由环境变量读取，不写入 `service.toml`。保管好同一个密钥文件；不要每次启动生成新密钥，也不要将它贴入公开日志或提交到 Git。
 
-Ҳ�ɲ����� `CODEX_IMAGE_SECRET`������ `CODEX_IMAGE_SECRET_FILE` Ϊ����Կ�ļ��ľ���·��������ͬʱ����ʱ��ֱ����Կ�������ȣ���ֵҲ������˵��ļ�����Կ�ļ�ӦΪ UTF-8�����ܰ���Կ��������ļ�·��������
+也可不设置 `CODEX_IMAGE_SECRET`，改设 `CODEX_IMAGE_SECRET_FILE` 为该密钥文件的绝对路径。两者同时存在时，直接密钥变量优先，空值也不会回退到文件。密钥文件应为 UTF-8，不能把密钥本身填进文件路径变量。
 
-ǰ̨�رռ�ֹͣ���񡣺�̨���кͿ��������� [systemd ����](#7-systemd-��̨�����뿪������)��ÿ�� `state` Ŀ¼ֻ����һ������ʵ����MaiBot ���������������Ϊ���������� MCP��
+前台关闭即停止服务。后台运行和开机自启见 [systemd 配置](#7-systemd-后台运行与开机自启)。每个 `state` 目录只启动一个服务实例；MaiBot 或容器重启不会代为启动宿主机 MCP。
 
-## 5. ��Բ��
+## 5. 配对插件
 
-�� MaiBot ������û��� `config.toml` ����д��
+在 MaiBot 插件设置或插件 `config.toml` 中填写：
 
 ```toml
 [plugin]
@@ -121,41 +121,41 @@ enabled = true
 
 [connection]
 url = "http://172.18.0.1:8765/mcp"
-secret = "��д������ secret.txt �е�������Կ"
+secret = "填写宿主机 secret.txt 中的完整密钥"
 allowed_users = ["qq:123456789"]
 poll_seconds = 2
 watch_seconds = 360
 ```
 
-���������Ĳ�����÷�Χ���������÷���ģʽ�򱾵� Codex��ֱ�Ӳ����ҷ������ `127.0.0.1` ʱ����Ӧ�޸� URL������������û������ `codex_image_command` ������֡�ͼƬ����Ȩ�ޣ����沢���¼��ز����
+这是完整的插件配置范围，不再配置服务模式或本地 Codex。直接部署且服务监听 `127.0.0.1` 时，相应修改 URL。授予白名单用户本插件 `codex_image_command` 命令及文字、图片发送权限，保存并重新加载插件。
 
-## 6. �ֲ���֤
+## 6. 分层验证
 
-1. �������Է����û�ִ�� `codex login status`��ȷ������ʹ�õĵ�¼Ŀ¼����� `home` һ�¡�
-2. �� MaiBot ��ִ�� `/��ͼ���`����� MCP ��������Ȩ��������� Codex ��¼����������ͼ����
-3. ��Ҫ������ʵ��ͼʱ�����ύһ�� `/��ͼ һ����ɫ�����Σ���ɫ����`����¼�����ţ����״̬���Զ���ͼ��ʵ�������е�ͼƬ���˲����ʹ�ö��Ķ�ȡ�
+1. 宿主机以服务用户执行 `codex login status`，确保命令使用的登录目录与服务 `home` 一致。
+2. 在 MaiBot 中执行 `/画图诊断`，检查 MCP 连接与授权；它不检查 Codex 登录，不创建绘图任务。
+3. 需要验收真实绘图时，仅提交一次 `/画图 一个绿色三角形，白色背景`，记录任务编号，检查状态、自动发图和实际聊天中的图片。此步骤会使用订阅额度。
 
-�Ų���������ʱ���������������� Python ����һ�β�����Կ�����󣬵�ַ����ʵ�� Gateway��
+排查容器网络时，可利用容器已有 Python 发起一次不带密钥的请求，地址换成实际 Gateway：
 
 ```sh
 docker exec maibot python3 -c 'import http.client; c=http.client.HTTPConnection("172.18.0.1",8765,timeout=5); c.request("GET","/mcp"); print(c.getresponse().status)'
 ```
 
-���� `401` ��˵���пɴ�ļ�Ȩ�˵�ܾ���δ��֤����Bearer У������ MCP Host ��飬����⻹����֤�� Host ƥ�䡢ǩ�����󡢵�¼���ͼ�ɹ������Ӿܾ�ʱ������ͼ�����ַ����ʱ������������ǽ������֤��������� `403` ʱ�˶� URL �� Host ��������á�
+返回 `401` 仅说明有可达的鉴权端点拒绝了未认证请求；Bearer 校验先于 MCP Host 检查，因此这还不能证明 Host 匹配、签名请求、登录或绘图成功。连接拒绝时检查服务和监听地址；超时检查网络与防火墙；带认证的请求出现 `403` 时核对 URL 的 Host 与监听配置。
 
-��������ʱ�ľ���ֲ���� [Docker �������ӳ�ʱ](#docker-�������ӳ�ʱ)��
+容器请求超时的具体分层检查见 [Docker 容器连接超时](#docker-容器连接超时)。
 
-## 7. systemd ��̨�����뿪������
+## 7. systemd 后台运行与开机自启
 
-���ڽ������ֶ����벼�֡�`setup.sh` �ѹ���ͬ������ʱ������ [����״̬����־](#����������״̬����־)����Ҫ������ unit���ֶ����������ǰ����������ֶ����ԣ���������ͨ Linux systemd��root �û����ֿ�λ�� `/opt/maibot-codex-image-host` Ϊ������������ `service.toml`��`secret.txt` ������Ŀ¼��������������Կ��
+本节仅用于手动分离布局。`setup.sh` 已管理同名服务时，跳到 [服务状态与日志](#宿主机服务状态与日志)，不要覆盖其 unit。手动部署先完成前面的配置与手动测试；本节以普通 Linux systemd、root 用户、仓库位于 `/opt/maibot-codex-image-host` 为例，复用现有 `service.toml`、`secret.txt` 和任务目录，不重新生成密钥。
 
-��ǰ��ʹ�õ��� `~/maibot-codex-image-host`�����������з���Ŀ¼�滻Ϊʵ�ʾ���·�������ذ�Ǩ�ֿ�����ݡ���������ϵͳ�û���¼ Codex������ `User`��`Group`��`HOME`��`PATH` ���ļ�����Ȩ��ҲҪ��Ӧ������Docker ����˳������������ϵͳ�� Docker����ֱ������ rootless Docker��
+若前面使用的是 `~/maibot-codex-image-host`，将本节所有服务目录替换为实际绝对路径，不必搬迁仓库或数据。若用其他系统用户登录 Codex，服务 `User`、`Group`、`HOME`、`PATH` 及文件访问权限也要对应调整。Docker 启动顺序配置适用于系统级 Docker；不直接套用 rootless Docker。
 
-### 7.1 ֹͣǰ̨ʵ�����̶��������¼Ŀ¼
+### 7.1 停止前台实例，固定程序与登录目录
 
-�ȵȴ����ڻ�ͼ�������������ԭǰ̨���ڰ� `Ctrl+C`����Ҫ��ǰ̨ʵ���� systemd ͬʱʹ��ͬһ�� `state`��
+先等待正在绘图的任务结束，在原前台窗口按 `Ctrl+C`。不要让前台实例和 systemd 同时使用同一个 `state`。
 
-ʹ���ѵ�¼ Codex �� root �û�ִ�У�
+使用已登录 Codex 的 root 用户执行：
 
 ```sh
 cd /opt/maibot-codex-image-host
@@ -175,26 +175,26 @@ print("home = " + json.dumps(str(settings.home)))
 PY
 ```
 
-��ֻ�������ò���ʾ·��������¼������ͼƬ���༭ `service.toml`���� `binary`��`home` �滻������ľ���·�������������ֶΣ���Ҫ�ظ�����ͬ���ֶΡ����� npm/nvm ��װ�� Codex ��ר�õ�¼Ŀ¼Ҳ������ SSH �ն˵� PATH �� CODEX_HOME��
+这只解析配置并显示路径，不登录或生成图片。编辑 `service.toml`，将 `binary`、`home` 替换成输出的绝对路径，保留其他字段；不要重复添加同名字段。这样 npm/nvm 安装的 Codex 和专用登录目录也不依赖 SSH 终端的 PATH 或 CODEX_HOME。
 
 ```sh
 nano service.toml
 chmod 600 secret.txt service.toml
 ```
 
-### 7.2 ���������ļ�
+### 7.2 创建服务文件
 
-��ͬһ�� SSH ���ڻ�ȡ uv ��ʵ��·����ȷ�����һ�м��ɹ��������
+在同一个 SSH 窗口获取 uv 的实际路径，确认最后一行检查成功后继续：
 
 ```sh
 UV_BIN="$(command -v uv)"
-printf 'uv ·����%s\n' "$UV_BIN"
+printf 'uv 路径：%s\n' "$UV_BIN"
 test -n "$UV_BIN" && test -x "$UV_BIN"
 ```
 
-`UV_BIN` ӦΪ���Կ�ִ���ļ�·�������� `/root/.local/bin/uv`�������� shell ��������������δ�����ŵ� `EOF` ���ڴ����ļ�ʱ�Ѹ�·��д�� `ExecStart`��systemd ����̳���� shell ������
+`UV_BIN` 应为绝对可执行文件路径，例如 `/root/.local/bin/uv`，不能是 shell 别名或函数。下面未加引号的 `EOF` 会在创建文件时把该路径写入 `ExecStart`；systemd 无需继承这个 shell 变量。
 
-����ͬ������ʱ�ȱ��ݣ�Ȼ��д�����ã�
+已有同名服务时先备份，然后写入配置：
 
 ```sh
 if [ -f /etc/systemd/system/maibot-codex-image.service ]; then
@@ -236,22 +236,22 @@ WantedBy=multi-user.target
 EOF
 ```
 
-- `CODEX_IMAGE_SECRET_FILE` ֻ��¼��Կ�ļ�·����������Կ����д�������ļ���`UnsetEnvironment` ����ɵ�ֱ����Կ������������
-- `Restart=on-failure` ���쳣�˳���ȴ� 5 ���������ֶ� `systemctl stop` �������Զ�������
-- `KillMode=mixed` ��֪ͨ������ֹͣ��uv �� Unix ��ת��ֹͣ�źţ����ȴ� 90 �������ʣ����̡�
-- `After` �涨����˳�򣬲���֤ Docker ���ػ� Codex �Ѿ����á�������δ����ʱ�鿴ʧ����־�������쳣�˳��ᰴ���������ٳ��ԡ�
+- `CODEX_IMAGE_SECRET_FILE` 只记录密钥文件路径，不把密钥正文写进服务文件；`UnsetEnvironment` 避免旧的直接密钥变量覆盖它。
+- `Restart=on-failure` 在异常退出后等待 5 秒重启；手动 `systemctl stop` 不触发自动重启。
+- `KillMode=mixed` 先通知主进程停止，uv 在 Unix 下转发停止信号，最多等待 90 秒后清理剩余进程。
+- `After` 规定启动顺序，不保证 Docker 网关或 Codex 已经可用。网关尚未建立时查看失败日志；服务异常退出会按重启策略再尝试。
 
-�� MaiBot ֱ�Ӳ����Ҳ�ʹ�� Docker��ɾ�� `Wants`��`After` �е� `docker.service`������ `network-online.target`�����ǰ̨���������������Զ��� CA ����������Ҳ���ڷ�������ʽ����ʵ��ֵ��systemd �����Զ��̳� SSH �Ự��������Ҫ�Ѻ�ƾ�ݵ�ֵ����������־��
+若 MaiBot 直接部署且不使用 Docker，删除 `Wants`、`After` 中的 `docker.service`，保留 `network-online.target`。如果前台运行依赖代理或自定义 CA 环境变量，也需在服务中显式配置实际值；systemd 不会自动继承 SSH 会话环境，不要把含凭据的值贴到公开日志。
 
-### 7.3 ��鲢���ÿ�������
+### 7.3 检查并启用开机自启
 
-�ȼ�����ã�����������������������
+先检查配置；若报错，修正后再启动：
 
 ```sh
 systemd-analyze verify /etc/systemd/system/maibot-codex-image.service
 ```
 
-���ͨ����ִ�У�
+检查通过后执行：
 
 ```sh
 systemctl daemon-reload
@@ -261,123 +261,117 @@ systemctl is-active maibot-codex-image.service
 systemctl is-enabled maibot-codex-image.service
 ```
 
-������Ԥ�ڷֱ�Ϊ `active`��`enabled`���˺�Ͽ� SSH ����ֹͣ��������Ϊ���������������� VPS����ʵ�����ָ������´��������飬���ܽ�ƾ `enabled` ��Ϊ����֤��
+后两项预期分别为 `active`、`enabled`。此后断开 SSH 不会停止服务。无需为配置自启立即重启 VPS；真实开机恢复需在下次重启后检查，不能仅凭 `enabled` 视为已验证。
 
-### 7.4 ��־���ճ�����
+### 7.4 日志与日常管理
 
 ```sh
-# ʵʱ��־��Ctrl+C ֻ�˳���־�鿴��
+# 实时日志；Ctrl+C 只退出日志查看。
 journalctl -u maibot-codex-image.service -f
 
-# ��� 100 �С�
+# 最近 100 行。
 journalctl -u maibot-codex-image.service -n 100 --no-pager
 
-# ����ִ������һ����
+# 按需执行其中一条。
 systemctl restart maibot-codex-image.service
 systemctl stop maibot-codex-image.service
 systemctl start maibot-codex-image.service
 ```
 
-�޸� systemd �����ļ����� `systemctl daemon-reload` ����������ֻ�޸� `service.toml` ����Կ�ļ�����ʱ�������񼴿ɣ����˹�����Կ���뱣��һ�¡�
+修改 systemd 服务文件后，先 `systemctl daemon-reload` 再重启服务。只修改 `service.toml` 或密钥文件内容时重启服务即可；两端共享密钥必须保持一致。
 
-ȡ������������ֹͣ����ɾ�����á���¼������
+取消开机自启并停止，不删除配置、登录或任务：
 
 ```sh
 systemctl disable --now maibot-codex-image.service
 ```
 
-�л�������������ѡ��û�л�ͼ����ʱ�����δ֪�����񲻻��Զ��ػ���`active` ����ʾ�������У����谴�� 6 �ڼ�� `/��ͼ���` ��ʵ��������ͼ��
+切换或重启服务尽量选在没有绘图进行时；结果未知的任务不会自动重画。`active` 仅表示进程运行，还需按第 6 节检查 `/画图诊断` 和实际聊天收图。
 
-systemd ��Ϊ�ο���[��������������](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html)��[ִ�л���](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html)��[����ֹͣ��ʽ](https://www.freedesktop.org/software/systemd/man/latest/systemd.kill.html)��[uv �źŴ���](https://docs.astral.sh/uv/concepts/projects/run/#signal-handling)��
+systemd 行为参考：[服务与重启策略](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html)、[执行环境](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html)、[进程停止方式](https://www.freedesktop.org/software/systemd/man/latest/systemd.kill.html)、[uv 信号处理](https://docs.astral.sh/uv/concepts/projects/run/#signal-handling)。
 
-## ����������״̬����־
+## 宿主机服务状态与日志
 
-����Ϊ�������ϵ�ֻ����飬ͬʱ�����ڽű���װ���ֶ�����
+以下为宿主机上的只读检查，同时适用于脚本安装与手动部署：
 
 ```sh
 systemctl status maibot-codex-image.service --no-pager --full
-systemct…2197 tokens truncated…n��Ҫ Git��uv��Python 3.12+ ���Ѱ�װ�Ĺٷ� Codex CLI��ʹ�ý����� MCP ��ϵͳ�û����� PowerShell ��ִ�У�·�������Լ���λ�ã�
-
-```powershell
-git clone https://github.com/PargosAks/MaiBot-Codex-Image.git 'D:\MaiBot\plugins\codex_image'
-git clone https://github.com/PargosAks/MaiBot-Codex-Image.git 'D:\MaiBotImageService'
-Set-Location 'D:\MaiBotImageService'
-uv sync --project service --no-dev
-codex login status
+systemctl show maibot-codex-image.service \
+  -p LoadState -p ActiveState -p SubState -p Result -p ExecMainStatus
+systemctl is-enabled maibot-codex-image.service
+journalctl -u maibot-codex-image.service -n 100 --no-pager
+ss -lntp 'sport = :8765'
 ```
 
-���� ChatGPT ��¼�������µ�¼��δ��¼���ֶ�ִ�� `codex login --device-auth`������������谲װ�� MaiBot ��ʵ�ʻ���������� `_manifest.json` �� `requirements.txt`��
+`LoadState=loaded`、`ActiveState=active`、`SubState=running`，配合应用启动完成和预期地址的监听，说明服务已启动；`enabled` 表示已配置开机自启。若服务 `not-found` 或 `inactive`，单独的 `Result=success`、`ExecMainStatus=0` 不能证明启动成功。systemd 验证报错时，先查看报错所属 unit；其他服务的 `ignoring` 警告不等于本服务失败原因，详见 [故障排查](troubleshooting.md)。
 
-ͬ�������ֻ��¡���һ�ݣ���Ϊ���� `D:\MaiBot\plugins\codex_image` �������е� `service/`���������·�����Ը�Ŀ¼Ϊ׼���������Ƕ������̣��������ݷ���Դ��Ŀ¼�⡣
+本次 VPS 已由用户提供日志确认：已安装的 unit 为 `loaded`、`enabled`，服务 `active (running)`，应用启动完成并监听 `172.23.0.1:8765`。这不等于容器可达、真实绘图发图或实际重启后的开机恢复已通过。仅升级兼容的插件无需重启 MCP；不要为排查容器网络反复重启正常运行的服务。
 
-## 2. ���÷���
+## Docker 容器连接超时
 
-����ѡ�ֿ��Ŀ¼��������������ʱ����ģ�壺
+本节以本次 VPS 的实际布局为例：宿主机源码 `/opt/maibot/plugins/codex_image`，容器 `maibot-core`，网络 `maibot_default`，Gateway 为 `172.23.0.1`，容器 IP 为 `172.23.0.2`。**其他机器以及容器重建后，先重新检查地址再使用后面的命令。** 以下检查在宿主机执行，不需要改 MaiBot 本体、Docker 镜像、Compose 或现有挂载。
 
-```powershell
-if (-not (Test-Path -LiteralPath '.\service.toml')) {
-    Copy-Item -LiteralPath '.\service\config.example.toml' -Destination '.\service.toml'
-}
+### 先核对监听与两端访问
+
+```sh
+docker inspect maibot-core --format \
+  '{{range $name, $net := .NetworkSettings.Networks}}Network={{$name}} IP={{$net.IPAddress}} Gateway={{$net.Gateway}}{{println}}{{end}}'
+
+ss -lntp 'sport = :8765'
+
+curl --noproxy '*' --connect-timeout 3 --max-time 5 \
+  -sS -o /dev/null -w 'HOST_HTTP=%{http_code}\n' \
+  http://172.23.0.1:8765/mcp
+
+docker exec maibot-core /MaiMBot/.venv/bin/python -c \
+  'import http.client; c=http.client.HTTPConnection("172.23.0.1",8765,timeout=8); c.request("GET","/mcp"); print(c.getresponse().status)'
 ```
 
-�༭ `service.toml`��Windows �� TOML ·������ʹ����б�ߣ�
+`/MaiMBot/.venv/bin/python` 是本次容器已有的 Python 路径；其他安装需替换成容器实际解释器路径，不需要为探测安装新依赖。请求不带密钥，也不创建绘图任务。
 
-```toml
-binary = ""
-home = ""
-state = "D:/MaiBotImageData/state"
-model = ""
-host = "127.0.0.1"
-port = 8765
+| 检查结果 | 含义与下一步 |
+| --- | --- |
+| 宿主机连接失败或未监听预期地址 | 先查服务状态、日志及 `service.toml` 的监听配置 |
+| 宿主机 `401`，容器超时 | 服务在宿主机可达，继续查容器到宿主机的网络和入站防火墙 |
+| 容器也返回 `401` | 未认证鉴权端点可达，再用 `/画图诊断` 检查插件的认证连接 |
+
+**`401` 只证明未认证端点可达。** Bearer 拒绝发生在 MCP Host 检查之前，因此它不能证明 Host、共享密钥、HMAC 签名、Codex 登录或绘图成功。标准库探测超时也不足以认定 MCP SDK 版本或密钥有问题。
+
+本次实测为宿主机 `HOST_HTTP=401`、容器 `TimeoutError timed out`。宿主机 `INPUT` 默认策略为 `DROP`，包含 `ufw-*` 与 `ts-input` 链；这些现象提示优先排查宿主机入站防火墙，但尚未定位具体丢弃规则，不能仅凭链名认定 UFW 已启用或已确认根因。
+
+### 仅在 UFW 已启用时放行当前容器
+
+先只读检查状态与现有规则：
+
+```sh
+ufw status verbose
+iptables -nvL INPUT --line-numbers
 ```
 
-`binary` ʡ�Ի�����ʱ�Զ�����ԭ�� Codex���Ҳ���ʱ���� `Get-Command codex.exe` ��ѯ������дʵ��ԭ������·������Ҫ��д `.cmd` �� `.ps1` �����ű���`home` ʡ�Ի�����ʱ����ʹ�÷�����̵� `CODEX_HOME`��δ������ѡ���û�Ŀ¼�µ� `.codex`����ʽ·�����ȣ�����ʱ��������ֵ��TOML ����չ�������� `$env:CODEX_HOME`��
+**仅当 `ufw status verbose` 显示 `Status: active`，且上面已核实当前 IP 与 Gateway 仍分别是 `172.23.0.2`、`172.23.0.1` 时，才由管理员按需执行下面这条修改命令。** 它只允许当前容器 IP 访问该宿主机网关的 TCP 8765 端口：
 
-����˲��������û����������� `service.toml` �е� `allowed_users` ��ȡʱ�ᾯ�沢���ԣ�����ɾ����������У�� Bearer��HMAC ǩ������Ч�ڡ�scope �������������������Կ���÷���Ϊ���š�
-
-ר�õ�¼Ŀ¼��ѡ����ʹ�����������ֶ���¼���ն����ö�Ӧ `CODEX_HOME`���ٽ�ͬһ·������ `home`��������ƾ֤�������ǻ�ɾ��ԭ Codex `config.toml`�������������ü� [����˵��](advanced.md#��������������)��
-
-## 3. ������Կ������
-
-�ڲֿ��Ŀ¼�״����ɹ�����Կ���ļ�����ʱ���ã����Ƹ��ļ�ֻ�����з�����û����ʣ�
-
-```powershell
-if (-not (Test-Path -LiteralPath '.\secret.txt')) {
-    $imageSecret = & '.\service\.venv\Scripts\python.exe' -c 'import secrets; print(secrets.token_urlsafe(40))'
-    Set-Content -LiteralPath '.\secret.txt' -Value $imageSecret -Encoding ascii
-}
-$env:CODEX_IMAGE_SECRET = (Get-Content -LiteralPath '.\secret.txt' -Raw).Trim()
-$imageConfig = (Resolve-Path -LiteralPath '.\service.toml').Path
-uv run --project service --no-dev codex-image-mcp --config $imageConfig
+```sh
+ufw insert 1 allow in proto tcp \
+  from 172.23.0.2 to 172.23.0.1 port 8765 \
+  comment 'MaiBot MCP Docker'
 ```
 
-��Կ���� 32 �ַ���ֻͨ�����������ṩ�����񣬲�д�� `service.toml`���ؿ��ն˺��ȡͬһ�ļ�����������Ҫ����������Կ����Ҫ������ύ����
+这里访问的是宿主机自身监听的服务，使用入站 `allow in`，不需要 `route` 转发规则。`insert 1` 指 UFW 管理规则的第一条，不保证优先于所有自定义或 Tailscale 链。规则语法参考 [UFW 官方手册](https://manpages.ubuntu.com/manpages/focal/man8/ufw.8.html)。
 
-Ҳ�ɲ����� `CODEX_IMAGE_SECRET`������ `CODEX_IMAGE_SECRET_FILE` Ϊͬһ�� UTF-8 ��Կ�ļ��ľ���·����ֱ����Կ��������ʱ���ȣ���ֵҲ������˵��ļ���
+无需为此启用、禁用、重置或重载整个 UFW；不要添加面向公网的 `8765/tcp` 放行，不修改 SSH、1Panel、Tailscale 或其他正常链路。若 UFW 为 `inactive` 或命令不存在，停止这一步，继续核对实际防火墙管理方式，不为套用本指南启用 UFW。不要从网关猜测 `/16` 等子网后整体放行。
 
-�������д��ڣ��رռ�ֹͣ������Ҫ��̨��פʱ�������н��̹�����������ȷͬһ��ϵͳ�û�����Կ���������þ���·����ÿ�� `state` ֻ����һ��ʵ����������ء�MaiBot �����������Ϊ��������
+执行过窄规则后，先查看并重新探测，不重复添加规则：
 
-## 4. ��Բ��
-
-�� MaiBot ������û��� `config.toml` ����д��
-
-```toml
-[plugin]
-config_version = "0.6.3"
-enabled = true
-
-[connection]
-url = "http://127.0.0.1:8765/mcp"
-secret = "��д���� secret.txt �е�������Կ"
-allowed_users = ["qq:123456789"]
-poll_seconds = 2
-watch_seconds = 360
+```sh
+ufw status numbered
+docker exec maibot-core /MaiMBot/.venv/bin/python -c \
+  'import http.client; c=http.client.HTTPConnection("172.23.0.1",8765,timeout=8); c.request("GET","/mcp"); print(c.getresponse().status)'
 ```
 
-ֻ�в�� `connection.allowed_users` ����˭�ɷ����󣬿��б��ܾ������ˡ����� MaiBot WebUI ����Ӧ�û����豾��� `codex_image_command` ����Ȩ�޼� `send.text` / `send.image` ��������������¼��ز������������ṩ����ģʽ�� Codex �����
+若仍超时，保留当前状态及只读检查结果，进一步核对实际链与规则计数；不要关闭防火墙或扩大来源范围。容器重建可能改变 IP，届时需重新核对并调整这条窄规则。容器返回 `401` 后，再在 MaiBot 执行 `/画图诊断`；该诊断不会生成图片，真实绘图与收图另按第 6 节验收。
 
-## 5. ��֤
+### 本次排查的验证边界
 
-��ִ�� `/��ͼ���` ��� MCP ��������Ȩ��������� Codex ��¼��Ҳ������ͼƬ����Ҫʵ�ʻ�ͼ����ʱ������һ�� `/��ͼ` ����������¼�����Ų��˶�״̬���Զ���ͼ��������ʵ����ʾ��ͼƬ��
+目前只确认宿主机服务启动与宿主机 `401`；尚未执行或确认上述 UFW 规则、容器返回 `401`、完整认证诊断及真实绘图收图。开机恢复也未通过实际重启验证。历史记录见 [验证记录](validation.md)。
 
-����ʱ�����߻���δ֪��ʹ��ԭ��Ų�ѯ����Ҫ�ظ��ύ��Ҳ��Ҫͨ��ɾ�����ݿ�ǿ�����ԡ���ʷ Windows ��������� 0.6.3 ��װ�������գ��� [��֤��¼](validation.md)��
+若插件曾提示“服务连接中断，结果可能未知”，不要据此判定任务失败或重复提交绘图。保留已有原任务编号，连通恢复后按原编号查询；没有取得编号时也不要盲目重提，先核查原请求与服务记录。具体处理见 [故障排查](troubleshooting.md)。

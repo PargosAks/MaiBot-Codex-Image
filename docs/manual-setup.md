@@ -2,6 +2,8 @@
 
 插件与安装工具为 0.6.3，独立服务保持 0.5.0，尚无 Release。插件仅保存连接设置，不负责启动服务或管理 Codex。以下是同一台 Windows 机器直接运行 MaiBot 的手动安装示例；Docker / Linux 首次安装见 [快速指南](quickstart.md)，详细手动步骤见 [宿主机指南](host-service.md)，旧安装先看 [迁移说明](advanced.md#从旧版本迁移)。Windows 不支持 `--systemd`。
 
+QQ 白名单、插件重载与未知任务处理参见 [部署排错](troubleshooting.md)。其中 root、uv Unix 锁和 systemd 章节仅适用于 Linux，不要套用到本页 Windows 命令。
+
 ## 1. 准备仓库和已有登录
 
 需要 Git、uv、Python 3.12+ 和已安装的官方 Codex CLI。使用将运行 MCP 的系统用户，在 PowerShell 中执行，路径换成自己的位置：
