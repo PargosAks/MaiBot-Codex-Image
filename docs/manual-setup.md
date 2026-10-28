@@ -1,6 +1,6 @@
 # 手动部署独立 MCP 服务（Windows）
 
-0.5.0 使用宿主机独立运行的 `service/`，尚无 Release。插件仅保存连接设置，不负责启动服务或管理 Codex。以下是同一台 Windows 机器直接运行 MaiBot 的新安装示例；Docker / Linux 首次安装见 [快速指南](quickstart.md)，详细手动步骤见 [宿主机指南](host-service.md)，旧安装先看 [迁移说明](advanced.md#从旧版本迁移)。Windows 不支持 `--systemd`。
+插件与安装工具为 0.6.0，独立服务保持 0.5.0，尚无 Release。插件仅保存连接设置，不负责启动服务或管理 Codex。以下是同一台 Windows 机器直接运行 MaiBot 的手动安装示例；Docker / Linux 首次安装见 [快速指南](quickstart.md)，详细手动步骤见 [宿主机指南](host-service.md)，旧安装先看 [迁移说明](advanced.md#从旧版本迁移)。Windows 不支持 `--systemd`。
 
 ## 1. 准备仓库和已有登录
 
@@ -71,7 +71,7 @@ uv run --project service --no-dev codex-image-mcp --config $imageConfig
 
 ```toml
 [plugin]
-config_version = "0.5.0"
+config_version = "0.6.0"
 enabled = true
 
 [connection]
@@ -88,4 +88,4 @@ watch_seconds = 360
 
 先执行 `/画图诊断` 检查 MCP 连接与授权；它不检查 Codex 登录，也不生成图片。需要实际绘图验收时，发送一次 `/画图` 和描述，记录任务编号并核对状态、自动发图及聊天中实际显示的图片。
 
-若超时、断线或结果未知，使用原编号查询；不要重复提交，也不要通过删除数据库强制重试。历史 Windows 结果不等于 0.5.0 验收，见 [验证记录](validation.md)。
+若超时、断线或结果未知，使用原编号查询；不要重复提交，也不要通过删除数据库强制重试。历史 Windows 结果不等于 0.6.0 安装流程验收，见 [验证记录](validation.md)。

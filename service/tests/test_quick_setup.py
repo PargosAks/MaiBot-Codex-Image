@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import importlib.util
 import json
+import shutil
 import subprocess
 import tomllib
 
@@ -104,15 +105,31 @@ def test_existing_conflicts_never_rotate_or_overwrite(installation, change):
         assert not secret.exists()
 
 
-def test_running_server_blocks_configuration_writes(installation):
+def test_running_server_allows_plugin_only_configuration_without_touching_service(installation):
     repo, _, _ = installation
     configure(installation)
     original = (repo / "service.toml").read_bytes()
+    secret = (repo / "secret.txt").read_bytes()
+    lease = StateLease(repo / "runtime/state")
+    try:
+        configure(installation)
+        assert (repo / "service.toml").read_bytes() == original
+        assert (repo / "secret.txt").read_bytes() == secret
+    finally:
+        lease.close()
+
+
+def test_running_server_still_blocks_service_configuration_changes(installation):
+    repo, _, _ = installation
+    configure(installation)
+    path = repo / "service.toml"
+    path.write_text(path.read_text() + '\nallowed_users = ["old-policy"]\n')
+    original = path.read_bytes()
     lease = StateLease(repo / "runtime/state")
     try:
         with pytest.raises(RuntimeError, match="STATE_DIRECTORY_IN_USE"):
             configure(installation)
-        assert (repo / "service.toml").read_bytes() == original
+        assert path.read_bytes() == original
     finally:
         lease.close()
 
@@ -178,6 +195,9 @@ def test_cli_docker_only_inspects_and_does_not_print_secret(installation, monkey
             return json.dumps(["name=seccomp", "name=cgroupns"])
         if argv == ["docker", "inspect", "--type=container", "maibot"]:
             return json.dumps([docker_info(plugin.parent)])
+        if argv[:6] == ["docker", "exec", "maibot", "sh", "-c", 'test -x "$1"']:
+            assert argv[-1] in ("/app/plugins", "/app", "/")
+            return ""
         assert argv in (["docker", "exec", "maibot", "id", "-u"], ["docker", "exec", "maibot", "id", "-g"])
         return "1000\n"
 
@@ -188,7 +208,7 @@ def test_cli_docker_only_inspects_and_does_not_print_secret(installation, monkey
     owners = []
     monkeypatch.setattr(setup, "set_owner", lambda path, owner: owners.append((path, owner)))
     assert setup.main(["--container", "maibot", "--plugin-dir", str(plugin), "--allowed-user", "qq:123"]) == 0
-    assert len(calls) == 5
+    assert len(calls) == 8
     assert (plugin / "config.toml", (1000, 1000)) in owners
     assert (repo / "secret.txt").read_text().strip() not in capsys.readouterr().out
 
@@ -315,3 +335,173 @@ def test_systemd_validation_failure_does_not_write_unit(tmp_path, monkeypatch):
     with pytest.raises(subprocess.CalledProcessError):
         setup.install_systemd(source, target)
     assert target.read_text() == "keep existing unit"
+
+
+def single_checkout(installation):
+    repo, plugin, home = installation
+    shutil.copytree(repo, plugin)
+    return plugin, plugin.parent.parent.parent / "host-private", home
+
+
+def test_single_checkout_keeps_host_data_outside_plugin_and_accepts_runner_defaults(installation):
+    plugin, data, home = single_checkout(installation)
+    (plugin / "config.toml").write_text(
+        '[plugin]\nconfig_version = "0.5.0"\nenabled = false\n'
+        '[connection]\nurl = "http://127.0.0.1:8765/mcp"\nsecret = ""\n'
+        'allowed_users = []\npoll_seconds = 2\nwatch_seconds = 360\n', encoding="utf-8")
+    before_source = (plugin / "plugin.py").read_bytes()
+    setup.configure(plugin, plugin, ["qq:123"], data_dir=data)
+    cfg = tomllib.loads((plugin / "config.toml").read_text())
+    service = tomllib.loads((data / "service.toml").read_text())
+    assert cfg["plugin"] == {"enabled": False, "config_version": "0.6.0"}
+    assert cfg["connection"]["secret"] == (data / "secret.txt").read_text().strip()
+    assert service["state"] == str((data / "runtime/state").resolve())
+    assert service["home"] == str(home)
+    assert not any((plugin / name).exists() for name in ("service.toml", "secret.txt", "runtime", "venv"))
+    assert (plugin / "plugin.py").read_bytes() == before_source
+
+
+def test_single_checkout_repeat_while_mcp_running_preserves_login_key_and_jobs(installation):
+    plugin, data, home = single_checkout(installation)
+    setup.configure(plugin, plugin, ["qq:123"], data_dir=data)
+    database = data / "runtime/state/jobs.sqlite3"
+    database.write_bytes(b"existing tasks must not be opened or migrated")
+    auth = home / "auth.json"
+    auth.write_bytes(b"fake login marker - never read by setup")
+    protected = [data / "secret.txt", data / "service.toml", database, auth, home / "config.toml"]
+    original = [path.read_bytes() for path in protected]
+    cfg = plugin / "config.toml"
+    cfg.write_text(cfg.read_text().replace('config_version = "0.6.0"', 'config_version = "0.5.0"'))
+    lease = StateLease(data / "runtime/state")
+    try:
+        setup.configure(plugin, plugin, ["qq:123"], data_dir=data)
+        assert tomllib.loads(cfg.read_text())["plugin"]["config_version"] == "0.6.0"
+        assert [path.read_bytes() for path in protected] == original
+    finally:
+        lease.close()
+
+
+def test_unpaired_existing_plugin_connection_never_creates_replacement_secret(installation):
+    repo, plugin, _ = installation
+    configure(installation)
+    alternate = repo.parent / "new-empty-data"
+    previous = (plugin / "config.toml").read_bytes()
+    with pytest.raises(ValueError, match="原密钥"):
+        setup.configure(repo, plugin, ["qq:123"], data_dir=alternate)
+    assert not (alternate / "secret.txt").exists()
+    assert (plugin / "config.toml").read_bytes() == previous
+
+
+def test_reusing_old_data_directory_preserves_absolute_state_and_settings(installation):
+    repo, plugin, home = installation
+    configure(installation)
+    old_service = (repo / "service.toml").read_bytes()
+    secret = (repo / "secret.txt").read_bytes()
+    job = repo / "runtime/state/jobs.sqlite3"
+    job.write_bytes(b"original database")
+    setup.configure(plugin, plugin, ["qq:123"], data_dir=repo)
+    assert (repo / "service.toml").read_bytes() == old_service
+    assert (repo / "secret.txt").read_bytes() == secret
+    assert job.read_bytes() == b"original database"
+    assert tomllib.loads(old_service.decode())["home"] == str(home)
+
+
+def test_host_private_files_must_not_be_visible_in_any_container_mount(installation):
+    _, plugin, home = installation
+    info = docker_info(plugin.parent)
+    setup.validate_host_privacy(info, [home])
+    with pytest.raises(ValueError, match="容器可见"):
+        setup.validate_host_privacy(info, [plugin / "private"])
+    info["Mounts"].append({"Source": str(home), "Destination": "/credentials", "RW": False})
+    with pytest.raises(ValueError, match="容器可见"):
+        setup.validate_host_privacy(info, [home])
+
+
+@pytest.mark.parametrize("private,child", [("home", "auth.json"), ("data", "secret.txt"),
+                                         ("state", "artifacts")])
+def test_nested_private_file_or_directory_mount_is_rejected(tmp_path, private, child):
+    protected = tmp_path / private
+    info = {"Mounts": [{"Source": str(protected / child), "Destination": "/leak", "RW": False}]}
+    with pytest.raises(ValueError, match="容器可见"):
+        setup.validate_host_privacy(info, [protected])
+
+
+def test_container_parent_access_is_checked_in_actual_exec_user_context(monkeypatch):
+    calls = []
+
+    def inaccessible(argv):
+        calls.append(argv)
+        if argv[-1] == "/app/plugins":
+            raise subprocess.CalledProcessError(1, argv)
+        return ""
+
+    monkeypatch.setattr(setup, "command", inaccessible)
+    with pytest.raises(ValueError, match="父路径"):
+        setup.validate_container_access("mai", "/app/plugins/codex_image", existing=True)
+    assert calls[0] == ["docker", "exec", "mai", "sh", "-c", 'test -x "$1"', "access-check", "/app/plugins"]
+
+
+def test_systemd_publication_holds_lease_and_releases_before_start(installation, monkeypatch):
+    repo, plugin, _ = installation
+    unit_target = repo.parent / "units" / setup.UNIT_NAME
+    unit_target.parent.mkdir()
+    monkeypatch.setattr(setup, "systemd_preflight", lambda *a, **kw: unit_target)
+    observed = []
+
+    def publish(source, target, start=True):
+        assert not start
+        with pytest.raises(RuntimeError, match="STATE_DIRECTORY_IN_USE"):
+            StateLease(repo / "runtime/state")
+        observed.append("published-under-lease")
+
+    def start():
+        lease = StateLease(repo / "runtime/state")
+        lease.close()
+        observed.append("started-after-release")
+
+    monkeypatch.setattr(setup, "install_systemd", publish)
+    monkeypatch.setattr(setup, "start_systemd", start)
+    setup.configure(repo, plugin, ["qq:123"], use_systemd=True)
+    assert observed == ["published-under-lease", "started-after-release"]
+
+
+def test_default_data_dir_new_single_source_and_old_layout(installation, monkeypatch):
+    repo, plugin, _ = installation
+    monkeypatch.setattr(setup.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(setup.os, "geteuid", lambda: 0, raising=False)
+    assert setup.default_data_dir(plugin, plugin) == Path("/var/lib/maibot-codex-image")
+    assert setup.default_data_dir(repo, plugin) == repo
+    (plugin / "service.toml").parent.mkdir()
+    (plugin / "service.toml").write_text("# existing layout")
+    assert setup.default_data_dir(plugin, plugin) == plugin
+
+
+def test_systemd_single_checkout_uses_external_secret_and_environment(tmp_path):
+    source, data = tmp_path / "plugins/codex_image", tmp_path / "private"
+    unit = setup.systemd_unit(source, "/usr/bin/uv", "/root/.codex", "/usr/bin/codex", data_dir=data)
+    assert 'Environment=' + setup.quote_unit('CODEX_IMAGE_SECRET_FILE=' + str(data / "secret.txt")) in unit
+    assert 'Environment=' + setup.quote_unit('UV_PROJECT_ENVIRONMENT=' + str(data / "venv")) in unit
+    assert setup.quote_unit(data / "service.toml") in unit
+    assert setup.quote_unit(source / "service") in unit
+
+
+def test_single_source_cli_uses_checkout_without_prompting_for_plugin_path(installation, monkeypatch):
+    plugin, data, _ = single_checkout(installation)
+    monkeypatch.setattr(setup, "ROOT", plugin)
+    monkeypatch.setattr(setup.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(setup.sys.stdin, "isatty", lambda: False)
+    assert setup.main(["--data-dir", str(data), "--allowed-user", "qq:123", "--foreground"]) == 0
+    assert (data / "service.toml").exists()
+    assert (plugin / "config.toml").exists()
+
+
+def test_root_guard_ignores_only_runner_toml_not_executable_files(installation, monkeypatch):
+    repo, _, _ = installation
+    config = repo / "config.toml"
+    config.write_text("# container-owned configuration")
+    original = Path.lstat
+    monkeypatch.setattr(setup, "require_root_path", lambda path: None)
+    monkeypatch.setattr(setup.os, "walk", lambda *a, **kw: [(str(repo), [], ["config.toml"])])
+    monkeypatch.setattr(Path, "lstat", lambda path: SimpleNamespace(st_uid=1000, st_mode=0o100600)
+                        if path == config else original(path))
+    setup.validate_root_install(repo, "/usr/bin/uv", "/usr/bin/codex")

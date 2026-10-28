@@ -1,6 +1,7 @@
 """Generated configuration drives real MCP HTTP and a plugin send recorder."""
 
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 import asyncio
 import socket
@@ -14,19 +15,25 @@ from codex_image_mcp.server import create_app
 from image_plugin_under_test import CodexImagePlugin
 from conftest import SCOPE
 from test_mcp_plugin import Sender
-from test_quick_setup import installation, setup  # noqa: F401
+from test_quick_setup import installation, setup, single_checkout  # noqa: F401
 
 
 @pytest.mark.usefixtures("installation")
-async def test_generated_configuration_submits_and_sends_one_image(request, driver_factory, monkeypatch, tmp_path):
-    repo, plugin_dir, _ = request.getfixturevalue("installation")
+@pytest.mark.parametrize("layout", ["separate", "single"])
+async def test_generated_configuration_submits_and_sends_one_image(request, driver_factory, monkeypatch, tmp_path, layout):
+    existing = request.getfixturevalue("installation")
+    repo, plugin_dir, _ = existing
+    data = repo
+    if layout == "single":
+        plugin_dir, data, _ = single_checkout(existing)
+        repo = plugin_dir
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
-    setup.configure(repo, plugin_dir, ["qq:123"], port=port)
+    generated = setup.configure(repo, plugin_dir, ["qq:123"], port=port, data_dir=data)
     monkeypatch.delenv("CODEX_IMAGE_SECRET", raising=False)
-    monkeypatch.setenv("CODEX_IMAGE_SECRET_FILE", str(repo / "secret.txt"))
-    cfg = Settings.load(repo / "service.toml")
+    monkeypatch.setenv("CODEX_IMAGE_SECRET_FILE", str(data / "secret.txt"))
+    cfg = Settings.load(Path(generated["service_config"]))
     assert cfg.port == port
     app = create_app(replace(cfg, timeout=2), driver_factory())
     server = uvicorn.Server(uvicorn.Config(app, log_level="critical", lifespan="on"))

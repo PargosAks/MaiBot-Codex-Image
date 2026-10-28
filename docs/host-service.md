@@ -1,6 +1,6 @@
 # 宿主机独立 MCP 部署（Linux / Docker）
 
-首次安装优先看 [新人快速开始](quickstart.md)：主路径为 Linux 宿主机 + Docker MaiBot，使用 `scripts/setup_host.py` 交互配对；普通 Linux root、系统级 Docker 可选 `--systemd` 安装并启用服务。工具不自动登录、不改 MaiBot 授权，最后仍需 WebUI 授权与重载。本版为 0.5.0，尚无 Release，实际 Linux + Docker 安装未验收。以下保留完整手动流程；Windows 见 [手动指南](manual-setup.md)。
+首次安装优先看 [新人快速开始](quickstart.md)：完整源码放进插件目录，在宿主机执行 `bash setup.sh`，Linux root 默认设置 systemd。插件与安装工具为 0.6.0，独立服务仍为 0.5.0；仅插件升级无需重启兼容 MCP。以下是可选的手动部署及旧分离布局管理流程，不是新用户的必经步骤。工具不自动登录、不改 MaiBot 授权，最后仍需 WebUI 授权与重载。尚无 Release，实际 Linux + Docker 安装未验收；Windows 见 [手动指南](manual-setup.md)。
 
 0.5.0 的允许用户仅在插件 `connection.allowed_users` 配置；服务不再维护白名单。旧 `service.toml` 的 `allowed_users` 读取时会警告并忽略，建议删除旧项。服务仍校验 Bearer、HMAC、有效期、scope 完整性与任务归属，持钥调用方视为可信。
 
@@ -14,7 +14,7 @@ MaiBot 插件 → 宿主机 MCP 服务 → 宿主机 Codex
 
 以下为新安装示例，目录按实际用户的权限调整。升级时先看 [迁移说明](advanced.md#从旧版本迁移)，不要覆盖原服务配置、密钥或数据。
 
-## 1. 准备两份仓库
+## 1. 准备源码（手动分离布局）
 
 宿主机需要 Git、uv、Python 3.12+ 和已安装的官方 Codex CLI。使用计划运行 MCP 的系统用户执行：
 
@@ -104,7 +104,7 @@ uv run --project service --no-dev codex-image-mcp --config "$PWD/service.toml"
 
 ```toml
 [plugin]
-config_version = "0.5.0"
+config_version = "0.6.0"
 enabled = true
 
 [connection]

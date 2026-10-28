@@ -2,7 +2,7 @@
 
 ## 1. 项目介绍
 
-在 MaiBot 中连接宿主机 Codex CLI，使用 ChatGPT 登录请求绘图，并将图片发回聊天。宿主机运行独立的 `service/` 和 Codex，MaiBot 插件负责连接、提交任务和发图。
+让 MaiBot 调用宿主机上的 Codex CLI 绘图，并将图片发回聊天。一份源码放在 MaiBot 插件目录，宿主机独立运行 MCP 服务；支持直接部署和 Docker 部署，无需修改 MaiBot 本体或 Docker 镜像。
 
 由 Codex 进行开发。
 
@@ -15,37 +15,35 @@
 | `/重发画图 任务编号` | 发送已有图片，不重新绘图 |
 | `/画图诊断` | 检查 MCP 连接，不生成图片；登录在绘图时检查 |
 
-目前不支持改图、参考图、批量生成或自然语言自动触发。绘图会使用账号额度；有 ChatGPT 订阅不代表必然有绘图权限，以账号实际可用能力为准。
+目前不支持改图、参考图、批量生成或自然语言自动触发。绘图使用账号额度，实际可用能力以账号为准。
 
-本版为 **0.5.0**，代码与配置版本同步提升，尚无 Release。**实际 Linux + Docker 安装尚未验收**；历史测试范围见 [验证记录](docs/validation.md)，旧版本结果不代表本版通过。
+插件与安装工具版本为 **0.6.0**，兼容独立 MCP 服务 **0.5.0**；服务源码、依赖与协议保持不变。本地回归与独立进程验证见 [验证记录](docs/validation.md)，Linux / Docker 实际部署待验证，尚未发布 Release。
 
 ## 3. 如何安装部署
 
-首次安装请看 [新人快速开始](docs/quickstart.md)。支持 MaiBot 1.3.x、SDK 2.16.x / 2.17.x；宿主机先准备 Git、[uv](https://docs.astral.sh/uv/getting-started/installation/) 和已手动完成 ChatGPT 登录的 [Codex CLI](https://developers.openai.com/codex/cli/)。
+宿主机先准备 Git、[uv](https://docs.astral.sh/uv/getting-started/installation/) 和已手动完成 ChatGPT 登录的 Codex CLI。MaiBot 需为 1.3.x，SDK 为 2.16.x / 2.17.x。
 
-普通 Linux root VPS 上执行：
+将下面的 `/opt/maibot/plugins` 替换为 **MaiBot 实际使用的宿主机插件目录**。Docker 用户应使用现有插件挂载的宿主机路径；在宿主机执行：
 
 ```sh
-git clone https://github.com/PargosAks/MaiBot-Codex-Image.git ~/maibot-codex-image-host
-cd ~/maibot-codex-image-host
-codex login status
-uv sync --project service --locked --no-dev --python 3.13
-uv run --project service --locked --no-dev python scripts/setup_host.py --systemd
+git clone https://github.com/PargosAks/MaiBot-Codex-Image.git /opt/maibot/plugins/codex_image
+cd /opt/maibot/plugins/codex_image
+bash setup.sh
 ```
 
-按提示填写 **MaiBot 容器名、宿主机插件目录、允许用户**。脚本安装薄插件、自动配对 MCP 配置与密钥，并设置后台运行及开机自启；最后在 MaiBot WebUI 授权并重载插件。
+按提示填写 **容器名（直接部署留空）、允许用户**；多个网络时选择网络。Linux root 默认配置 systemd 后台运行及开机自启；需要前台运行时用 `bash setup.sh --foreground`。最后在 MaiBot WebUI 授予命令、发图权限并重载插件。
 
-`--systemd` 需要 Linux root；普通用户可去掉此项，按输出前台启动。同机直接部署时容器名留空，Windows 见 [手动指南](docs/manual-setup.md)。脚本不修改 MaiBot 本体或 Docker 镜像，不代替 Codex 登录；已有安装先看 [迁移说明](docs/advanced.md#从旧版本迁移)。
+已有目录不要 clone 覆盖。已有独立 MCP 的用户升级看下文，无需重新配置。详细步骤与适用条件见 [快速开始](docs/quickstart.md)。
 
 ## 4. 如何配置
 
-安装工具配对宿主机 `secret.txt`、`service.toml` 与插件 `config.toml`；不要重新生成密钥。手动配置与启动见 [宿主机详细指南](docs/host-service.md)。
+脚本自动配对地址与密钥，复用宿主机当前服务用户的 `CODEX_HOME` 或 `~/.codex` 登录，不复制登录文件。新安装的服务配置、密钥、任务和环境放在宿主机独立数据目录，插件 `config.toml` 留在源码根目录且不纳入 Git。
 
-插件配置只保留以下字段，密钥至少 32 字符且与宿主机一致：
+允许用户只在插件 `connection.allowed_users` 设置；还需在 MaiBot WebUI 授权对应用户的 `codex_image_command` 命令，以及插件的 `send.text` / `send.image` 能力。脚本不代替登录或授权。
 
 ```toml
 [plugin]
-config_version = "0.5.0"
+config_version = "0.6.0"
 enabled = true
 
 [connection]
@@ -56,26 +54,30 @@ poll_seconds = 2
 watch_seconds = 360
 ```
 
-**允许用户只在插件 `connection.allowed_users` 设置**，MCP 服务无需再配白名单。在 MaiBot WebUI 授权对应用户的绘图命令，并允许插件使用 `send.text` / `send.image`，保存后重载插件。
+Docker bridge 的地址由脚本根据现有网络选择，不能照抄容器内的 `127.0.0.1`。已有安装保留原 URL、密钥、登录和任务路径，详见 [进阶说明](docs/advanced.md)。
 
-Codex 路径、登录目录和模型在宿主机配置；服务鉴权和旧配置兼容说明见 [进阶说明](docs/advanced.md)。
-
-Docker bridge 容器应使用实际宿主机网桥 Gateway 地址，不能照用容器内的 `127.0.0.1`；服务监听地址须与插件 URL 匹配，具体见部署指南。
-
-## 5. 插件配置项说明
+## 5. 配置项说明
 
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
-| `plugin.config_version` | `"0.5.0"` | 配置版本 |
+| `plugin.config_version` | `"0.6.0"` | 插件配置版本；已有配置按兼容规则读取 |
 | `plugin.enabled` | `true` | 是否启用插件 |
-| `connection.url` | `"http://127.0.0.1:8765/mcp"` | 宿主机 MCP 地址 |
+| `connection.url` | `"http://127.0.0.1:8765/mcp"` | 宿主机 MCP 地址，由脚本配对 |
 | `connection.secret` | `""` | 必填；至少 32 字符，与服务一致 |
 | `connection.allowed_users` | `[]` | 允许用户；空列表拒绝所有人 |
 | `connection.poll_seconds` | `2` | 任务查询间隔，秒 |
 | `connection.watch_seconds` | `360` | 自动等待取图的最长时间，秒 |
 
-## 6. 使用与帮助
+宿主机服务字段、数据目录和脚本参数见 [进阶说明](docs/advanced.md)。
 
-先运行 `/画图诊断`，通过后仅提交一次 `/画图 一只戴耳机的猫，白色背景`，核对聊天实际收图。诊断只检查 MCP 连接与授权，不证明 Codex 登录或真实绘图成功。超时、断线或结果未知时，用原编号查询状态，避免重复提交。
+## 6. 升级与使用
 
-服务独立运行，不随插件重载启动。后台运行可选 `--systemd`，手动管理见 [systemd 指南](docs/host-service.md#7-systemd-后台运行与开机自启)。登录复用、数据保留与迁移见 [进阶说明](docs/advanced.md)，开发检查见 [开发指南](docs/development.md)。
+**仅插件变动、MCP 协议兼容时**，在插件源码目录执行：
+
+```sh
+git pull --ff-only
+```
+
+然后在 MaiBot WebUI **重载插件**即可，独立 MCP 无需重启，也无需重新运行配置脚本。不要删除旧宿主机服务仓库，它可能仍是运行入口。若更新涉及 MCP 源码、依赖、监听地址或密钥，需另行停止服务、核对原配置后重新配置并启动；服务不支持源码热更新，见 [升级说明](docs/quickstart.md#日常升级)。
+
+先用 `/画图诊断` 检查连接，再提交一次 `/画图 一只戴耳机的猫，白色背景` 并核对实际收图。超时或结果未知时用原编号查询，避免重复绘图。部署验证与真实聊天收图需分别确认。

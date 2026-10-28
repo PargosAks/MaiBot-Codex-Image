@@ -1,161 +1,139 @@
 # 新人快速开始
 
-主路径：**Linux 宿主机运行绘图服务，Docker 中的 MaiBot 加载薄插件**。安装工具负责配对配置；最后由你在 MaiBot WebUI 授权、重载并验证。
+**一份源码放进 MaiBot 插件目录，在宿主机运行一次 `bash setup.sh`，最后到 WebUI 授权并重载插件。** MCP 服务独立运行，插件加载、重载和卸载不会启停它。
 
-本版为 **0.5.0 源码版**，不需要下载 Release。实际 Linux + Docker 部署仍需按下述步骤在目标机验证，历史测试范围见 [验证记录](validation.md)。
+本指南对应插件与安装工具 **0.6.0**，宿主机 MCP 服务仍为 **0.5.0**。尚未发布 Release；本地回归及独立进程检查见 [验证记录](validation.md)，实际 Linux / Docker 部署和聊天收图仍待目标机验收。
 
-## 1. 准备宿主机
+## 1. 安装前准备
 
 - MaiBot 已运行，版本为 1.3.x，SDK 为 2.16.x / 2.17.x。
-- 宿主机已安装 Git、uv 和官方 Codex CLI；服务环境需要 Python 3.12+，由 uv 准备。
-- 使用**将运行服务的当前系统用户**操作，并手动完成 Codex 的 ChatGPT 登录。普通 root VPS 的 `--systemd` 路径全程使用 root；不要中途换用户，以免换了登录目录。
-- 确认 MaiBot 使用的**宿主机插件挂载源路径**，并准备真实允许用户，例如 `qq:123456`。插件依赖需在 MaiBot 实际环境可用，声明见 [_manifest.json](../_manifest.json) 和 [requirements.txt](../requirements.txt)。
+- 宿主机已有 Git、[uv](https://docs.astral.sh/uv/getting-started/installation/) 和官方 Codex CLI，且已由你手动完成 ChatGPT 登录。
+- 使用将运行 MCP 的系统用户操作。Linux root 默认安装系统级 systemd 服务，使用 root 原有登录；不要中途换用户或换 `CODEX_HOME`。
+- 准备允许用户的 `平台:用户ID`，例如 `qq:123456789`。
 
-不熟悉 uv 时，先看 [uv 官方安装指南](https://docs.astral.sh/uv/getting-started/installation/)。Linux 可使用官方安装命令，完成后重开终端并检查 `uv --version`：
+脚本使用 uv 准备隔离的配置工具环境和服务环境，不要求你提前手动同步 Python 依赖。它不会安装 Git、uv 或 Codex，不会代替你登录 Codex。
 
-```sh
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
+### 找到真实插件目录
 
-Codex 请按 [官方 CLI 安装指南](https://developers.openai.com/codex/cli/) 安装。登录方式见 [官方认证说明](https://developers.openai.com/codex/auth/)。**有 ChatGPT 订阅不保证有绘图权限**，以账号实际可用能力为准。
-
-## 2. 准备仓库、登录和服务环境
-
-在宿主机执行，仓库不要放进容器临时目录：
+直接部署时使用 MaiBot 实际加载的 `plugins` 目录。Docker 部署时，使用**现有插件挂载的宿主机 Source 路径**，脚本也在宿主机运行。需要核对时，在宿主机执行，`maibot` 换成实际容器名：
 
 ```sh
-git clone https://github.com/PargosAks/MaiBot-Codex-Image.git ~/maibot-codex-image-host
-cd ~/maibot-codex-image-host
-codex login status
-```
-
-已有 ChatGPT 登录直接继续；仅未登录时手动执行以下命令，并按提示在浏览器完成登录。设备码登录需账号或工作区允许，详见官方认证说明。
-
-```sh
-codex login --device-auth
-codex login status
-```
-
-确认是 ChatGPT 登录后，按服务锁文件准备环境；安装工具不会代替这一步：
-
-```sh
-uv sync --project service --locked --no-dev --python 3.13
-```
-
-## 3. 确认挂载，运行安装工具
-
-先确认容器名和挂载，下面的 `maibot` 换成实际容器名：
-
-```sh
-docker ps --format '{{.Names}}'
 docker inspect --type=container maibot --format '{{json .Mounts}}'
 ```
 
-`Source` 是宿主机路径，`Destination` 是容器内路径。**必须确认插件目录确实位于供 MaiBot 加载的挂载中**；例如宿主机 `/srv/maibot/plugins` 挂载到容器插件目录，填写的插件安装目录可为 `/srv/maibot/plugins/codex_image`。不要填容器内路径，也不要把任意宿主机目录当成挂载源。工具会读取 `docker inspect` 再验证，不会替你新增挂载。
+例如宿主机 `/opt/maibot/plugins` 已挂载到容器插件目录，就把源码放在 `/opt/maibot/plugins/codex_image`。不要使用容器内路径，也不要新增挂载或把宿主机 Codex 登录目录复制到插件目录。
 
-目标路径末级必须为 `codex_image` 且父目录已存在，服务仓库与目标插件目录不能互相包含；首次会复制薄插件代码，不要提前向目标再 clone 第二份，旧插件版本不匹配时脚本会拒绝覆盖，请先备份并更新插件或查看 [迁移说明](advanced.md#从旧版本迁移)。
+自动 Docker 配置针对本机 Linux、系统级 Docker 和常规可写插件挂载。远程 Docker、rootless、user namespace 映射和特殊挂载继续使用 [手动部署指南](host-service.md)。root 后台服务要求源码及其父目录不可被其他宿主机用户替换；若现有路径不符合检查，先核对部署权限，不要放宽权限绕过检查。
 
-重复执行配置前，先用 `systemctl stop maibot-codex-image.service` 或在前台窗口按 `Ctrl+C` 停止正在运行的宿主机 MCP，以免服务目录锁导致配置被拒绝。
+## 2. 安装源码并配置
 
-普通 **Linux root VPS + 系统级 Docker + systemd**，在宿主机仓库根目录执行：
+下面以宿主机插件目录 `/opt/maibot/plugins` 为例，**先替换为你核实的路径**。目标末级使用 `codex_image`，父目录需已存在。在宿主机执行：
 
 ```sh
-uv run --project service --locked --no-dev python scripts/setup_host.py --systemd
+git clone https://github.com/PargosAks/MaiBot-Codex-Image.git /opt/maibot/plugins/codex_image
+cd /opt/maibot/plugins/codex_image
+bash setup.sh
 ```
 
-缺少必要参数时按提示填写：
+已有 `codex_image` 目录不要再次 clone 覆盖，转到 [日常升级](#日常升级)。也可将完整源码复制进该目录；以后希望用 Git 升级，首次应选择 clone。
+
+按提示填写：
 
 | 提示 | 填写内容 |
 | --- | --- |
-| 容器名 | 实际 MaiBot 容器名；留空表示同机直接部署 |
-| 宿主机插件目录 | MaiBot 实际可加载的插件安装目录，如 `/srv/maibot/plugins/codex_image` |
-| 允许用户 | 真实 `平台:用户ID`，如 `qq:123456`；仅写入插件 `connection.allowed_users` |
+| 容器名 | MaiBot 实际容器名；同机直接部署留空 |
+| 允许用户 | 真实 `平台:用户ID`；只写入插件白名单 |
 | 网络选择 | 容器有多个网络时，选择实际使用的网络 |
 
-工具会选择容器实际网络的宿主机 Gateway，使服务监听地址与插件 URL 匹配；不要照抄示例网关 IP，也不要把容器内 `127.0.0.1` 当作宿主机。
+插件目录默认就是脚本所在源码根目录，无需再次填写。工具识别现有挂载、容器用户和实际 Gateway，配对两端地址与密钥；不改变 Compose、镜像、挂载、防火墙或 MaiBot 本体。自定义入口另行切换运行用户时，应手动核对插件配置的读取权限。
 
-工具还会用只读 `docker exec ... id` 获取容器默认执行用户，为私有插件配置设置相应 UID/GID，并检查嵌套挂载遮蔽。远程 Docker、rootless 或 user namespace 映射请使用手动部署；自定义入口另行切换 MaiBot 运行用户时，需要手动核对配置读取权限。
-
-若插件配置/源码另有单文件挂载，或已有私有插件目录对容器用户不可读，工具会停止，不会写入被遮蔽的文件或放开私有目录权限；这类已有部署请按手动指南核对。
-
-root 后台服务要求源码、虚拟环境及启动程序不能被其他用户改写，工具会先检查属主和权限。检查失败时，以 root 在 `/root` 或合适的 `/opt` 目录重新准备宿主机仓库与环境；不要直接让后台服务执行其他用户可写的源码，也不要更改 MaiBot 容器用户来绕过检查。
-
-`--systemd` 是可选项，会安装并启用 systemd 服务，服务使用当前用户。它仅支持 Linux root 和系统级 Docker，不支持 Windows 或 rootless Docker。普通用户、无需后台服务或不符合条件时，去掉该选项：
+Linux root 默认安装并启动 `maibot-codex-image.service`，启用开机自启。可按需要选择：
 
 ```sh
-uv run --project service --locked --no-dev python scripts/setup_host.py
+bash setup.sh --foreground
 ```
 
-默认会打印前台启动命令；按输出在宿主机启动并保留窗口，关闭窗口即停止服务。使用 systemd 时按输出核对服务状态。不要让前台和后台实例同时使用同一个任务目录；服务运行不等于已完成绘图验收。
+该选项只配置并打印前台启动命令，按输出在宿主机执行并保留服务终端。也可显式使用 `bash setup.sh --systemd`；非 root 环境请使用前台或手动管理，systemd 自动配置只支持 Linux root。
 
-### 工具会做什么
+### 配置和数据存在哪里
 
-- 在 uv 已准备好的服务环境中，发现宿主机原生 Codex 和已有登录目录；默认复用当前用户的 `CODEX_HOME` 或 `~/.codex`。
-- 读取 `docker inspect` 验证插件挂载并选择实际 Gateway；直接部署使用本机连接。
-- 首次生成并配对 `secret.txt`、`service.toml` 和插件 `config.toml`，使两端密钥与地址一致；允许用户仅写入插件 `connection.allowed_users`，插件配置版本为 `0.5.0`。
-- 新目录只复制薄插件运行文件，不复制宿主机服务源码；目标已是同 ID 源仓库时只配配置，并要求版本一致。
-- 重复配置保留既有密钥、任务和日常 Codex 配置。发现已有配置不一致会拒绝，不覆盖或搬迁；缺少密钥且已有状态时会拒绝自动换新。
+| 内容 | 新单目录安装的默认位置 |
+| --- | --- |
+| 插件与 MCP 源码 | 同一份 `plugins/codex_image` |
+| 插件配置 | 源码根目录 `config.toml`，Git 忽略 |
+| 宿主机配置和密钥 | 数据目录中的 `service.toml`、`secret.txt` |
+| 宿主机任务与图片 | 数据目录中的 `runtime/state` |
+| 服务虚拟环境 | 数据目录中的 `venv` |
+| Codex 登录 | 当前服务用户原有的 `CODEX_HOME` 或 `~/.codex` |
+| 插件发送记录 | MaiBot Host 的 `ctx.paths.data_dir`，沿用原目录 |
 
-工具**不会**修改 MaiBot、Dockerfile、镜像、Compose、防火墙或 MaiBot 授权，不自动登录 Codex，也不发送测试绘图。现有安装或迁移请先看 [进阶说明](advanced.md#从旧版本迁移)，遇到拒绝时核对原配置，不要删除密钥、任务库或发送记录来绕过检查。
+Linux root 的新数据目录默认 `/var/lib/maibot-codex-image`；其他用户默认 `${XDG_DATA_HOME:-$HOME/.local/share}/maibot-codex-image`，可用 `--data-dir` 指定。不要把宿主机数据目录或 Codex 凭据放进 Docker 可见的插件挂载。
 
-允许谁发请求只由插件 `connection.allowed_users` 控制。服务仍校验 Bearer、HMAC 签名、有效期、scope 完整性与任务归属，持钥调用方视为可信。旧 `service.toml` 若含 `allowed_users`，读取时会警告并忽略，建议删除该旧项；无需在服务端另配白名单。
+已有配置继续使用原密钥、登录和完整任务路径。仅更新插件配置版本或重复配对，且服务配置、启动单元和环境均无需变化时，可以保留 MCP 运行；工具不改写服务配置或密钥。**更改服务配置、启动单元或首次准备服务环境时，需先停止服务。** 已有 `venv` 不会因重复执行脚本而重新同步，普通插件升级仍无需运行脚本。
 
-## 4. WebUI 授权并重载插件
+## 3. WebUI 授权并重载
 
-在 MaiBot WebUI 确认插件已加载、依赖可用，并给白名单中的对应用户授予：
+在 MaiBot WebUI 确认插件与依赖可用，给白名单中的对应用户授予 `codex_image_command` 命令权限，并允许插件使用 `send.text`、`send.image`。保存后重载插件。
 
-- 本插件 `codex_image_command` 命令权限。
-- `send.text` 和 `send.image` 能力。
+白名单不能替代 MaiBot 权限；脚本不会代替授权。允许用户只配置插件 `connection.allowed_users`，MCP 不需要再配置用户白名单。
 
-保存后**重载插件**。插件白名单不能替代这一步；安装工具不修改这些权限。
+## 4. 手动验证
 
-## 5. 先诊断，再只画一次
-
-用已授权的账号在 MaiBot 聊天中发送：
+用已授权账号在 MaiBot 聊天中发送：
 
 ```text
 /画图诊断
 ```
 
-它只检查 MCP 连接与授权，不检查 Codex 登录，不生成图片。诊断通过后，仅提交一次真实绘图，并记录返回的任务编号：
+诊断只检查 MCP 连接和授权，不验证 Codex 登录或真实绘图。通过后仅提交一次，记录任务编号：
 
 ```text
 /画图 一只戴耳机的猫，白色背景
 ```
 
-核对任务状态、自动发图和聊天中实际显示的图片。超时、断线或结果未知时，用原编号查询；已完成但未收到图片时尝试取回原图，不重新画：
+核对任务进度和聊天中实际显示的图片。超时或断线时查询原任务，已完成但未收到图片时取回原图：
 
 ```text
 /画图状态 任务编号
 /重发画图 任务编号
 ```
 
-发送结果未知时先查聊天记录，不要反复重发。诊断通过、进程运行和真实聊天收图是不同检查；历史结果见 [验证记录](validation.md)。
+发送结果未知时先查聊天记录，不要反复重发或删除发送记录。
 
-## 同机直接部署与 Windows
+## 日常升级
 
-**Linux 同机直接部署：**仍先完成仓库、ChatGPT 登录和 `uv sync`，运行工具时容器名留空，插件目录填写 MaiBot 实际使用的宿主机目录。服务独立运行，本机连接使用 `127.0.0.1`。已有同 ID、同版本源仓库可以只配配置；随后按前述 WebUI 和验证步骤完成。手动配置见 [宿主机指南](host-service.md)。
+**更新仅涉及插件且 MCP 协议兼容时**，在已有插件源码目录执行：
 
-**Windows：**按 [Windows 手动部署指南](manual-setup.md) 准备和启动独立服务；不要使用 `--systemd`。该指南面向同机直接运行 MaiBot，不能直接套用到 Docker Desktop。Docker Desktop、rootless 和特殊网络需另外核对挂载及可达地址，不属于本文主路径。
+```sh
+git pull --ff-only
+```
+
+随后在 MaiBot WebUI **重载插件**，不需要重启独立 MCP，不需要重跑 `setup.sh`。插件重建连接后继续访问原服务的任务和图片。Git 若报告冲突或无法快进，先核对本地改动，不要强制重置。
+
+本次 0.6.0 更新保留 0.5.0 服务源码、`service/pyproject.toml` 和 `service/uv.lock`；版本说明应区分插件和服务。后续更新若涉及 MCP 源码、依赖、监听地址或共享密钥，则属于服务维护：等待在途任务处理完，停止服务，核对并保留原配置、密钥、Codex 登录与任务路径，再重新配置和启动。不要把 `git pull` 当成服务热更新。
+
+**已使用独立 MCP 的旧安装：**直接更新插件源码、重载插件，继续连接原 URL 和密钥即可；无需运行新 `setup.sh`，无需迁移数据。旧宿主机服务仓库可能仍被 systemd 引用，不要删除。若确需改由新源码启动服务，先看 [迁移说明](advanced.md#从旧版本迁移)，不能直接套用新安装路径。
 
 ## 按参数安装
 
-仍在宿主机仓库根目录执行。以下容器名、网络名、路径和用户 ID 都要替换为实际值；`--allowed-user` 可重复且只写入插件配置，多网络可用 `--network` 明确选择：
+在宿主机插件源码目录执行，名称与用户 ID 替换为实际值。`--allowed-user` 可重复，多网络可用 `--network` 指定：
 
 ```sh
-uv run --project service --locked --no-dev python scripts/setup_host.py \
+bash setup.sh \
   --container maibot \
   --network maibot_default \
-  --plugin-dir /srv/maibot/plugins/codex_image \
-  --allowed-user qq:123456 \
-  --allowed-user qq:789012 \
-  --systemd
+  --allowed-user qq:123456789 \
+  --allowed-user qq:987654321
 ```
 
-其他选项可查看帮助：
+| 参数 | 用途 |
+| --- | --- |
+| `--container` | 指定 MaiBot 容器，未提供时交互询问 |
+| `--network` | 指定容器已有网络 |
+| `--allowed-user` | 允许用户，可重复，仅控制插件白名单 |
+| `--data-dir` | 指定宿主机服务配置与数据目录 |
+| `--plugin-dir` | 兼容旧分离布局；新安装默认源码根目录，无需填写 |
+| `--foreground` | 选择前台模式 |
+| `--systemd` | 显式选择 Linux root 系统级服务 |
 
-```sh
-uv run --project service --locked --no-dev python scripts/setup_host.py --help
-```
-
-详细手动流程和 systemd 日常管理见 [宿主机指南](host-service.md)，配置字段、登录复用与数据保留见 [进阶说明](advanced.md)。
+不要同时选择前台和 systemd。完整参数可用 `bash setup.sh --help` 查看；Windows、特殊 Docker 环境和手动服务管理见 [手动指南](manual-setup.md) 与 [宿主机指南](host-service.md)。这些指南中的旧分离布局命令不是本版新用户的必经步骤。
