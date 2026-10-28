@@ -17,7 +17,7 @@
 
 目前不支持改图、参考图、批量生成或自然语言自动触发。绘图使用账号额度，实际可用能力以账号为准。
 
-插件与安装工具版本为 **0.6.0**，兼容独立 MCP 服务 **0.5.0**；服务源码、依赖与协议保持不变。本地回归与独立进程验证见 [验证记录](docs/validation.md)，Linux / Docker 实际部署待验证，尚未发布 Release。
+插件与安装工具版本为 **0.6.1**，兼容独立 MCP 服务 **0.5.0**；服务源码、依赖与协议保持不变。各版本验证范围见 [验证记录](docs/validation.md)，Linux / Docker 实际部署待验证，尚未发布 Release。
 
 ## 3. 如何安装部署
 
@@ -31,7 +31,7 @@ cd /opt/maibot/plugins/codex_image
 bash setup.sh
 ```
 
-按提示填写 **容器名（直接部署留空）、允许用户**；多个网络时选择网络。Linux root 默认配置 systemd 后台运行及开机自启；需要前台运行时用 `bash setup.sh --foreground`。最后在 MaiBot WebUI 授予命令、发图权限并重载插件。
+按提示填写 **容器名（直接部署留空）**；多个网络时选择网络。脚本不询问允许用户。Linux root 默认配置 systemd 后台运行及开机自启；需要前台运行时用 `bash setup.sh --foreground`。最后在 MaiBot WebUI 配置允许用户、授予命令与发图权限，保存并重载插件。
 
 已有目录不要 clone 覆盖。已有独立 MCP 的用户升级看下文，无需重新配置。详细步骤与适用条件见 [快速开始](docs/quickstart.md)。
 
@@ -39,17 +39,17 @@ bash setup.sh
 
 脚本自动配对地址与密钥，复用宿主机当前服务用户的 `CODEX_HOME` 或 `~/.codex` 登录，不复制登录文件。新安装的服务配置、密钥、任务和环境放在宿主机独立数据目录，插件 `config.toml` 留在源码根目录且不纳入 Git。
 
-允许用户只在插件 `connection.allowed_users` 设置；还需在 MaiBot WebUI 授权对应用户的 `codex_image_command` 命令，以及插件的 `send.text` / `send.image` 能力。脚本不代替登录或授权。
+在 MaiBot WebUI 的插件面板设置 `connection.allowed_users`，填写真实 `platform:user_id`（例如 `qq:123456789`，使用英文冒号）；还需授权对应用户的 `codex_image_command` 命令，以及插件的 `send.text` / `send.image` 能力。保存后重载插件。新安装默认 `[]`，配置前拒绝所有用户，无法绘图。已有名单由 WebUI 维护，脚本不校验、改写或清空，即使为空或曾填错也不因此阻塞安装；格式错误请在面板修正。脚本不代替登录或授权。
 
 ```toml
 [plugin]
-config_version = "0.6.0"
+config_version = "0.6.1"
 enabled = true
 
 [connection]
 url = "http://127.0.0.1:8765/mcp"
 secret = "填写宿主机使用的随机共享密钥，至少32字符"
-allowed_users = ["qq:123456789"]
+allowed_users = [] # 在 MaiBot 插件面板添加允许用户
 poll_seconds = 2
 watch_seconds = 360
 ```
@@ -60,11 +60,11 @@ Docker bridge 的地址由脚本根据现有网络选择，不能照抄容器内
 
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
-| `plugin.config_version` | `"0.6.0"` | 插件配置版本；已有配置按兼容规则读取 |
+| `plugin.config_version` | `"0.6.1"` | 插件配置版本；已有配置按兼容规则读取 |
 | `plugin.enabled` | `true` | 是否启用插件 |
 | `connection.url` | `"http://127.0.0.1:8765/mcp"` | 宿主机 MCP 地址，由脚本配对 |
 | `connection.secret` | `""` | 必填；至少 32 字符，与服务一致 |
-| `connection.allowed_users` | `[]` | 允许用户；空列表拒绝所有人 |
+| `connection.allowed_users` | `[]` | 在 MaiBot 插件面板配置真实 `platform:user_id`；空列表拒绝所有人 |
 | `connection.poll_seconds` | `2` | 任务查询间隔，秒 |
 | `connection.watch_seconds` | `360` | 自动等待取图的最长时间，秒 |
 

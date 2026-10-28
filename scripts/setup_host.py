@@ -267,7 +267,8 @@ def pristine_plugin_config(config):
     defaults = {"url": "http://127.0.0.1:8765/mcp", "secret": "", "allowed_users": [],
                 "poll_seconds": 2, "watch_seconds": 360}
     return (not set(plugin) - {"enabled", "config_version"}
-            and all(key in defaults and value == defaults[key] for key, value in connection.items()))
+            and all((key == "allowed_users" and isinstance(value, list))
+                    or (key in defaults and value == defaults[key]) for key, value in connection.items()))
 
 
 def sync_environment(root, data_dir, uv):
@@ -299,7 +300,7 @@ def validate_container_access(container, plugin_path, existing):
             raise ValueError(f"容器运行用户无法访问插件或其父路径：{path}；请核对现有挂载和权限。") from exc
 
 
-def configure(root, plugin_dir, allowed, host="127.0.0.1", port=8765, uv="uv", use_systemd=False, docker=False,
+def configure(root, plugin_dir, allowed=None, host="127.0.0.1", port=8765, uv="uv", use_systemd=False, docker=False,
               plugin_owner=None, data_dir=None, prepare_environment=False, container="", network=""):
     if Path(plugin_dir).expanduser().is_symlink():
         raise ValueError("插件目录不能是符号链接。")
@@ -310,7 +311,6 @@ def configure(root, plugin_dir, allowed, host="127.0.0.1", port=8765, uv="uv", u
         raise ValueError("服务源码和插件目录可以相同，或使用互不包含的旧分离布局。")
     if not 1024 <= port <= 65535:
         raise ValueError("端口应在 1024 到 65535 之间。")
-    allowed = users_list(allowed)
     if plugin_owner and os.name != "nt" and os.geteuid() not in (0, plugin_owner[0]):
         raise ValueError("当前用户不能为容器运行用户设置私有插件配置，请用合适的用户或手动部署。")
     manifest = json.loads((root / "_manifest.json").read_text(encoding="utf-8"))
@@ -333,6 +333,13 @@ def configure(root, plugin_dir, allowed, host="127.0.0.1", port=8765, uv="uv", u
             raise ValueError("这个服务仓库已配对其他插件目录，不能自动改配。")
         old_service = tomllib.loads(service_path.read_text(encoding="utf-8")) if service_path.exists() else {}
         old_plugin = tomllib.loads(plugin_path.read_text(encoding="utf-8")) if plugin_path.exists() else {}
+        connection = old_plugin.get("connection", {})
+        # The WebUI owns user authorization. Never validate, normalize or replace
+        # an existing list (including []); old CLI flags only prefill a new list.
+        if "allowed_users" in connection:
+            allowed = connection["allowed_users"]
+        else:
+            allowed = users_list(allowed) if allowed else []
         if plugin_dir.exists() and any(plugin_dir.iterdir()):
             target_manifest = plugin_dir / "_manifest.json"
             if not target_manifest.is_file():
@@ -360,9 +367,8 @@ def configure(root, plugin_dir, allowed, host="127.0.0.1", port=8765, uv="uv", u
             raise ValueError("现有服务监听地址或端口不同，请手动核对；不会改写现有部署。")
         if old_plugin and not pristine:
             connection = old_plugin.get("connection", {})
-            if (connection.get("url") != url or connection.get("secret") != secret
-                    or set(connection.get("allowed_users", [])) != set(allowed)):
-                raise ValueError("现有插件连接、密钥或用户配置不同，请手动核对；不会覆盖。")
+            if connection.get("url") != url or connection.get("secret") != secret:
+                raise ValueError("现有插件连接或密钥不同，请手动核对；不会覆盖。")
         binary = find_codex(old_service.get("binary", ""))
         home = auth_home(old_service.get("home", ""))
         state = Path(old_service.get("state", runtime / "state")).expanduser().resolve()
@@ -378,6 +384,10 @@ def configure(root, plugin_dir, allowed, host="127.0.0.1", port=8765, uv="uv", u
         if not old_plugin or pristine:
             plugin["connection"] = {"url": url, "secret": secret, "allowed_users": allowed,
                                     "poll_seconds": 2, "watch_seconds": 360}
+        elif "allowed_users" not in plugin["connection"] and allowed:
+            # A paired legacy config may predate this field. Honor an explicit
+            # first prefill, while an existing list always remains WebUI-owned.
+            plugin["connection"]["allowed_users"] = allowed
         unit = systemd_unit(root, uv, home, binary, docker, data_dir) if use_systemd else None
         unit_target = systemd_preflight(unit, root, uv, binary, data_dir=data_dir) if use_systemd else None
         service_text = tomlkit.dumps(settings)
@@ -443,7 +453,7 @@ def main(argv=None):
     parser.add_argument("--network", default="", help="Docker 网络名；多网络时必须指定")
     parser.add_argument("--plugin-dir", type=Path, default=ROOT, help="默认使用当前源码目录；旧分离布局可指定插件路径")
     parser.add_argument("--data-dir", type=Path, help="宿主机私有配置目录；已有安装可指定原 service.toml 所在目录")
-    parser.add_argument("--allowed-user", action="append", default=[], help="仅写入插件白名单，如 qq:123456")
+    parser.add_argument("--allowed-user", action="append", help="兼容旧用法：仅无已有白名单时可预填；通常请在 MaiBot 插件面板配置")
     parser.add_argument("--port", type=int, help="默认保留已有端口，新安装使用 8765")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--systemd", action="store_true", help="Linux root：安装并启动 systemd，启用开机自启")
@@ -459,11 +469,7 @@ def main(argv=None):
     data_dir = selected_data.expanduser().resolve()
     metadata_path = data_dir / "runtime/setup-host.json"
     prior = json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.exists() else {}
-    old_plugin = tomllib.loads((plugin_dir / "config.toml").read_text(encoding="utf-8")) if (plugin_dir / "config.toml").exists() else {}
-    allowed = args.allowed_user or old_plugin.get("connection", {}).get("allowed_users", [])
     interactive = sys.stdin.isatty()
-    if not allowed and not interactive:
-        parser.error("首次非交互配置请提供 --allowed-user。")
     container = args.container
     if container is None and prior:
         container = prior.get("container", "")
@@ -489,20 +495,20 @@ def main(argv=None):
     plugin_owner = container_owner(container) if info else None
     if info:
         validate_container_access(container, visible_plugin, plugin_dir.exists())
-    allowed = allowed or [input("允许绘图的用户（例如 qq:123456）：").strip()]
     uv = shutil.which("uv")
     if not uv:
         raise ValueError("未找到 uv，请先安装并将它加入 PATH。")
     service_path = data_dir / "service.toml"
     old_service = tomllib.loads(service_path.read_text(encoding="utf-8")) if service_path.exists() else {}
     port = args.port if args.port is not None else old_service.get("port", 8765)
-    result = configure(ROOT, plugin_dir, allowed, gateway(info, args.network) if info else "127.0.0.1",
+    result = configure(ROOT, plugin_dir, args.allowed_user, gateway(info, args.network) if info else "127.0.0.1",
                        port, str(Path(uv).resolve()), args.systemd, bool(container), plugin_owner,
                        data_dir, args.prepare_environment, container or "", args.network)
     print("配置已保存，两端密钥已配对；用户白名单仅位于插件。")
     for key, value in result.items():
         print(f"{key}: {value}")
-    print("请在 MaiBot WebUI 授权绘图命令及文字/图片发送，启用并重新加载插件。")
+    print("请在 MaiBot 插件面板配置 connection.allowed_users；空列表拒绝所有绘图请求。")
+    print("再授权绘图命令及文字/图片发送，启用并重新加载插件；已有白名单保持不变。")
     if args.systemd:
         print("systemd 已启用；日志：journalctl -u " + UNIT_NAME + " -f")
     elif os.name == "nt":

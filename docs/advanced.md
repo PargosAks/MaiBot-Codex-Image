@@ -1,6 +1,6 @@
 # 进阶配置与迁移
 
-首次安装使用 [快速开始](quickstart.md) 的 `bash setup.sh`。源码直接放在真实 `plugins/codex_image` 中，插件与安装工具为 **0.6.0**；独立 MCP 服务保持 **0.5.0**，协议兼容。脚本不替人登录 Codex 或授予 MaiBot 权限。本地检查及待验收范围见 [验证记录](validation.md)，尚未发布 Release。
+首次安装使用 [快速开始](quickstart.md) 的 `bash setup.sh`。源码直接放在真实 `plugins/codex_image` 中，插件与安装工具为 **0.6.1**；独立 MCP 服务保持 **0.5.0**，协议兼容。脚本不替人登录 Codex 或授予 MaiBot 权限。各版本验证范围见 [验证记录](validation.md)，尚未发布 Release。
 
 ## 单份源码与数据目录
 
@@ -22,7 +22,9 @@
 - 其他用户：`${XDG_DATA_HOME:-$HOME/.local/share}/maibot-codex-image`。
 - 用 `--data-dir /原配置目录` 可显式指定；已有配置的 `state` 路径优先保留，不因默认值而迁移。
 
-`setup.sh` 需要已有 uv、Git 和手动完成的宿主机 Codex 登录，使用 uv 的隔离环境运行配置工具，再准备服务环境。Linux root 默认配置 systemd；`--foreground` 选择前台，`--systemd` 显式选择后台，两者互斥。`--plugin-dir` 只为旧分离布局保留，新用户无需填写。容器、网络和允许用户参数见 [参数示例](quickstart.md#按参数安装)。
+`setup.sh` 需要已有 uv、Git 和手动完成的宿主机 Codex 登录，使用 uv 的隔离环境运行配置工具，再准备服务环境。Linux root 默认配置 systemd；`--foreground` 选择前台，`--systemd` 显式选择后台，两者互斥。`--plugin-dir` 只为旧分离布局保留，新用户无需填写。容器与网络参数见 [参数示例](quickstart.md#按参数安装)。
+
+脚本不询问或强制填写允许用户。新安装默认 `connection.allowed_users = []`，拒绝所有用户；配置 MCP 后，在 MaiBot WebUI 插件面板填写真实 `platform:user_id`，授予 MaiBot 命令与发图权限，保存并重载后才能绘图。已有名单不校验、改写或清空，空名单或错误格式不阻塞安装；请在 WebUI 修正。旧 `--allowed-user` 仅作为可选的首次预填入口保留，可重复，不覆盖已有名单。
 
 服务配置、启动单元和环境均无需变化时，允许在 MCP 运行期间更新插件配置版本或重复配对，不写入原服务配置和密钥。只有更改服务配置、启动单元或首次准备服务环境时才需先停止服务。`--prepare-environment` 仅在数据目录的 `venv` 缺失时同步，重复运行不更新已有服务环境，也不代表服务依赖已升级。
 
@@ -41,7 +43,7 @@ MCP 服务虽是中间层，仍负责 Codex 认证、队列、任务库与图片
 3. 保持原 `home`、`state` 和密钥，按变更需要重新配置或准备环境，再从核对后的入口启动服务。
 4. 使用原任务编号检查状态和图片；不通过重复提交来补图。
 
-不要在服务运行时更换其环境或配置。服务不支持源码热更新；遇到未知结果也不自动重画。本次 0.6.0 保持服务源码、`service/pyproject.toml` 和 `service/uv.lock` 为 0.5.0，因此兼容的既有 0.5.0 服务不需要重启。
+不要在服务运行时更换其环境或配置。服务不支持源码热更新；遇到未知结果也不自动重画。本次 0.6.1 保持服务源码、`service/pyproject.toml` 和 `service/uv.lock` 为 0.5.0，因此兼容的既有 0.5.0 服务不需要重启。
 
 ## 宿主机服务配置
 
@@ -74,7 +76,7 @@ MCP 服务虽是中间层，仍负责 Codex 认证、队列、任务库与图片
 
 ## 网络与权限
 
-插件仅配置 `plugin.enabled/config_version` 及 `connection.url/secret/allowed_users/poll_seconds/watch_seconds`。插件白名单控制谁可发请求，还需 MaiBot 授予对应用户命令权限及插件 `send.text` / `send.image` 能力。
+插件仅配置 `plugin.enabled/config_version` 及 `connection.url/secret/allowed_users/poll_seconds/watch_seconds`。插件白名单由用户在 MaiBot WebUI 维护，控制谁可发请求，还需 MaiBot 授予对应用户命令权限及插件 `send.text` / `send.image` 能力。修改后保存并重载插件，无需重启 MCP。
 
 服务继续校验 Bearer、HMAC、有效期、scope 完整性及任务归属。持有共享密钥的调用方视为可信，不应将密钥交给模型或不可信调用方。
 

@@ -30,7 +30,7 @@ async def test_generated_configuration_submits_and_sends_one_image(request, driv
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
-    generated = setup.configure(repo, plugin_dir, ["qq:123"], port=port, data_dir=data)
+    generated = setup.configure(repo, plugin_dir, port=port, data_dir=data)
     monkeypatch.delenv("CODEX_IMAGE_SECRET", raising=False)
     monkeypatch.setenv("CODEX_IMAGE_SECRET_FILE", str(data / "secret.txt"))
     cfg = Settings.load(Path(generated["service_config"]))
@@ -48,6 +48,15 @@ async def test_generated_configuration_submits_and_sends_one_image(request, driv
                     await serving
                 await asyncio.sleep(.02)
         await plugin.on_load()
+        assert plugin.config.connection.allowed_users == [] and plugin.bridge is None
+        denied = await plugin.command(**SCOPE, message_id="before-webui-configuration",
+                                      matched_groups={"action": "画图", "arg": "circle"})
+        assert denied[0] is False and not plugin.watchers and not sender.images
+        # Simulate the config update delivered by Runner after saving the WebUI.
+        updated = plugin.config.model_dump()
+        updated["connection"]["allowed_users"] = ["qq:123"]
+        plugin.set_plugin_config(updated)
+        await plugin.on_config_update("self", updated, "webui-configured")
         result = await plugin.command(**SCOPE, message_id="generated-config-message",
                                       matched_groups={"action": "画图", "arg": "circle"})
         assert result[0], result

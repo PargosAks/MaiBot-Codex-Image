@@ -84,7 +84,7 @@ def test_repeat_preserves_secret_state_custom_settings_and_disabled_plugin(insta
     assert list((repo / "runtime/backups").glob("*/plugin-config.toml"))
 
 
-@pytest.mark.parametrize("change", ["host", "users", "key", "missing-key", "corrupt-key"])
+@pytest.mark.parametrize("change", ["host", "key", "missing-key", "corrupt-key"])
 def test_existing_conflicts_never_rotate_or_overwrite(installation, change):
     repo, plugin, _ = installation
     configure(installation)
@@ -97,9 +97,8 @@ def test_existing_conflicts_never_rotate_or_overwrite(installation, change):
     if change == "corrupt-key":
         secret.write_text("short")
     before = cfg.read_bytes(), (repo / "service.toml").read_bytes()
-    args = ["qq:other"] if change == "users" else ["qq:123"]
     with pytest.raises(ValueError):
-        setup.configure(repo, plugin, args, host="172.18.0.1" if change == "host" else "127.0.0.1")
+        setup.configure(repo, plugin, ["qq:123"], host="172.18.0.1" if change == "host" else "127.0.0.1")
     assert (cfg.read_bytes(), (repo / "service.toml").read_bytes()) == before
     if change == "missing-key":
         assert not secret.exists()
@@ -353,7 +352,7 @@ def test_single_checkout_keeps_host_data_outside_plugin_and_accepts_runner_defau
     setup.configure(plugin, plugin, ["qq:123"], data_dir=data)
     cfg = tomllib.loads((plugin / "config.toml").read_text())
     service = tomllib.loads((data / "service.toml").read_text())
-    assert cfg["plugin"] == {"enabled": False, "config_version": "0.6.0"}
+    assert cfg["plugin"] == {"enabled": False, "config_version": "0.6.1"}
     assert cfg["connection"]["secret"] == (data / "secret.txt").read_text().strip()
     assert service["state"] == str((data / "runtime/state").resolve())
     assert service["home"] == str(home)
@@ -371,11 +370,11 @@ def test_single_checkout_repeat_while_mcp_running_preserves_login_key_and_jobs(i
     protected = [data / "secret.txt", data / "service.toml", database, auth, home / "config.toml"]
     original = [path.read_bytes() for path in protected]
     cfg = plugin / "config.toml"
-    cfg.write_text(cfg.read_text().replace('config_version = "0.6.0"', 'config_version = "0.5.0"'))
+    cfg.write_text(cfg.read_text().replace('config_version = "0.6.1"', 'config_version = "0.5.0"'))
     lease = StateLease(data / "runtime/state")
     try:
         setup.configure(plugin, plugin, ["qq:123"], data_dir=data)
-        assert tomllib.loads(cfg.read_text())["plugin"]["config_version"] == "0.6.0"
+        assert tomllib.loads(cfg.read_text())["plugin"]["config_version"] == "0.6.1"
         assert [path.read_bytes() for path in protected] == original
     finally:
         lease.close()
@@ -505,3 +504,72 @@ def test_root_guard_ignores_only_runner_toml_not_executable_files(installation, 
     monkeypatch.setattr(Path, "lstat", lambda path: SimpleNamespace(st_uid=1000, st_mode=0o100600)
                         if path == config else original(path))
     setup.validate_root_install(repo, "/usr/bin/uv", "/usr/bin/codex")
+
+
+@pytest.mark.parametrize("interactive", [False, True])
+def test_cli_installs_without_user_argument_or_user_prompt(installation, monkeypatch, capsys, interactive):
+    plugin, data, _ = single_checkout(installation)
+    prompts = []
+
+    def answer_container_only(prompt):
+        prompts.append(prompt)
+        assert prompt.startswith("MaiBot 容器名"), prompt
+        return ""
+
+    monkeypatch.setattr(setup, "ROOT", plugin)
+    monkeypatch.setattr(setup.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(setup.sys.stdin, "isatty", lambda: interactive)
+    monkeypatch.setattr("builtins.input", answer_container_only)
+    assert setup.main(["--data-dir", str(data), "--foreground"]) == 0
+    assert len(prompts) == int(interactive)
+    cfg = tomllib.loads((plugin / "config.toml").read_text())
+    assert cfg["connection"]["allowed_users"] == []
+    assert "allowed_users" not in tomllib.loads((data / "service.toml").read_text())
+    assert "MaiBot 插件面板配置 connection.allowed_users" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("users", [[], ["qq:123"], ["qq：123", "not configured correctly"]])
+def test_existing_webui_allowlist_is_preserved_without_validation(installation, users):
+    repo, plugin, _ = installation
+    configure(installation)
+    config = setup.tomlkit.parse((plugin / "config.toml").read_text())
+    config["connection"]["allowed_users"] = users
+    (plugin / "config.toml").write_text(setup.tomlkit.dumps(config), encoding="utf-8")
+    protected = [repo / "secret.txt", repo / "service.toml", plugin / "config.toml"]
+    before = [path.read_bytes() for path in protected]
+    lease = StateLease(repo / "runtime/state")
+    try:
+        # Even old automation supplying a different/invalid user must not take
+        # ownership of the list that the operator manages in the WebUI.
+        setup.configure(repo, plugin, ["qq：ignored-legacy-option"])
+        assert [path.read_bytes() for path in protected] == before
+    finally:
+        lease.close()
+
+
+def test_webui_users_set_before_first_pairing_survive(installation):
+    plugin, data, _ = single_checkout(installation)
+    config = setup.tomlkit.parse((ROOT / "config.example.toml").read_text(encoding="utf-8"))
+    config["connection"]["allowed_users"] = ["qq:123"]
+    (plugin / "config.toml").write_text(setup.tomlkit.dumps(config), encoding="utf-8")
+    setup.configure(plugin, plugin, data_dir=data)
+    paired = tomllib.loads((plugin / "config.toml").read_text())
+    assert paired["connection"]["allowed_users"] == ["qq:123"]
+    assert paired["connection"]["secret"] == (data / "secret.txt").read_text().strip()
+
+
+def test_legacy_first_prefill_adds_missing_list_to_paired_config(installation):
+    repo, plugin, _ = installation
+    configure(installation)
+    config = setup.tomlkit.parse((plugin / "config.toml").read_text())
+    del config["connection"]["allowed_users"]
+    (plugin / "config.toml").write_text(setup.tomlkit.dumps(config), encoding="utf-8")
+    protected = [repo / "secret.txt", repo / "service.toml"]
+    before = [path.read_bytes() for path in protected]
+    lease = StateLease(repo / "runtime/state")
+    try:
+        setup.configure(repo, plugin, ["qq:789"])
+        assert tomllib.loads((plugin / "config.toml").read_text())["connection"]["allowed_users"] == ["qq:789"]
+        assert [path.read_bytes() for path in protected] == before
+    finally:
+        lease.close()

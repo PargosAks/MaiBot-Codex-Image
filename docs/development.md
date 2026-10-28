@@ -1,10 +1,10 @@
 # 开发与验证
 
-## 0.6.0 架构与版本边界
+## 0.6.1 架构与版本边界
 
 根目录为 MaiBot 薄插件：`plugin.py` 处理命令与真实宿主身份，`bridge.py` 连接独立 MCP，`delivery.py` 保存发送状态。`service/` 为宿主机独立项目，负责 Codex 认证、隔离绘图、队列、任务和图片。
 
-本次插件与安装工具为 **0.6.0**，服务源码、`service/pyproject.toml`、`service/uv.lock` **保持 0.5.0 不变**，保留现有协议兼容性。不要为统一版本号重写服务元数据或锁文件。尚未发布 Release；测试、审查及目标机验收分别见 [验证记录](validation.md)，不能由设计约定推导为通过。
+本次插件与安装工具为 **0.6.1**，服务源码、`service/pyproject.toml`、`service/uv.lock` **保持 0.5.0 不变**，保留现有协议兼容性。不要为统一版本号重写服务元数据或锁文件。尚未发布 Release；测试、审查及目标机验收分别见 [验证记录](validation.md)，不能由设计约定推导为通过。
 
 源码默认只有一份，位于真实 MaiBot `plugins/codex_image`。宿主机从该源码运行独立 MCP；Docker 使用已有插件挂载的宿主机 Source，不增加挂载，不修改 MaiBot、Compose、Dockerfile、镜像或防火墙。
 
@@ -15,7 +15,9 @@
 `setup.sh` 是新用户入口，需要现成 Git、uv 及手动完成的宿主机 Codex 登录。使用 uv 隔离环境运行配置工具，再准备服务环境；不得代替 Codex 登录或 MaiBot 授权。
 
 - 默认插件路径为脚本所在源码根目录，`--plugin-dir` 保留旧分离布局兼容，不再强制分离两份源码。
-- 容器名和允许用户可交互填写；直接部署容器名留空，多网络需选择。支持 `--container`、`--network` 和重复 `--allowed-user`。
+- 容器名可交互填写，直接部署留空，多网络需选择。支持 `--container`、`--network`；从不询问或强制 `--allowed-user`。
+- 新安装默认白名单 `[]`，插件拒绝所有用户；配置 MCP 后由用户在 WebUI 设置真实 `platform:user_id` 和 MaiBot 权限，保存并重载。旧 `--allowed-user` 仅作为可选的首次预填入口保留，可重复。
+- 已有 `connection.allowed_users` 不校验、改写或清空；包括空值或曾填错格式，不得因此阻塞安装，也不得被可选预填参数覆盖。名单由用户在 WebUI 修正和维护。
 - Linux root 默认 systemd，可显式 `--systemd`；`--foreground` 选择前台模式。非 root 的后台管理、user namespace 和特殊 Docker 挂载继续手动处理。
 - 新单目录数据默认 Linux root `/var/lib/maibot-codex-image`，其他用户 `${XDG_DATA_HOME:-$HOME/.local/share}/maibot-codex-image`，支持 `--data-dir`。
 - 数据目录保存 `service.toml`、`secret.txt`、`runtime/state` 和 `venv`；插件 `config.toml` 仍在源码根目录并被 Git 忽略，发送记录继续使用 Host `ctx.paths.data_dir`。
@@ -54,6 +56,7 @@ uv run --project service pytest service/tests -q
 - Docker Gateway、容器 UID/GID、可读插件配置、源码父目录权限、嵌套挂载和路径遮蔽拒绝。
 - 插件重载不启停 MCP；协议兼容的插件更新后仍由同一 MCP 进程查询旧任务、取回原图，重复提交保持幂等；不能只用健康接口证明。
 - 空白名单、未授权或不可信身份在插件侧拒绝；服务拒绝错误 Bearer / HMAC、过期 scope 和跨归属访问。
+- 安装流程不询问或要求用户白名单；首次默认空名单，可选参数仅首次预填；已有空名单或错误格式原样保留且不阻塞安装。WebUI 修改后保存、重载即可生效，无需重启 MCP。
 - 发送未知保护、原任务库和发送记录不被清空，0.2 / 0.3 数据不被误当成已迁移。
 
 运行独立进程与模拟 Codex 的集成测试，可以验证连接、任务与不重启边界；不能替代实际 Codex 绘图或 WebUI 重载验收。
@@ -70,4 +73,4 @@ python scripts/build_bundle.py
 
 自动测试、独立审查、Docker / VPS 部署、实际聊天发图和用户验收分别记录。协议兼容与同一进程复用须绑定版本及环境；模拟 Docker / systemd 不等于真实部署通过。真实绘图另行记录客户端版本、任务状态和聊天收图结果。
 
-[验证记录](validation.md) 中的旧版本结果保持历史语境，不作为 0.6.0 安装流程通过证据；原生 MCP 的 SDK 边界见 [原生 MCP 验证](native-mcp-feasibility.md)。
+[验证记录](validation.md) 中的旧版本结果保持历史语境，不作为 0.6.1 安装流程通过证据；原生 MCP 的 SDK 边界见 [原生 MCP 验证](native-mcp-feasibility.md)。

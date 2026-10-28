@@ -11,9 +11,10 @@ for argument in "$@"; do
     case "$argument" in
         --foreground|--systemd) automatic_systemd=no ;;
         --help|-h)
-            echo '用法：bash setup.sh [--container 容器名] [--allowed-user qq:用户ID]'
+            echo '用法：bash setup.sh [--container 容器名]'
             echo '可选：--network 网络 --data-dir 原服务配置目录 --foreground --systemd'
             echo 'Linux root 默认配置 systemd；源码放 plugins/codex_image，脚本在宿主机运行。'
+            echo '允许用户请在 MaiBot 插件面板配置；新安装空白名单默认拒绝所有请求。'
             echo '重复使用保留原登录、密钥和任务；仅更新插件时无需运行本脚本或重启 MCP。'
             exit 0 ;;
     esac
