@@ -1,6 +1,6 @@
 # 宿主机独立 MCP 部署（Linux / Docker）
 
-首次安装优先看 [新人快速开始](quickstart.md)：完整源码放进插件目录，在宿主机执行 `bash setup.sh`，Linux root 默认设置 systemd。插件与安装工具为 0.6.1，独立服务仍为 0.5.0；仅插件升级无需重启兼容 MCP。脚本不要求允许用户，装好后在 MaiBot 插件面板设置白名单。以下是可选的手动部署及旧分离布局管理流程，不是新用户的必经步骤。工具不自动登录、不改 MaiBot 授权，最后仍需 WebUI 授权与重载。尚无 Release，实际 Linux + Docker 安装未验收；Windows 见 [手动指南](manual-setup.md)。
+首次安装优先看 [新人快速开始](quickstart.md)：完整源码放进插件目录，在宿主机执行 `bash setup.sh`，Linux root 默认设置 systemd。插件与安装工具为 0.6.2，独立服务仍为 0.5.0；仅插件升级无需重启兼容 MCP。脚本不要求允许用户，装好后在 MaiBot 插件面板设置白名单。以下是可选的手动部署及旧分离布局管理流程，不是新用户的必经步骤。工具不自动登录、不改 MaiBot 授权，最后仍需 WebUI 授权与重载。尚无 Release，实际 Linux + Docker 安装未验收；Windows 见 [手动指南](manual-setup.md)。
 
 0.5.0 的允许用户仅在插件 `connection.allowed_users` 配置；服务不再维护白名单。旧 `service.toml` 的 `allowed_users` 读取时会警告并忽略，建议删除旧项。服务仍校验 Bearer、HMAC、有效期、scope 完整性与任务归属，持钥调用方视为可信。
 
@@ -104,7 +104,7 @@ uv run --project service --no-dev codex-image-mcp --config "$PWD/service.toml"
 
 ```toml
 [plugin]
-config_version = "0.6.1"
+config_version = "0.6.2"
 enabled = true
 
 [connection]

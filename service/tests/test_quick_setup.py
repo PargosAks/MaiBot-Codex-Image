@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import importlib.util
 import json
 import shutil
+import stat
 import subprocess
 import tomllib
 
@@ -352,7 +353,7 @@ def test_single_checkout_keeps_host_data_outside_plugin_and_accepts_runner_defau
     setup.configure(plugin, plugin, ["qq:123"], data_dir=data)
     cfg = tomllib.loads((plugin / "config.toml").read_text())
     service = tomllib.loads((data / "service.toml").read_text())
-    assert cfg["plugin"] == {"enabled": False, "config_version": "0.6.1"}
+    assert cfg["plugin"] == {"enabled": False, "config_version": "0.6.2"}
     assert cfg["connection"]["secret"] == (data / "secret.txt").read_text().strip()
     assert service["state"] == str((data / "runtime/state").resolve())
     assert service["home"] == str(home)
@@ -370,11 +371,11 @@ def test_single_checkout_repeat_while_mcp_running_preserves_login_key_and_jobs(i
     protected = [data / "secret.txt", data / "service.toml", database, auth, home / "config.toml"]
     original = [path.read_bytes() for path in protected]
     cfg = plugin / "config.toml"
-    cfg.write_text(cfg.read_text().replace('config_version = "0.6.1"', 'config_version = "0.5.0"'))
+    cfg.write_text(cfg.read_text().replace('config_version = "0.6.2"', 'config_version = "0.5.0"'))
     lease = StateLease(data / "runtime/state")
     try:
         setup.configure(plugin, plugin, ["qq:123"], data_dir=data)
-        assert tomllib.loads(cfg.read_text())["plugin"]["config_version"] == "0.6.1"
+        assert tomllib.loads(cfg.read_text())["plugin"]["config_version"] == "0.6.2"
         assert [path.read_bytes() for path in protected] == original
     finally:
         lease.close()
@@ -573,3 +574,178 @@ def test_legacy_first_prefill_adds_missing_list_to_paired_config(installation):
         assert [path.read_bytes() for path in protected] == before
     finally:
         lease.close()
+
+
+@pytest.fixture
+def uv_lock_tree(tmp_path, monkeypatch):
+    root = tmp_path / "host-data"
+    environment = root / "venv"
+    environment.mkdir(parents=True)
+    lock = environment / ".lock"
+    lock.write_bytes(b"")
+    original = Path.lstat
+    overrides = {lock: SimpleNamespace(st_uid=0, st_mode=0o100666)}
+    monkeypatch.setattr(setup, "require_root_path", lambda path: None)
+    def posix_lstat(path, *args, **kwargs):
+        if path in overrides:
+            return overrides[path]
+        info = original(path, *args, **kwargs)
+        mode = stat.S_IFMT(info.st_mode) | (0o755 if stat.S_ISDIR(info.st_mode) else 0o644)
+        return SimpleNamespace(st_uid=0, st_mode=mode, st_size=info.st_size)
+
+    monkeypatch.setattr(Path, "lstat", posix_lstat)
+    return root, environment, lock, overrides
+
+
+def test_exact_registered_uv_lock_accepts_normal_0666_mode_without_chmod(uv_lock_tree):
+    root, environment, lock, _ = uv_lock_tree
+    before = lock.read_bytes()
+    setup.validate_root_install(root, "/usr/bin/uv", "/usr/bin/codex", environment=environment)
+    assert lock.read_bytes() == before
+    with pytest.raises(ValueError, match="其他用户可写"):
+        setup.validate_root_install(root, "/usr/bin/uv", "/usr/bin/codex")
+
+
+@pytest.mark.parametrize("uid,mode", [(1001, 0o100666), (0, 0o120777), (0, 0o40755),
+                                    (0, 0o010666), (0, 0o100777)])
+def test_uv_lock_exception_rejects_nonroot_link_directory_fifo_and_executable(uv_lock_tree, uid, mode):
+    root, environment, lock, overrides = uv_lock_tree
+    overrides[lock] = SimpleNamespace(st_uid=uid, st_mode=mode)
+    with pytest.raises(ValueError, match="普通非可执行文件"):
+        setup.validate_root_install(root, "/usr/bin/uv", "/usr/bin/codex", environment=environment)
+
+
+@pytest.mark.parametrize("relative", ["runtime/.lock", "venv/lib/.lock", "venv/lib/imported.py", "venv/bin/python"])
+def test_uv_lock_exception_does_not_allow_other_writable_files(uv_lock_tree, relative):
+    root, environment, _, overrides = uv_lock_tree
+    unsafe = root / relative
+    unsafe.parent.mkdir(parents=True, exist_ok=True)
+    unsafe.write_bytes(b"do not execute")
+    overrides[unsafe] = SimpleNamespace(st_uid=0, st_mode=0o100666)
+    with pytest.raises(ValueError, match="其他用户可写"):
+        setup.validate_root_install(root, "/usr/bin/uv", "/usr/bin/codex", environment=environment)
+
+
+def test_uv_lock_exception_still_rejects_replaceable_environment_directory(uv_lock_tree):
+    root, environment, _, overrides = uv_lock_tree
+    overrides[environment] = SimpleNamespace(st_uid=0, st_mode=0o40777)
+    with pytest.raises(ValueError, match="其他用户可写"):
+        setup.validate_root_install(root, "/usr/bin/uv", "/usr/bin/codex", environment=environment)
+
+
+def test_root_permission_error_identifies_actual_uid_and_mode(installation, monkeypatch):
+    repo, _, _ = installation
+    executable = repo / "native-codex"
+    executable.write_bytes(b"never execute")
+    original = Path.stat
+    monkeypatch.setattr(Path, "stat", lambda path, *a, **kw: SimpleNamespace(st_uid=1001, st_mode=0o100755)
+                        if path == executable else original(path, *a, **kw))
+    with pytest.raises(ValueError, match=r"UID=1001，权限=0755"):
+        setup.require_root_path(executable)
+
+
+def test_service_sync_does_not_inherit_setup_tool_virtual_environment(installation, monkeypatch):
+    repo, _, _ = installation
+    data = repo.parent / "private-data"
+    monkeypatch.setenv("VIRTUAL_ENV", "/temporary/setup-environment")
+    calls = []
+    monkeypatch.setattr(setup.subprocess, "run", lambda argv, **kwargs: calls.append((argv, kwargs)))
+    setup.sync_environment(repo, data, "/usr/bin/uv")
+    argv, kwargs = calls[0]
+    assert kwargs["check"] is True and "--active" not in argv
+    assert kwargs["env"]["UV_PROJECT_ENVIRONMENT"] == str(data / "venv")
+    assert "VIRTUAL_ENV" not in kwargs["env"]
+    assert setup.os.environ["VIRTUAL_ENV"] == "/temporary/setup-environment"
+
+
+def test_first_install_can_resume_after_post_uv_validation_failed(installation, monkeypatch):
+    repo, plugin, home = installation
+    target = repo.parent / "units" / setup.UNIT_NAME
+    target.parent.mkdir()
+    monkeypatch.setattr(setup, "systemd_preflight", lambda *a, **kw: target)
+    monkeypatch.setattr(setup, "install_systemd", lambda *a, **kw: None)
+    monkeypatch.setattr(setup, "start_systemd", lambda: None)
+    syncs, validations = [], []
+
+    def synced(*args):
+        syncs.append(args)
+        executable = repo / "venv" / ("Scripts/python.exe" if setup.os.name == "nt" else "bin/python")
+        executable.parent.mkdir(parents=True, exist_ok=True)
+        executable.write_bytes(b"synthetic environment")
+
+    def validated(*args, **kwargs):
+        validations.append(kwargs)
+        if len(validations) == 1:
+            raise ValueError("synthetic old uv lock false positive")
+
+    monkeypatch.setattr(setup, "sync_environment", synced)
+    monkeypatch.setattr(setup, "validate_root_install", validated)
+    before_home = (home / "config.toml").read_bytes()
+    with pytest.raises(ValueError, match="false positive"):
+        setup.configure(repo, plugin, use_systemd=True, prepare_environment=True)
+    state = repo / "runtime/state"
+    assert {path.name for path in state.iterdir()} == {".service.lock"}
+    assert not (repo / "secret.txt").exists() and not (repo / "service.toml").exists()
+    setup.configure(repo, plugin, use_systemd=True, prepare_environment=True)
+    assert len(syncs) == 2  # An incomplete first install rechecks its cached environment.
+    assert validations[-1]["environment"] == repo / "venv"
+    assert (repo / "secret.txt").exists() and (repo / "service.toml").exists()
+    assert tomllib.loads((repo / "service.toml").read_text())["state"] == str(state)
+    assert (home / "config.toml").read_bytes() == before_home
+
+
+@pytest.mark.parametrize("content", ["jobs.sqlite3", "artifacts", "codex-runtime", "unknown-file", "nonempty-lock"])
+def test_missing_key_with_real_or_unknown_state_still_refuses_generation(installation, content):
+    repo, plugin, _ = installation
+    state = repo / "runtime/state"
+    state.mkdir(parents=True)
+    if content in {"artifacts", "codex-runtime"}:
+        (state / content).mkdir()
+    else:
+        (state / (".service.lock" if content == "nonempty-lock" else content)).write_bytes(b"existing state")
+    with pytest.raises(ValueError, match="原密钥"):
+        setup.configure(repo, plugin)
+    assert not (repo / "secret.txt").exists()
+
+
+def test_missing_key_with_dangling_state_link_still_refuses_generation(installation, monkeypatch):
+    repo, plugin, _ = installation
+    state = repo / "runtime/state"
+    original = Path.is_symlink
+    monkeypatch.setattr(Path, "is_symlink", lambda path: path == state or original(path))
+    with pytest.raises(ValueError, match="原密钥"):
+        setup.configure(repo, plugin)
+    assert not (repo / "secret.txt").exists()
+
+
+def test_empty_state_lock_link_is_not_treated_as_pristine(installation, monkeypatch):
+    repo, plugin, _ = installation
+    state = repo / "runtime/state"
+    state.mkdir(parents=True)
+    lock = state / ".service.lock"
+    lock.write_bytes(b"")
+    original = Path.lstat
+    monkeypatch.setattr(Path, "lstat", lambda path, *a, **kw: SimpleNamespace(st_mode=0o120777, st_size=0)
+                        if path == lock else original(path, *a, **kw))
+    with pytest.raises(ValueError, match="原密钥"):
+        setup.configure(repo, plugin)
+    assert not (repo / "secret.txt").exists()
+
+
+@pytest.mark.parametrize("keep_metadata", [False, True])
+def test_missing_paired_service_config_refuses_resync_or_replacement(installation, monkeypatch, keep_metadata):
+    repo, plugin, _ = installation
+    configure(installation)
+    (repo / "service.toml").unlink()
+    if not keep_metadata:
+        (repo / "runtime/setup-host.json").unlink()
+    key, config = (repo / "secret.txt").read_bytes(), (plugin / "config.toml").read_bytes()
+
+    def forbidden(*args):
+        raise AssertionError("Do not resync an environment whose original service paths are missing")
+
+    monkeypatch.setattr(setup, "sync_environment", forbidden)
+    with pytest.raises(ValueError, match="恢复原服务配置"):
+        setup.configure(repo, plugin, prepare_environment=True)
+    assert not (repo / "service.toml").exists()
+    assert (repo / "secret.txt").read_bytes() == key and (plugin / "config.toml").read_bytes() == config

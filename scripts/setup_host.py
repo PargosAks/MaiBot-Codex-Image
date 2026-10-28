@@ -163,14 +163,16 @@ def require_root_path(path):
     for entry in (path, *path.parents):
         info = entry.stat()
         if info.st_uid != 0 or info.st_mode & 0o022:
-            raise ValueError(f"root 后台服务要求路径由 root 所有且组/其他用户不可写：{entry}")
+            raise ValueError(f"root 后台服务要求路径由 root 所有且组/其他用户不可写：{entry}"
+                             f"（UID={info.st_uid}，权限={stat.S_IMODE(info.st_mode):04o}）")
 
 
-def validate_root_install(root, uv, binary):
+def validate_root_install(root, uv, binary, environment=None):
     # A privileged boot service must not execute a source tree that another user can replace.
     for executable in (uv, binary, sys.executable):
         require_root_path(executable)
     require_root_path(root)
+    environment_lock = Path(environment) / ".lock" if environment is not None else None
     for directory, dirs, files in os.walk(root, followlinks=False):
         for name in [*dirs, *files]:
             path = Path(directory) / name
@@ -179,8 +181,18 @@ def validate_root_install(root, uv, binary):
             if path == root / "config.toml" and path.is_file() and not path.is_symlink():
                 continue
             info = path.lstat()
+            if path == environment_lock:
+                # uv deliberately creates a writable coordination file. Its
+                # contents are not imported/executed. Only this exact regular,
+                # root-owned, non-executable file is exempt from write checks;
+                # its parent directories and all environment code stay protected.
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o111:
+                    raise ValueError(f"uv 环境锁必须是 root 所属的普通非可执行文件：{path}"
+                                     f"（UID={info.st_uid}，权限={stat.S_IMODE(info.st_mode):04o}）")
+                continue
             if info.st_uid != 0 or (not stat.S_ISLNK(info.st_mode) and info.st_mode & 0o022):
-                raise ValueError(f"root 后台服务源码/环境含非 root 所有或其他用户可写路径：{path}")
+                raise ValueError(f"root 后台服务源码/环境含非 root 所有或其他用户可写路径：{path}"
+                                 f"（UID={info.st_uid}，权限={stat.S_IMODE(info.st_mode):04o}）")
             if path.is_symlink():
                 resolved = path.resolve(strict=True)
                 if resolved.is_dir() and not resolved.is_relative_to(root):
@@ -217,9 +229,9 @@ def systemd_preflight(unit, root, uv, binary, directory=Path("/etc/systemd/syste
     for name in ("systemctl", "systemd-analyze"):
         if not shutil.which(name):
             raise ValueError(f"缺少 {name}，请使用前台启动或手动部署。")
-    validate_root_install(root, uv, binary)
+    validate_root_install(root, uv, binary, environment=data_dir / "venv")
     if data_dir != root:
-        validate_root_install(data_dir, uv, binary)
+        validate_root_install(data_dir, uv, binary, environment=data_dir / "venv")
     target = directory / UNIT_NAME
     if target.is_symlink():
         raise ValueError("现有 systemd 服务文件是符号链接，请按手动指南处理。")
@@ -273,8 +285,27 @@ def pristine_plugin_config(config):
 
 def sync_environment(root, data_dir, uv):
     env = dict(os.environ, UV_PROJECT_ENVIRONMENT=str(data_dir / "venv"))
+    # This subprocess targets the service environment, not uv's temporary setup
+    # tool environment. Never use --active here.
+    env.pop("VIRTUAL_ENV", None)
     subprocess.run([uv, "sync", "--project", str(root / "service"), "--locked", "--no-dev", "--python", "3.13"],
                    env=env, check=True)
+
+
+def has_persistent_state(state):
+    if state.is_symlink():
+        return True
+    if not state.exists():
+        return False
+    if not state.is_dir():
+        return True
+    for entry in state.iterdir():
+        info = entry.lstat()
+        # StateLease can create this empty regular file before first setup has
+        # written any secret or config. It alone is not evidence of old jobs.
+        if entry.name != ".service.lock" or not stat.S_ISREG(info.st_mode) or info.st_size != 0:
+            return True
+    return False
 
 
 def validate_host_privacy(info, paths):
@@ -356,9 +387,11 @@ def configure(root, plugin_dir, allowed=None, host="127.0.0.1", port=8765, uv="u
             copy_plugin = True
         pristine = pristine_plugin_config(old_plugin)
         if not secret_path.exists() and (
-            service_path.exists() or (old_plugin and not pristine) or prior or (runtime / "state").exists()
+            service_path.exists() or (old_plugin and not pristine) or prior or has_persistent_state(runtime / "state")
         ):
             raise ValueError("已有配置或状态但缺少 secret.txt，请恢复原密钥；不会自动换新。")
+        if not service_path.exists() and (prior or (old_plugin and not pristine)):
+            raise ValueError("已有配对记录或插件连接但缺少 service.toml，请恢复原服务配置；不会猜测登录或任务路径。")
         secret = secret_path.read_text(encoding="utf-8").strip() if secret_path.exists() else secrets.token_urlsafe(40)
         if len(secret) < 32 or not secret.strip():
             raise ValueError("secret.txt 无效，请恢复原密钥。")
@@ -394,7 +427,9 @@ def configure(root, plugin_dir, allowed=None, host="127.0.0.1", port=8765, uv="u
         service_changed = not service_path.exists() or service_path.read_text(encoding="utf-8") != service_text
         unit_changed = use_systemd and (not unit_target.exists() or unit_target.read_text(encoding="utf-8") != unit)
         python_name = "Scripts/python.exe" if os.name == "nt" else "bin/python"
-        needs_environment = prepare_environment and not (data_dir / "venv" / python_name).is_file()
+        needs_environment = prepare_environment and (
+            not (data_dir / "venv" / python_name).is_file() or not service_path.exists()
+        )
         # A plugin-only reconfiguration can run while the independent MCP owns
         # its database. Only service/config/environment changes need its lease.
         lease = StateLease(state) if service_changed or unit_changed or needs_environment else None
@@ -402,7 +437,7 @@ def configure(root, plugin_dir, allowed=None, host="127.0.0.1", port=8765, uv="u
             if needs_environment:
                 sync_environment(root, data_dir, uv)
                 if use_systemd:
-                    validate_root_install(data_dir, uv, binary)
+                    validate_root_install(data_dir, uv, binary, environment=data_dir / "venv")
             backup = runtime / "backups" / str(time.time_ns())
             for path, label in ((service_path, "service.toml"), (plugin_path, "plugin-config.toml"),
                                 (metadata_path, "setup-host.json")):
