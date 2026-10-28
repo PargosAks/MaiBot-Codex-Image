@@ -2,7 +2,7 @@
 
 **一份源码放进 MaiBot 插件目录，在宿主机运行一次 `bash setup.sh` 配置 MCP，再到 MaiBot WebUI 设置允许用户与权限，保存并重载插件。** MCP 服务独立运行，插件加载、重载和卸载不会启停它。
 
-本指南对应插件与安装工具 **0.6.2**，宿主机 MCP 服务仍为 **0.5.0**。尚未发布 Release；各版本验证范围见 [验证记录](validation.md)，实际 Linux / Docker 部署和聊天收图仍待目标机验收。
+本指南对应插件与安装工具 **0.6.3**，宿主机 MCP 服务仍为 **0.5.0**。尚未发布 Release；各版本验证范围见 [验证记录](validation.md)，实际 Linux / Docker 部署和聊天收图仍待目标机验收。
 
 ## 1. 安装前准备
 
@@ -114,7 +114,7 @@ git pull --ff-only
 
 随后在 MaiBot WebUI **重载插件**，不需要重启独立 MCP，不需要重跑 `setup.sh`。插件重建连接后继续访问原服务的任务和图片。Git 若报告冲突或无法快进，先核对本地改动，不要强制重置。
 
-本次 0.6.2 更新保留 0.5.0 服务源码、`service/pyproject.toml` 和 `service/uv.lock`，无需重启兼容的 MCP；版本说明应区分插件和服务。后续更新若涉及 MCP 源码、依赖、监听地址或共享密钥，则属于服务维护：等待在途任务处理完，停止服务，核对并保留原配置、密钥、Codex 登录与任务路径，再重新配置和启动。不要把 `git pull` 当成服务热更新。
+本次 0.6.3 更新保留 0.5.0 服务源码、`service/pyproject.toml` 和 `service/uv.lock`，无需重启兼容的 MCP；版本说明应区分插件和服务。后续更新若涉及 MCP 源码、依赖、监听地址或共享密钥，则属于服务维护：等待在途任务处理完，停止服务，核对并保留原配置、密钥、Codex 登录与任务路径，再重新配置和启动。不要把 `git pull` 当成服务热更新。
 
 **已使用独立 MCP 的旧安装：**直接更新插件源码、重载插件，继续连接原 URL 和密钥即可；无需运行新 `setup.sh`，无需迁移数据。旧宿主机服务仓库可能仍被 systemd 引用，不要删除。若确需改由新源码启动服务，先看 [迁移说明](advanced.md#从旧版本迁移)，不能直接套用新安装路径。
 
@@ -153,3 +153,14 @@ bash setup.sh
 保留原配置和数据，无需更改锁文件权限或删除虚拟环境、任务目录。尚未配对的初装仅留下空状态目录和空 `.service.lock` 时可继续；若已有数据库、图片或其他状态却缺少原密钥，脚本仍会停止，需恢复原密钥。
 
 其他权限错误会显示实际 UID 与权限。Codex 程序、源码和目录仍须满足 root 后台执行要求，应针对报错路径核对，不递归修改整个 Codex 登录目录。
+
+如果旧脚本仅显示 `CalledProcessError`，说明它没有显示具体失败阶段，不能据此认定缺少权限或依赖。0.6.3 会显示失败命令名称与退出码；同时修正了生成单元的 `WorkingDirectory` 引号问题。
+
+可在宿主机执行以下只读检查，默认路径示例中的数据目录按实际值替换：
+
+```sh
+systemd-analyze verify /var/lib/maibot-codex-image/runtime/maibot-codex-image.service
+systemctl show maibot-codex-image.service -p LoadState -p ActiveState -p SubState -p Result -p ExecMainStatus
+```
+
+核对实际命令输出后再处理。不要删除密钥或任务目录来绕过失败；也不要将 `secret.txt`、Codex 登录文件或完整插件配置粘贴到排错记录。

@@ -1,5 +1,16 @@
 # 验证记录
 
+## 0.6.3 systemd 单元与失败诊断（2026-10-28，Asia/Hong_Kong）
+
+- 用户的 VPS 日志仅显示 `CalledProcessError`，没有具体命令或退出码；不能据此区分单元校验、daemon-reload、enable/start 或 is-active。已请求只读 verify 输出，尚不能认定 VPS 的具体失败原因。
+- 静态核对 [systemd v252 路径解析实现](https://github.com/systemd/systemd/blob/v252/src/core/load-fragment.c)：`config_parse_working_directory` 将完整值直接用于绝对路径检查，不剥除命令参数式包围引号。因此修正生成的 `WorkingDirectory`，`Environment` / `ExecStart` 保留原各自引号语义；拒绝不支持的路径控制符。
+- 作者完整回归 **220 项通过**，Ruff 基础规则通过；Windows / Python 3.12.14、锁定 SDK 2.16.0 和服务依赖。新增覆盖裸完整工作目录、内部空格、非法控制符、失败阶段/退出码、捕获输出及任意参数不泄露、超时，以及校验失败不发布/重载/启动且释放 lease、保留配置和密钥。
+- 本机仅有已停止的 Docker Desktop WSL，Docker daemon 不可用；未为测试启动它，未执行真实 Linux `systemd-analyze verify`。上述单元语法证据为官方源码核对与输出模型，不替代 Linux 实机验证。
+- 固定快照独立只读复核为 PASS，18 项定向测试、71 项边界模型与一致性检查通过；被审脚本 SHA256 为 `7dedd217b7ef81d253c5a90834b0ced96a4a7db0b90b48933137e8fb04526598`。范围限于路径字段、失败输出保护、退出和调用顺序，不转为真实 Linux/systemd 验证。
+- 文档检查为 40 个本地链接/锚点、26 段 Shell、5 段 TOML 与 3 条假 uv 参数路径通过。MCP 服务源码、依赖、锁文件、Bridge 与发送逻辑未改，MaiBot 本体与镜像未改；未发布 Release。
+
+**仍需确认：** VPS 的实际 verify 错误、system manager 状态、修复后安装与真实聊天收图。不能将本次代码修正或模拟错误测试表述为该 VPS 已恢复。
+
 ## 0.6.2 uv 锁文件与初装恢复（2026-10-28，Asia/Hong_Kong）
 
 - 用户的 Linux VPS 日志显示依赖已同步到宿主机环境，但安装器拒绝 `venv/.lock`；这只证明安装进行到该检查，不代表 MCP 或 systemd 已部署成功。

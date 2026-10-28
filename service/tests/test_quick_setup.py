@@ -353,7 +353,7 @@ def test_single_checkout_keeps_host_data_outside_plugin_and_accepts_runner_defau
     setup.configure(plugin, plugin, ["qq:123"], data_dir=data)
     cfg = tomllib.loads((plugin / "config.toml").read_text())
     service = tomllib.loads((data / "service.toml").read_text())
-    assert cfg["plugin"] == {"enabled": False, "config_version": "0.6.2"}
+    assert cfg["plugin"] == {"enabled": False, "config_version": "0.6.3"}
     assert cfg["connection"]["secret"] == (data / "secret.txt").read_text().strip()
     assert service["state"] == str((data / "runtime/state").resolve())
     assert service["home"] == str(home)
@@ -371,11 +371,11 @@ def test_single_checkout_repeat_while_mcp_running_preserves_login_key_and_jobs(i
     protected = [data / "secret.txt", data / "service.toml", database, auth, home / "config.toml"]
     original = [path.read_bytes() for path in protected]
     cfg = plugin / "config.toml"
-    cfg.write_text(cfg.read_text().replace('config_version = "0.6.2"', 'config_version = "0.5.0"'))
+    cfg.write_text(cfg.read_text().replace('config_version = "0.6.3"', 'config_version = "0.5.0"'))
     lease = StateLease(data / "runtime/state")
     try:
         setup.configure(plugin, plugin, ["qq:123"], data_dir=data)
-        assert tomllib.loads(cfg.read_text())["plugin"]["config_version"] == "0.6.2"
+        assert tomllib.loads(cfg.read_text())["plugin"]["config_version"] == "0.6.3"
         assert [path.read_bytes() for path in protected] == original
     finally:
         lease.close()
@@ -749,3 +749,82 @@ def test_missing_paired_service_config_refuses_resync_or_replacement(installatio
         setup.configure(repo, plugin, prepare_environment=True)
     assert not (repo / "service.toml").exists()
     assert (repo / "secret.txt").read_bytes() == key and (plugin / "config.toml").read_bytes() == config
+
+
+@pytest.mark.parametrize("argv,stage", [
+    (["systemd-analyze", "verify", "/private/maibot-codex-image.service"], "服务单元校验"),
+    (["systemctl", "daemon-reload"], "配置重载"),
+    (["systemctl", "enable", "--now", setup.UNIT_NAME], "服务启用与启动"),
+    (["systemctl", "is-active", setup.UNIT_NAME], "运行状态检查"),
+    (["/usr/local/bin/uv", "sync", "--project", "/private/service"], "服务依赖同步"),
+    (["docker", "exec", "private-container", "id", "-u"], "容器用户或访问检查"),
+])
+def test_cli_reports_failed_stage_and_exit_code_without_captured_secrets(monkeypatch, capsys, argv, stage):
+    private = "synthetic-private-secret-never-print"
+
+    def failed(argv=None):
+        raise subprocess.CalledProcessError(7, command, output=private, stderr=private)
+
+    command = argv
+    monkeypatch.setattr(setup, "main", failed)
+    assert setup.cli([]) == 1
+    output = capsys.readouterr()
+    assert stage in output.err and "退出码 7" in output.err
+    assert "CalledProcessError" not in output.err and private not in output.err + output.out
+    assert "private-container" not in output.err
+
+
+def test_unknown_command_and_timeout_do_not_echo_arbitrary_arguments_or_output():
+    private = "synthetic-secret-in-command-output"
+    unknown = subprocess.CalledProcessError(3, [private, private], output=private, stderr=private)
+    assert private not in setup.describe_setup_error(unknown)
+    timeout = subprocess.TimeoutExpired(["systemd-analyze", "verify", private], 60, output=private, stderr=private)
+    description = setup.describe_setup_error(timeout)
+    assert "执行超时" in description and private not in description
+
+
+def test_unit_verify_failure_offers_shell_quoted_read_only_check():
+    path = Path("/private folder/maibot-codex-image.service")
+    error = subprocess.CalledProcessError(1, ["systemd-analyze", "verify", str(path)], stderr="do not echo raw stderr")
+    description = setup.describe_setup_error(error)
+    assert setup.shlex.join(["systemd-analyze", "verify", str(path)]) in description
+    assert "只读检查" in description and "do not echo raw stderr" not in description
+
+
+def test_unit_verify_failure_never_publishes_or_starts_after_failure(installation, monkeypatch, capsys):
+    repo, plugin, _ = installation
+    target = repo.parent / "units" / setup.UNIT_NAME
+    target.parent.mkdir()
+    monkeypatch.setattr(setup, "systemd_preflight", lambda *a, **kw: target)
+    calls = []
+
+    def reject_unit(argv):
+        calls.append(argv)
+        assert argv[:2] == ["systemd-analyze", "verify"]
+        raise subprocess.CalledProcessError(1, argv, stderr="synthetic hidden diagnostic")
+
+    monkeypatch.setattr(setup, "command", reject_unit)
+    monkeypatch.setattr(setup, "main", lambda argv: setup.configure(repo, plugin, use_systemd=True))
+    assert setup.cli([]) == 1
+    output = capsys.readouterr()
+    assert "正在校验 systemd" in output.out and "服务单元校验失败" in output.err
+    assert len(calls) == 1 and not target.exists()
+    assert (repo / "service.toml").exists() and (repo / "secret.txt").exists()
+    assert (repo / "runtime" / setup.UNIT_NAME).exists()
+    lease = StateLease(repo / "runtime/state")
+    lease.close()
+
+
+def test_working_directory_is_a_bare_path_while_exec_and_environment_stay_quoted():
+    root = Path("/opt/a directory/plugins/codex_image")
+    unit = setup.systemd_unit(root, "/usr/bin/uv", "/root/.codex", "/usr/bin/codex")
+    line = next(line for line in unit.splitlines() if line.startswith("WorkingDirectory="))
+    assert line == "WorkingDirectory=" + root.as_posix()
+    assert 'Environment="CODEX_HOME=/root/.codex"' in unit
+    assert 'ExecStart="/usr/bin/uv" run --project ' + setup.quote_unit(root / "service") in unit
+
+
+@pytest.mark.parametrize("suffix", ["trailing ", "tab\tname", "line\nname", "escape\x1bname", "percent%name"])
+def test_working_directory_rejects_unsupported_path_control_or_expansion(suffix):
+    with pytest.raises(ValueError):
+        setup.unit_directory(Path("/opt") / suffix)

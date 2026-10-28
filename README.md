@@ -17,7 +17,7 @@
 
 目前不支持改图、参考图、批量生成或自然语言自动触发。绘图使用账号额度，实际可用能力以账号为准。
 
-插件与安装工具版本为 **0.6.2**，兼容独立 MCP 服务 **0.5.0**；服务源码、依赖与协议保持不变。各版本验证范围见 [验证记录](docs/validation.md)，Linux / Docker 实际部署待验证，尚未发布 Release。
+插件与安装工具版本为 **0.6.3**，兼容独立 MCP 服务 **0.5.0**；服务源码、依赖与协议保持不变。各版本验证范围见 [验证记录](docs/validation.md)，Linux / Docker 实际部署待验证，尚未发布 Release。
 
 ## 3. 如何安装部署
 
@@ -45,7 +45,7 @@ bash setup.sh
 
 ```toml
 [plugin]
-config_version = "0.6.2"
+config_version = "0.6.3"
 enabled = true
 
 [connection]
@@ -62,7 +62,7 @@ Docker bridge 的地址由脚本根据现有网络选择，不能照抄容器内
 
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
-| `plugin.config_version` | `"0.6.2"` | 插件配置版本；已有配置按兼容规则读取 |
+| `plugin.config_version` | `"0.6.3"` | 插件配置版本；已有配置按兼容规则读取 |
 | `plugin.enabled` | `true` | 是否启用插件 |
 | `connection.url` | `"http://127.0.0.1:8765/mcp"` | 宿主机 MCP 地址，由脚本配对 |
 | `connection.secret` | `""` | 必填；至少 32 字符，与服务一致 |

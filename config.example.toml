@@ -1,5 +1,5 @@
 [plugin]
-config_version = "0.6.2"
+config_version = "0.6.3"
 enabled = true
 
 [connection]

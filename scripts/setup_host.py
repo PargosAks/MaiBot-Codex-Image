@@ -37,6 +37,40 @@ def command(argv):
     return subprocess.run(argv, check=True, capture_output=True, text=True, timeout=60).stdout
 
 
+def describe_setup_error(exc):
+    if isinstance(exc, (ValueError, RuntimeError)):
+        return str(exc)
+    if not isinstance(exc, (subprocess.CalledProcessError, subprocess.TimeoutExpired)):
+        return type(exc).__name__
+    argv = exc.cmd if isinstance(exc.cmd, (list, tuple)) else []
+    name = Path(str(argv[0])).name if argv else ""
+    prefix = (name, str(argv[1])) if len(argv) > 1 else (name, "")
+    labels = {
+        ("systemd-analyze", "verify"): ("systemd 服务单元校验", "systemd-analyze verify"),
+        ("systemctl", "daemon-reload"): ("systemd 配置重载", "systemctl daemon-reload"),
+        ("systemctl", "enable"): ("systemd 服务启用与启动", "systemctl enable --now"),
+        ("systemctl", "is-active"): ("systemd 服务运行状态检查", "systemctl is-active"),
+        ("uv", "sync"): ("服务依赖同步", "uv sync"),
+        ("uv.exe", "sync"): ("服务依赖同步", "uv sync"),
+        ("docker", "context"): ("Docker 连接检查", "docker context inspect"),
+        ("docker", "info"): ("Docker 运行模式检查", "docker info"),
+        ("docker", "inspect"): ("Docker 容器检查", "docker inspect"),
+        ("docker", "exec"): ("Docker 容器用户或访问检查", "docker exec"),
+    }
+    stage, label = labels.get(prefix, ("外部命令", "未识别命令"))
+    outcome = f"退出码 {exc.returncode}" if isinstance(exc, subprocess.CalledProcessError) else "执行超时"
+    message = f"{stage}失败（{label}，{outcome}）。"
+    # Never print arbitrary argv/stdout/stderr: Docker context and command output
+    # may contain credentials. Only offer fixed, read-only diagnostic commands.
+    if prefix == ("systemd-analyze", "verify") and len(argv) == 3:
+        path = Path(str(argv[2]))
+        if path.name == UNIT_NAME:
+            message += "\n请在宿主机执行只读检查：" + shlex.join(["systemd-analyze", "verify", str(path)])
+    elif name == "systemctl":
+        message += "\n请检查服务状态：systemctl status " + UNIT_NAME + " --no-pager --full"
+    return message
+
+
 def inspect_container(name):
     if platform.system() != "Linux":
         raise ValueError("Docker 自动配置仅适用于本机 Linux Docker；其他环境请使用手动指南。")
@@ -122,6 +156,16 @@ def quote_unit(value):
     return '"' + value.replace("\\", "\\\\") + '"'
 
 
+def unit_directory(value):
+    # Unlike ExecStart/Environment, WorkingDirectory is a single path setting;
+    # systemd's parser does not remove surrounding argument quotes.
+    value = Path(value).as_posix()
+    quote_unit(value)  # Keep the existing specifier/expansion restrictions.
+    if value != value.strip() or "\\" in value or any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise ValueError("systemd 工作目录不能含控制符、反斜杠或首尾空白。")
+    return value
+
+
 def systemd_unit(root, uv, home, binary, docker=False, data_dir=None):
     data_dir = Path(data_dir) if data_dir else root
     executable_path = f"{Path(binary).parent}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -136,7 +180,7 @@ After={dependencies}
 Type=simple
 User=root
 Group=root
-WorkingDirectory={quote_unit(root)}
+WorkingDirectory={unit_directory(root)}
 Environment={quote_unit('HOME=' + str(Path.home()))}
 Environment={quote_unit('PATH=' + executable_path)}
 Environment={quote_unit('CODEX_HOME=' + str(home))}
@@ -246,18 +290,22 @@ def systemd_preflight(unit, root, uv, binary, directory=Path("/etc/systemd/syste
 
 def install_systemd(source, target, start=True):
     # Verify before updating the unit. On a command failure, report it; never blindly retry a start.
+    print("正在校验 systemd 服务单元...", flush=True)
     command(["systemd-analyze", "verify", str(source)])
     if target.exists() and target.read_bytes() != source.read_bytes():
         private_write(source.parent / "backups" / f"unit-{time.time_ns()}.bak", target.read_bytes())
     private_write(target, source.read_bytes())
     target.chmod(0o644)
+    print("正在重载 systemd 配置...", flush=True)
     command(["systemctl", "daemon-reload"])
     if start:
         start_systemd()
 
 
 def start_systemd():
+    print("正在启用并启动宿主机 MCP 服务...", flush=True)
     command(["systemctl", "enable", "--now", UNIT_NAME])
+    print("正在检查 systemd 服务状态...", flush=True)
     if command(["systemctl", "is-active", UNIT_NAME]).strip() != "active":
         raise ValueError("配置已保存，但服务尚未运行；请查看 journalctl，不要重复提交绘图。")
 
@@ -561,12 +609,14 @@ def main(argv=None):
     return 0
 
 
-if __name__ == "__main__":
+def cli(argv=None):
     try:
-        raise SystemExit(main())
+        return main(argv)
     except (ValueError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
-        # Do not expose captured command output or configuration contents (which may contain secrets).
-        print("自动配置未完成：" + (str(exc) if isinstance(exc, (ValueError, RuntimeError)) else type(exc).__name__),
-              file=sys.stderr)
+        print("自动配置未完成：" + describe_setup_error(exc), file=sys.stderr)
         print("已保存的文件请保留；检查原配置或 systemd 日志后再操作，不会自动重新登录或绘图。", file=sys.stderr)
-        raise SystemExit(1) from None
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(cli())

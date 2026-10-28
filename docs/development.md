@@ -1,10 +1,10 @@
 # 开发与验证
 
-## 0.6.2 架构与版本边界
+## 0.6.3 架构与版本边界
 
 根目录为 MaiBot 薄插件：`plugin.py` 处理命令与真实宿主身份，`bridge.py` 连接独立 MCP，`delivery.py` 保存发送状态。`service/` 为宿主机独立项目，负责 Codex 认证、隔离绘图、队列、任务和图片。
 
-本次插件与安装工具为 **0.6.2**，服务源码、`service/pyproject.toml`、`service/uv.lock` **保持 0.5.0 不变**，保留现有协议兼容性。不要为统一版本号重写服务元数据或锁文件。尚未发布 Release；测试、审查及目标机验收分别见 [验证记录](validation.md)，不能由设计约定推导为通过。
+本次插件与安装工具为 **0.6.3**，服务源码、`service/pyproject.toml`、`service/uv.lock` **保持 0.5.0 不变**，保留现有协议兼容性。不要为统一版本号重写服务元数据或锁文件。尚未发布 Release；测试、审查及目标机验收分别见 [验证记录](validation.md)，不能由设计约定推导为通过。
 
 源码默认只有一份，位于真实 MaiBot `plugins/codex_image`。宿主机从该源码运行独立 MCP；Docker 使用已有插件挂载的宿主机 Source，不增加挂载，不修改 MaiBot、Compose、Dockerfile、镜像或防火墙。
 
@@ -30,6 +30,8 @@ root 后台执行安全检查必须保留：源码与父目录不可被其他宿
 当服务配置、启动单元和 `venv` 均无需变化时，允许运行中的 MCP 进行插件配置版本更新或重复配对；此路径不取得 `StateLease`，不写入 `secret.txt` 或 `service.toml`。`--prepare-environment` 在服务解释器缺失或初装尚未生成服务配置时执行 uv 同步；已配对且环境存在时不改写运行中的服务环境。安装器的预检、备份及两条路径的行为需分别验证。
 
 root 权限校验仅对明确传入的环境根目录 `.lock` 区分元数据用途，要求普通文件、root 属主、无执行位。不可按后缀跳过其他 `.lock`，不可跳过解释器、依赖或环境目录检查。uv 同步子进程清除配置工具继承的 `VIRTUAL_ENV`，保留原调用环境，目标由 `UV_PROJECT_ENVIRONMENT` 明确指定。
+
+systemd 的 `WorkingDirectory` 使用单路径解析器，不能复用 `ExecStart` 参数的包围引号；带内部空格的路径保持为单个完整设置值。自动生成限制控制符、反斜杠和首尾空白。命令失败只打印预定义阶段、命令标签和退出码，不打印任意 argv/stdout/stderr；单元校验失败可打印经 shell 引用的只读验证命令。失败不得继续发布单元或启动服务。
 
 初装失败留下的空状态目录和唯一空普通 `.service.lock` 不视为旧任务；仍需在后续配置写入前取得服务 lease。任何数据库、产物、未知文件、非空锁或链接均视为已有状态。已有配置、配对记录或插件连接缺失原密钥时仍拒绝自动换新。
 
@@ -77,4 +79,4 @@ python scripts/build_bundle.py
 
 自动测试、独立审查、Docker / VPS 部署、实际聊天发图和用户验收分别记录。协议兼容与同一进程复用须绑定版本及环境；模拟 Docker / systemd 不等于真实部署通过。真实绘图另行记录客户端版本、任务状态和聊天收图结果。
 
-[验证记录](validation.md) 中的旧版本结果保持历史语境，不作为 0.6.2 安装流程通过证据；原生 MCP 的 SDK 边界见 [原生 MCP 验证](native-mcp-feasibility.md)。
+[验证记录](validation.md) 中的旧版本结果保持历史语境，不作为 0.6.3 安装流程通过证据；原生 MCP 的 SDK 边界见 [原生 MCP 验证](native-mcp-feasibility.md)。
