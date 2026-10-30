@@ -2,13 +2,10 @@
 
 from types import SimpleNamespace
 import asyncio
-import json
-import zipfile
 
-from image_plugin_under_test import CodexImagePlugin, Config
+from image_plugin_under_test import CodexImagePlugin
 from image_plugin_under_test.bridge import Bridge
 from conftest import SECRET, SCOPE
-from test_deploy import bundle
 from test_mcp_plugin import Sender, plugin_instance
 
 
@@ -51,8 +48,8 @@ async def test_default_allowlist_denies_all_without_connecting(tmp_path):
         await plugin.on_unload()
 
 
-async def test_reload_preserves_host_job_and_delivery_receipt(live_service, tmp_path):
-    url = f"http://127.0.0.1:{live_service.port}/mcp"
+async def test_reload_preserves_protocol_fixture_job_and_delivery_receipt(mcp_protocol_fixture, tmp_path):
+    url = mcp_protocol_fixture.url
     plugin, sender = await plugin_instance(tmp_path, url)
     try:
         result = await plugin.command(**command("画图", "circle"))
@@ -66,20 +63,35 @@ async def test_reload_preserves_host_job_and_delivery_receipt(live_service, tmp_
         assert len(sender.images) == 1
         diagnostic = await plugin.command(**command("画图诊断"))
         assert diagnostic[0] and "登录状态会在绘图时检查" in diagnostic[1]
+        assert len(mcp_protocol_fixture.jobs) == 1
     finally:
         await plugin.on_unload()
-    # Unloading/reloading a container-side plugin cannot stop the independently owned service.
+    # The independently owned protocol fixture outlives the plugin's client lifecycle.
     health = await Bridge(url, SECRET).call("health", SCOPE, {})
     assert health["worker_running"] and health["login_verified"] is False
+    restored, restored_sender = await plugin_instance(tmp_path, url)
+    try:
+        result = await restored.command(**command("画图", "circle"))
+        assert result[0], result
+        await asyncio.wait_for(asyncio.gather(*list(restored.watchers.values())), 10)
+        assert restored_sender.images == [] and len(mcp_protocol_fixture.jobs) == 1
+    finally:
+        await restored.on_unload()
 
 
-def test_thin_plugin_config_and_bundle(tmp_path):
-    assert set(Config.model_fields) == {"plugin", "connection"}
-    outputs = bundle.build(tmp_path / "dist")
-    with zipfile.ZipFile(outputs[1][0]) as archive:
-        names = set(archive.namelist())
-        assert {"plugin.py", "bridge.py", "delivery.py", "config.example.toml"} <= names
-        assert not any(name.startswith("service/") for name in names)
-        assert not names & {"embedded.py", "client.py", "login.py", "deploy.py"}
-        manifest = json.loads(archive.read("_manifest.json"))
-        assert {x["name"] for x in manifest["dependencies"]} == {"httpx", "mcp"}
+async def test_manual_resend_reads_existing_static_image_without_submission(mcp_protocol_fixture, tmp_path):
+    plugin, sender = await plugin_instance(tmp_path, mcp_protocol_fixture.url)
+    try:
+        result = await plugin.command(**command("画图", "circle"))
+        assert result[0], result
+        await asyncio.wait_for(asyncio.gather(*list(plugin.watchers.values())), 10)
+        job = next(iter(mcp_protocol_fixture.jobs))
+        before = len(mcp_protocol_fixture.calls)
+        status = await plugin.command(**command("画图状态", job, message="status-message"))
+        resent = await plugin.command(**command("重发画图", job, message="resend-message"))
+        assert status[0] and resent[0]
+        assert len(sender.images) == 2 and sender.images[0] == sender.images[1]
+        assert [op for op, _, _ in mcp_protocol_fixture.calls[before:]] == ["status", "result"]
+        assert len(mcp_protocol_fixture.jobs) == 1
+    finally:
+        await plugin.on_unload()

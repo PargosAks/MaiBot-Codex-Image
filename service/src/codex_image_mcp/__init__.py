@@ -1,1 +1,0 @@
-"""Codex image MCP service."""

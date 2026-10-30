@@ -1,4 +1,4 @@
-"""Command-only first release. Host identity never comes from model parameters."""
+"""MaiBot commands for an external MCP service. Identity comes only from Host."""
 
 from pathlib import Path
 import asyncio
@@ -12,7 +12,7 @@ from .delivery import Deliveries
 
 
 class PluginSection(PluginConfigBase):
-    config_version: str = "0.6.3"
+    config_version: str = "0.7.0"
     enabled: bool = True
 
 

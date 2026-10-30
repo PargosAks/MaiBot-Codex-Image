@@ -1,8 +1,22 @@
 [project]
 name = "maibot-codex-image-plugin"
-version = "0.6.3"
+version = "0.7.0"
+description = "MaiBot client for an independently deployed Codex image MCP service"
 requires-python = ">=3.12"
 dependencies = ["httpx>=0.28,<1", "mcp>=1.28.1,<2"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8,<10",
+    "pytest-asyncio>=1,<2",
+    "maibot-plugin-sdk @ git+https://github.com/Mai-with-u/maibot-plugin-sdk.git@835e0e9d1f70ea00885fb49d059f7f2864976d05",
+    "ruff>=0.12,<1",
+    "uvicorn>=0.35,<1",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 110

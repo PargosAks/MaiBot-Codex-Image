@@ -1,5 +1,22 @@
 # 更新记录
 
+## 0.7.0（仅插件连接独立 MCP）
+
+### 主要功能
+
+- 仓库精简为 MaiBot 插件，连接独立部署的兼容 MCP 0.5.0；保留 `plugin.py`、`bridge.py`、`delivery.py`，协议、配置字段和发送库格式不变。
+- 移除 Git 跟踪的 `service/`、`deploy.py`、`install.sh`、`install.ps1`、`setup.sh`、`scripts/manage.py`、`scripts/setup_host.py` 与 `scripts/codex-assets.json`；不再提供宿主机安装、配对或服务部署入口。
+- `scripts/build_bundle.py` 仅生成插件 zip；根开发入口为 `uv sync --locked` / `uv run --locked pytest -q`。
+
+### 细节与升级边界
+
+- 升级前检查旧 MCP 是否仍从本仓库 `service/` 路径运行；若是，不可原地 `git pull` 删除运行入口，需保留旧完整仓库给服务，将插件部署到独立目录。
+- 保留 Host 插件身份和原 `data_dir`、插件 config、URL、secret、允许用户、完整服务 `state` 与发送记录；不得同时运行两个使用同一 `state` 的服务。
+- 重写插件安装、开发、配置、排错与验证文档，删除当前不再适用的部署、手动安装及原生 MCP 调研文档；旧资料通过固定提交链接查阅，不虚构新 MCP 仓库。
+- 本地插件测试 51 项通过，另完成旧 MCP 0.5.0 的模拟 Codex 兼容回归；部署、真实绘图与聊天收图未执行，具体范围见 [验证记录](docs/validation.md)。
+
+以下为历史版本记录，其中服务目录、安装脚本与部署步骤仅描述当时行为，不适用于当前插件仓库。
+
 ## 0.6.3（systemd 单元与失败诊断，未发布 Release）
 
 - 根据 VPS 实测维护安装与排错文档：补充 root 属主、uv 锁、systemd 校验、QQ 前缀、插件重载及 Docker/UFW 连通检查；区分已确认的服务启动与尚待验证的聊天收图。

@@ -1,85 +1,46 @@
 # MaiBot-Codex-Image
 
-## 1. 项目介绍
+MaiBot 绘图插件，通过独立部署的 MCP 提交任务、查询进度并发送图片。调用链为 **MaiBot 插件 → 独立 MCP → 宿主机官方 Codex CLI**。插件加载、重载和卸载不会启停 MCP。
 
-让 MaiBot 调用宿主机上的 Codex CLI 绘图，并将图片发回聊天。一份源码放在 MaiBot 插件目录，宿主机独立运行 MCP 服务；支持直接部署和 Docker 部署，无需修改 MaiBot 本体或 Docker 镜像。
+插件 **0.7.0**，兼容 MCP **0.5.0**。本仓库仅维护插件，不再提供 MCP 服务源码、安装器或部署工具；协议、配置字段与发送库格式不变。已通过本地插件回归及旧 MCP 模拟 Codex 兼容检查；尚未部署或进行本版真实聊天收图验收，见 [验证记录](docs/validation.md)。
 
-由 Codex 进行开发。
+## 升级前必读
 
-## 2. 目前能做到什么
+**先检查旧 MCP 是否仍从本仓库 `service/` 路径运行，包括启动命令、工作目录及可编辑安装引用。若是，不可原地 `git pull` 或覆盖安装：0.7.0 会删除服务运行入口。** 旧进程暂时存活不代表下次加载或重启安全。
 
-| 命令 | 功能 |
-| --- | --- |
-| `/画图 描述` | 生成一张图片并自动发送 |
-| `/画图状态 任务编号` | 查询原任务进度 |
-| `/重发画图 任务编号` | 发送已有图片，不重新绘图 |
-| `/画图诊断` | 检查 MCP 连接，不生成图片；登录在绘图时检查 |
+保留旧完整仓库供服务使用，将新版插件部署到独立目录。保持原 Host 插件身份 `pargosaks.maibot-codex-image`、原 `ctx.paths.data_dir`（含 `delivery.sqlite3`）、插件 config、secret 和服务完整 `state`。不要同时运行两个使用同一 `state` 的服务。步骤见 [安装与升级](docs/quickstart.md)。
 
-目前不支持改图、参考图、批量生成或自然语言自动触发。绘图使用账号额度，实际可用能力以账号为准。
+## 安装与配置
 
-插件与安装工具版本为 **0.6.3**，兼容独立 MCP 服务 **0.5.0**；服务源码、依赖与协议保持不变。已有 Linux VPS 的 systemd 启动和宿主机 HTTP 检查记录；Docker 连通与本版实际聊天收图仍待验证，见 [验证记录](docs/validation.md)。尚未发布 Release。
+1. 先有兼容 MCP 0.5.0，由服务维护者独立管理 Codex 安装、手动登录与服务运行。本仓库不提供新的独立 MCP 仓库地址。
+2. 将插件源码或插件 zip 解压内容放入 MaiBot 实际加载的 `plugins/codex_image`，确保 `_manifest.json` 位于该目录根层。已有目录先按升级指南核查。
+3. 在插件面板设置 `connection.url`、`connection.secret`、`connection.allowed_users`，授予用户 `codex_image_command` 命令权限及插件 `send.text` / `send.image` 能力，保存并重载插件。
 
-## 3. 如何安装部署
-
-宿主机先准备 Git、[uv](https://docs.astral.sh/uv/getting-started/installation/) 和已手动完成 ChatGPT 登录的 Codex CLI。MaiBot 需为 1.3.x，SDK 为 2.16.x / 2.17.x。
-
-将下面的 `/opt/maibot/plugins` 替换为 **MaiBot 实际使用的宿主机插件目录**。Docker 用户应使用现有插件挂载的宿主机路径；在宿主机执行：
-
-```sh
-git clone https://github.com/PargosAks/MaiBot-Codex-Image.git /opt/maibot/plugins/codex_image
-cd /opt/maibot/plugins/codex_image
-bash setup.sh
-```
-
-按提示填写 **容器名（直接部署留空）**；多个网络时选择网络。脚本不询问允许用户。Linux root 默认配置 systemd 后台运行及开机自启；需要前台运行时用 `bash setup.sh --foreground`。最后在 MaiBot WebUI 配置允许用户、授予命令与发图权限，保存并重载插件。
-
-已有目录不要 clone 覆盖。已有独立 MCP 的用户升级看下文，无需重新配置。详细步骤与适用条件见 [快速开始](docs/quickstart.md)。
-
-遇到安装报错、QQ 授权失败或容器连接超时，见 [部署排错](docs/troubleshooting.md)。旧版 uv 锁误报和 systemd 工作目录问题已修复；保留原文件，按 [原地重试说明](docs/quickstart.md#安装中断后重试) 继续。
-
-## 4. 如何配置
-
-脚本自动配对地址与密钥，复用宿主机当前服务用户的 `CODEX_HOME` 或 `~/.codex` 登录，不复制登录文件。新安装的服务配置、密钥、任务和环境放在宿主机独立数据目录，插件 `config.toml` 留在源码根目录且不纳入 Git。
-
-在 MaiBot WebUI 的插件面板设置 `connection.allowed_users`，填写真实 `platform:user_id`（例如 `qq:123456789`，使用英文冒号）；还需授权对应用户的 `codex_image_command` 命令，以及插件的 `send.text` / `send.image` 能力。保存后重载插件。新安装默认 `[]`，配置前拒绝所有用户，无法绘图。已有名单由 WebUI 维护，脚本不校验、改写或清空，即使为空或曾填错也不因此阻塞安装；格式错误请在面板修正。脚本不代替登录或授权。
-
-```toml
-[plugin]
-config_version = "0.6.3"
-enabled = true
-
-[connection]
-url = "http://127.0.0.1:8765/mcp"
-secret = "填写宿主机使用的随机共享密钥，至少32字符"
-allowed_users = [] # 在 MaiBot 插件面板添加允许用户
-poll_seconds = 2
-watch_seconds = 360
-```
-
-Docker bridge 的地址由脚本根据现有网络选择，不能照抄容器内的 `127.0.0.1`。例如实际 Gateway 为 `172.23.0.1` 时，使用 `http://172.23.0.1:8765/mcp`。容器还必须能通过宿主机防火墙访问该端口，见 [Docker 网络排查](docs/host-service.md#docker-容器连接超时)。已有安装保留原 URL、密钥、登录和任务路径，详见 [进阶说明](docs/advanced.md)。
-
-## 5. 配置项说明
+要求 MaiBot 1.3.x、SDK 2.16.x / 2.17.x；声明范围不等于整个范围已实测。运行依赖由 MaiBot 插件依赖机制安装，开发命令见 [development.md](docs/development.md)。
 
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
-| `plugin.config_version` | `"0.6.3"` | 插件配置版本；已有配置按兼容规则读取 |
-| `plugin.enabled` | `true` | 是否启用插件 |
-| `connection.url` | `"http://127.0.0.1:8765/mcp"` | 宿主机 MCP 地址，由脚本配对 |
-| `connection.secret` | `""` | 必填；至少 32 字符，与服务一致 |
-| `connection.allowed_users` | `[]` | 在 MaiBot 插件面板配置真实 `platform:user_id`；空列表拒绝所有人 |
-| `connection.poll_seconds` | `2` | 任务查询间隔，秒 |
-| `connection.watch_seconds` | `360` | 自动等待取图的最长时间，秒 |
+| `plugin.config_version` | `"0.7.0"` | 配置版本；保留已有配置 |
+| `plugin.enabled` | `true` | 是否启用 |
+| `connection.url` | `"http://127.0.0.1:8765/mcp"` | 从 MaiBot 运行环境可达的 MCP 地址 |
+| `connection.secret` | `""` | 与服务一致，至少 32 字符 |
+| `connection.allowed_users` | `[]` | 真实 `platform:user_id`，英文冒号；空列表拒绝所有用户 |
+| `connection.poll_seconds` | `2` | 查询间隔，0.1–30 秒 |
+| `connection.watch_seconds` | `360` | 自动等待时长，1–3600 秒；超时不取消服务任务 |
 
-宿主机服务字段、数据目录和脚本参数见 [进阶说明](docs/advanced.md)。
+Docker bridge 容器内的 `localhost` / `127.0.0.1` 指向容器自身。连接宿主机 MCP 应使用实际可达的宿主机地址，并核对监听、防火墙与 MCP Host 校验；宿主机可达不代表容器可达。不要将宿主机 Codex 登录、服务密钥文件或 `state` 挂入插件目录。
 
-## 6. 升级与使用
+## 使用
 
-**仅插件变动、MCP 协议兼容时**，在插件源码目录执行：
+| 命令 | 功能 |
+| --- | --- |
+| `/画图 描述` | 提交一张新图并等待发送，会消耗账号额度 |
+| `/画图状态 任务编号` | 查询原任务，不生成新图 |
+| `/重发画图 任务编号` | 按发送记录规则发送已有图片，不重新生成 |
+| `/画图诊断` | 检查 MCP 连接，不生成图片；不证明绘图登录或聊天收图成功 |
 
-```sh
-git pull --ff-only
-```
+仅支持命令触发，不支持改图、参考图或批量生成。超时或结果未知时先查原任务；`sending/send_unknown` 自动和手动均禁止重发，不要清库绕过。
 
-然后 [重载插件](docs/quickstart.md#如何重载插件) 即可，独立 MCP 无需重启，也无需重新运行配置脚本。不要删除旧宿主机服务仓库，它可能仍是运行入口。若更新涉及 MCP 源码、依赖、监听地址或密钥，需另行停止服务、核对原配置后重新配置并启动；服务不支持源码热更新，见 [升级说明](docs/quickstart.md#日常升级)。
+[安装与升级](docs/quickstart.md) · [配置与迁移](docs/advanced.md) · [排错](docs/troubleshooting.md) · [开发](docs/development.md) · [验证](docs/validation.md)
 
-先用 `/画图诊断` 检查连接，再提交一次 `/画图 一只戴耳机的猫，白色背景` 并核对实际收图。超时或结果未知时用原编号查询，避免重复绘图。部署验证与真实聊天收图需分别确认。
+旧服务与部署资料仅供原部署维护参考：[固定提交 e50a7b6 的完整仓库](https://github.com/PargosAks/MaiBot-Codex-Image/tree/e50a7b6f0e090d6a5053ac00d4f0b14e92aee272)。历史说明不是 0.7.0 安装入口。
