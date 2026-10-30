@@ -41,6 +41,12 @@ Docker bridge 容器内的 `localhost` / `127.0.0.1` 指向容器自身。连接
 
 仅支持命令触发，不支持改图、参考图或批量生成。超时或结果未知时先查原任务；`sending/send_unknown` 自动和手动均禁止重发，不要清库绕过。
 
+## 小画师开发阶段
+
+自主创作采用插件内部决策循环，设计见 [小画师设计](docs/artist-design.md)。当前开发只增加阶段 0/1 的环境核查和离线状态、授权、预算及迁移底座；尚未接入插件生命周期，不会自动迁移已有数据、绘图或发送，现有命令行为保持不变。
+
+[环境核查](docs/artist-stage-0.md) · [阶段 1 实现与验证](docs/implementation-stage-1.md)。MCP 编辑与只读查询仍是后续接口契约，当前没有实现，也不扩大已声明的 SDK 兼容范围。
+
 [安装与升级](docs/quickstart.md) · [配置与迁移](docs/advanced.md) · [排错](docs/troubleshooting.md) · [开发](docs/development.md) · [验证](docs/validation.md)
 
 旧服务与部署资料仅供原部署维护参考：[固定提交 e50a7b6 的完整仓库](https://github.com/PargosAks/MaiBot-Codex-Image/tree/e50a7b6f0e090d6a5053ac00d4f0b14e92aee272)。历史说明不是 0.7.0 安装入口。

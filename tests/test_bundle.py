@@ -22,7 +22,11 @@ def inspect_plugin_bundle(destination):
     assert hashlib.sha256(output.read_bytes()).hexdigest() == digest
     with zipfile.ZipFile(output) as archive:
         names = set(archive.namelist())
-        assert {"plugin.py", "bridge.py", "delivery.py", "config.example.toml", "_manifest.json"} <= names
+        assert {
+            "plugin.py", "bridge.py", "delivery.py", "policy.py", "store.py",
+            "config.example.toml", "_manifest.json", "docs/artist-design.md",
+            "docs/artist-stage-0.md", "docs/implementation-stage-1.md",
+        } <= names
         assert not any(name.startswith(("service/", "tests/", ".venv/", "state/")) for name in names)
         assert not names & {
             "embedded.py",
@@ -61,6 +65,7 @@ def test_bundle_whitelist_excludes_private_and_runtime_files(tmp_path, monkeypat
         "auth.json",
         "secret.txt",
         "delivery.sqlite3",
+        "artist.sqlite3",
         ".codex/auth.json",
         "state/jobs.sqlite3",
         "state/output.png",
