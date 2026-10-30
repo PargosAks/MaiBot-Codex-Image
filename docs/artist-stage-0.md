@@ -34,9 +34,9 @@
 
 ## 实际运行环境的核实缺口
 
-阶段 0 的本机源码与安装基线已确认，但部署核实门槛尚未闭合。进程查询的 CIM 入口返回“无法从客户端中访问 CIM 资源”；备用进程枚举仅有三个可见进程，未识别 MaiBot/MCP。不能据此认定服务未运行。
+阶段 0 的本机源码与安装基线已确认，但没有取得正在运行的 MaiBot/MCP 版本证据。首次受限环境的 CIM 查询返回“无法从客户端中访问 CIM 资源”，备用枚举仅有三个可见进程；随后在正常环境完成只读复核，CIM 成功读取 534 个进程，其中 Python/MaiBot/uv 前缀进程 4 个，按相关模块和目录关联后未发现本项目运行候选。匹配仅在内存处理，未输出完整命令行。
 
-对本机 docker_engine 与 dockerDesktopLinuxEngine 两个命名管道的只读容器查询均返回 The system cannot find the file specified，未取得容器 ID，也未进行容器 inspect。这不证明其他主机、上下文或不可见环境没有运行服务。
+在受限和正常环境中，对本机 docker_engine 与 dockerDesktopLinuxEngine 两个命名管道的只读容器查询均返回 The system cannot find the file specified，未取得容器 ID，也未进行容器 inspect。当前本机未识别运行候选，不证明其他主机、上下文或部署位置没有运行服务。
 
 需要实际运行 MaiBot/MCP 的主机及服务名、容器名或维护目录，将运行进程与加载版本、源码入口对应起来。无需提供密钥。未识别入口前不联猜测的远端、不修改挂载、不启动历史环境，也不通过真实绘图探测版本。
 
