@@ -35,6 +35,7 @@ class ProtocolFixture:
         self.calls = []
         self.health_mode = "structured"
         self.result_mode = "image"
+        self.capabilities = None
         mcp = FastMCP(
             "Static image protocol fixture (not a production service)",
             stateless_http=True,
@@ -80,9 +81,31 @@ class ProtocolFixture:
             return CallToolResult(content=[ImageContent(type="image", data=data, mimeType="image/png")])
 
         @mcp.tool()
+        async def codex_image_lookup(envelope: str) -> dict:
+            scope, args = self.verify(envelope, "lookup")
+            job_id = self.requests.get((scope, args["request_id"]))
+            if job_id is None:
+                return {"found": False}
+            return {
+                "found": True,
+                "operation": "submit",
+                "request_id": args["request_id"],
+                "request_digest": hashlib.sha256(self.jobs[job_id]["prompt"].encode()).hexdigest(),
+                "job": {
+                    "job_id": job_id,
+                    "status": "completed",
+                    "turn_status": "completed",
+                    "error_code": None,
+                    "artifacts": [],
+                },
+            }
+
+        @mcp.tool()
         async def codex_image_health(envelope: str) -> CallToolResult:
             self.verify(envelope, "health")
             data = {"worker_running": True, "generation_probe": False, "login_verified": False}
+            if self.capabilities is not None:
+                data["capabilities"] = self.capabilities
             if self.health_mode == "empty":
                 return CallToolResult(content=[])
             content = [TextContent(type="text", text=json.dumps(data))]

@@ -24,6 +24,7 @@ def inspect_plugin_bundle(destination):
         names = set(archive.namelist())
         assert {
             "plugin.py", "bridge.py", "delivery.py", "policy.py", "store.py", "artist.py", "thinking.py",
+            "recovery.py", "docs/implementation-stage-3.md",
             "config.example.toml", "_manifest.json", "docs/artist-design.md",
             "docs/artist-stage-0.md", "docs/implementation-stage-1.md", "docs/implementation-stage-2.md",
         } <= names
