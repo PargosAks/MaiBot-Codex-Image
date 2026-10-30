@@ -6,6 +6,8 @@
 
 小画师阶段 0/1 新增 `store.py` / `policy.py` 离线底座，不由 `plugin.py` 加载或自动迁移数据。架构见 [设计](artist-design.md)，实际 API、隔离测试与未接入边界见 [阶段 1](implementation-stage-1.md)，环境版本见 [阶段 0](artist-stage-0.md)。后续异步运行接入 SQLite 时必须通过工作线程调用，不能阻塞 MaiBot 事件循环。
 
+阶段 2 新增 `artist.py` / `thinking.py`，SQLite schema 1 事务升级至 2。运行器要求显式注入模拟后端，所有 SQLite 调用使用工作线程；`plugin.py` 仍不自动启用。详见 [阶段 2](implementation-stage-2.md)。
+
 不再维护 `service/` 或宿主机安装部署工具；协议、配置字段、任务归属、幂等和发送库格式保持不变。服务与 Codex 登录由独立服务维护者管理，插件生命周期不得管理服务进程。
 
 ## 根目录开发环境
@@ -15,7 +17,7 @@
 ```sh
 uv sync --locked
 uv run --locked pytest -q
-uv run --locked ruff check --select E4,E7,E9,F plugin.py bridge.py delivery.py policy.py store.py scripts/build_bundle.py tests
+uv run --locked ruff check --select E4,E7,E9,F plugin.py bridge.py delivery.py policy.py store.py artist.py thinking.py scripts/build_bundle.py tests
 ```
 
 根 `pyproject.toml` / `uv.lock` 管理插件开发依赖。这些是开发命令，不是用户安装 MCP 的步骤，不应修改 MaiBot 已安装环境。定向检查可在 pytest 后指定相关文件；不再使用 `--project service` 或 `service/tests`。

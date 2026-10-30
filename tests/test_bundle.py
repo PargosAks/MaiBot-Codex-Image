@@ -23,9 +23,9 @@ def inspect_plugin_bundle(destination):
     with zipfile.ZipFile(output) as archive:
         names = set(archive.namelist())
         assert {
-            "plugin.py", "bridge.py", "delivery.py", "policy.py", "store.py",
+            "plugin.py", "bridge.py", "delivery.py", "policy.py", "store.py", "artist.py", "thinking.py",
             "config.example.toml", "_manifest.json", "docs/artist-design.md",
-            "docs/artist-stage-0.md", "docs/implementation-stage-1.md",
+            "docs/artist-stage-0.md", "docs/implementation-stage-1.md", "docs/implementation-stage-2.md",
         } <= names
         assert not any(name.startswith(("service/", "tests/", ".venv/", "state/")) for name in names)
         assert not names & {

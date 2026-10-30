@@ -6,7 +6,7 @@ Use asyncio.to_thread when integrating this synchronous module with a Host loop.
 
 from contextlib import contextmanager
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import RLock
 from typing import Any, Callable, Dict, Iterator, Optional
@@ -29,7 +29,7 @@ from .policy import (
 )
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 PREACCEPT_REJECTIONS = frozenset(
     {
         "INVALID_ARGUMENTS",
@@ -71,6 +71,42 @@ _SCHEMA = (
         source_digest TEXT PRIMARY KEY, source_path TEXT NOT NULL, backup_path TEXT NOT NULL,
         row_count INTEGER NOT NULL, created_at TEXT NOT NULL)""",
 )
+_SCHEMA_2 = (
+    """CREATE TABLE artist_state (
+        space_id TEXT PRIMARY KEY REFERENCES spaces, acked_through INTEGER NOT NULL DEFAULT 0,
+        next_due TEXT, backoff_until TEXT)""",
+    """CREATE TABLE artist_wakes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, space_id TEXT NOT NULL REFERENCES spaces,
+        event_id TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL, source_ref TEXT,
+        UNIQUE(space_id,event_id))""",
+    """CREATE TABLE artist_claims (
+        space_id TEXT NOT NULL REFERENCES spaces, token TEXT NOT NULL,
+        through INTEGER NOT NULL, state TEXT NOT NULL, auth_version INTEGER NOT NULL,
+        PRIMARY KEY(space_id,token))""",
+    "CREATE UNIQUE INDEX artist_active_claim ON artist_claims(space_id) WHERE state='active'",
+    """CREATE TABLE inspirations (
+        space_id TEXT NOT NULL REFERENCES spaces, key TEXT NOT NULL, summary TEXT NOT NULL,
+        source_refs TEXT NOT NULL, origin TEXT NOT NULL, expires_at TEXT NOT NULL,
+        consumed_by TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(space_id,key))""",
+    """CREATE TABLE artist_works (
+        space_id TEXT NOT NULL, work_id TEXT NOT NULL, status TEXT NOT NULL,
+        brief TEXT NOT NULL, inspiration_keys TEXT NOT NULL, reason TEXT,
+        pending_request TEXT, parent_version TEXT, edit_prompt TEXT, best_version TEXT, next_check_at TEXT,
+        PRIMARY KEY(space_id,work_id), FOREIGN KEY(space_id,work_id) REFERENCES works(space_id,work_id))""",
+    """CREATE TABLE versions (
+        space_id TEXT NOT NULL, version_id TEXT NOT NULL, work_id TEXT NOT NULL,
+        request_id TEXT NOT NULL, job_id TEXT NOT NULL, data BLOB NOT NULL,
+        sha256 TEXT NOT NULL, mime TEXT NOT NULL, parent_id TEXT, created_at TEXT NOT NULL,
+        PRIMARY KEY(space_id,version_id), UNIQUE(space_id,request_id),
+        FOREIGN KEY(space_id,work_id) REFERENCES works(space_id,work_id))""",
+    """CREATE TABLE reviews (
+        id INTEGER PRIMARY KEY, space_id TEXT NOT NULL REFERENCES spaces,
+        work_id TEXT NOT NULL, version_id TEXT NOT NULL, request_id TEXT NOT NULL,
+        review TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(space_id,request_id),
+        FOREIGN KEY(space_id,version_id) REFERENCES versions(space_id,version_id))""",
+)
+_ACTIVE_WORK = ("planned", "deferred", "creating", "review_pending")
+_VERSION_META = "space_id,version_id,work_id,request_id,job_id,sha256,mime,parent_id,created_at"
 
 
 class ArtistStore:
@@ -91,9 +127,12 @@ class ArtistStore:
                         raise StoreError("SCHEMA_UNSUPPORTED", "Unversioned nonempty database")
                     for statement in _SCHEMA:
                         self.db.execute(statement)
-                    self.db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
-                elif version != SCHEMA_VERSION:
+                elif version not in {1, SCHEMA_VERSION}:
                     raise StoreError("SCHEMA_UNSUPPORTED", "Artist database schema is not supported")
+                if version in {0, 1}:
+                    for statement in _SCHEMA_2:
+                        self.db.execute(statement)
+                    self.db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         except BaseException:
             self.db.close()
             raise
@@ -127,6 +166,14 @@ class ArtistStore:
     def _authorized(self, space):
         if not space["authorized"]:
             raise StoreError("AUTH_REQUIRED", "Continuous delegation is not active")
+
+    @staticmethod
+    def _expected_authorization(space, expected):
+        if expected is not None:
+            if type(expected) is not int or expected < 0:
+                raise StoreError("INVALID_ARGUMENT", "expected_auth_version must be a nonnegative integer")
+            if space["auth_version"] != expected:
+                raise StoreError("AUTH_CHANGED", "Authorization changed while processing this wake")
 
     def create_space(self, space_id: str, scope: Scope, *, binding_id: str) -> Dict[str, Any]:
         nonempty(space_id, "space_id")
@@ -322,6 +369,7 @@ class ArtistStore:
         trigger: str = "idle",
         trigger_ref: Optional[str] = None,
         units: int = 1,
+        expected_auth_version: Optional[int] = None,
     ) -> Dict[str, Any]:
         nonempty(request_id, "request_id")
         if len(request_id) > 200 or action not in ACTIONS or type(units) is not int or units != 1:
@@ -334,6 +382,7 @@ class ArtistStore:
         with self._transaction():
             now, day = self._now()
             space = self._space(space_id, scope)
+            self._expected_authorization(space, expected_auth_version)
             old = self.db.execute(
                 "SELECT * FROM operations WHERE binding_id=? AND scope_snapshot=? AND request_id=?",
                 (space["binding_id"], space["scope"], request_id),
@@ -658,6 +707,490 @@ class ArtistStore:
             if row["state"] not in {"sending", "send_unknown", "sent", "send_failed"}:
                 raise StoreError("LEGACY_INVALID", "Unknown legacy delivery state")
         return rows
+
+    def _artist_state(self, space_id):
+        self.db.execute("INSERT OR IGNORE INTO artist_state(space_id) VALUES(?)", (space_id,))
+        return self.db.execute("SELECT * FROM artist_state WHERE space_id=?", (space_id,)).fetchone()
+
+    def _enqueue_wake(self, space_id, event_id, kind, text, source_ref):
+        prior = self.db.execute(
+            "SELECT * FROM artist_wakes WHERE space_id=? AND event_id=?",
+            (space_id, event_id),
+        ).fetchone()
+        if prior:
+            if (prior["kind"], prior["text"], prior["source_ref"]) != (kind, text, source_ref):
+                raise StoreError("REQUEST_CONFLICT", "Wake event already has different content")
+            return False
+        self.db.execute(
+            "INSERT INTO artist_wakes(space_id,event_id,kind,text,source_ref) VALUES(?,?,?,?,?)",
+            (space_id, event_id, kind, text, source_ref),
+        )
+        return True
+
+    def enqueue_wake(self, space_id, scope, *, event_id, kind, text="", source_ref=None) -> bool:
+        nonempty(event_id, "event_id")
+        if kind not in {"chat", "idle", "completion"} or not isinstance(text, str):
+            raise StoreError("INVALID_ARGUMENT", "Unknown wake kind or invalid text")
+        if kind == "chat" or source_ref is not None:
+            nonempty(source_ref, "source_ref")
+        if len(event_id) > 200 or len(text) > 4096 or (source_ref is not None and len(source_ref) > 200):
+            raise StoreError(
+                "INVALID_ARGUMENT", "Wake text exceeds 4096 characters or identifier exceeds 200"
+            )
+        with self._transaction():
+            self._authorized(self._space(space_id, scope))
+            return self._enqueue_wake(space_id, event_id, kind, text, source_ref)
+
+    def schedule_wake(self, space_id, scope, *, interval_seconds) -> bool:
+        if type(interval_seconds) is not int or not 0 < interval_seconds <= 365 * 86400:
+            raise StoreError("INVALID_ARGUMENT", "interval_seconds must be a positive bounded integer")
+        with self._transaction():
+            self._authorized(self._space(space_id, scope))
+            now, _ = self._now()
+            current = datetime.fromisoformat(now)
+            state = self._artist_state(space_id)
+            if state["next_due"] and current < datetime.fromisoformat(state["next_due"]):
+                return False
+            pending = self.db.execute(
+                "SELECT 1 FROM artist_wakes WHERE space_id=? AND kind='idle' AND id>? LIMIT 1",
+                (space_id, state["acked_through"]),
+            ).fetchone()
+            added = False if pending else self._enqueue_wake(space_id, f"idle:{now}", "idle", "", None)
+            self.db.execute(
+                "UPDATE artist_state SET next_due=? WHERE space_id=?",
+                ((current + timedelta(seconds=interval_seconds)).isoformat(), space_id),
+            )
+            return added
+
+    def claim_wake(self, space_id, scope, *, token):
+        nonempty(token, "token")
+        with self._transaction():
+            space = self._space(space_id, scope)
+            self._authorized(space)
+            state = self._artist_state(space_id)
+            now, _ = self._now()
+            if state["backoff_until"] and datetime.fromisoformat(now) < datetime.fromisoformat(
+                state["backoff_until"]
+            ):
+                return None
+            active = self.db.execute(
+                "SELECT * FROM artist_claims WHERE space_id=? AND state='active'",
+                (space_id,),
+            ).fetchone()
+            if active and active["token"] != token:
+                return None
+            if not active:
+                # Never recycle tokens: a delayed old worker must not ack a new batch.
+                if self.db.execute(
+                    "SELECT 1 FROM artist_claims WHERE space_id=? AND token=?", (space_id, token)
+                ).fetchone():
+                    return None
+                batch = self.db.execute(
+                    "SELECT id FROM artist_wakes WHERE space_id=? AND id>? ORDER BY id LIMIT 64",
+                    (space_id, state["acked_through"]),
+                ).fetchall()
+                if not batch:
+                    return None
+                through = batch[-1]["id"]
+                self.db.execute(
+                    "INSERT INTO artist_claims VALUES(?,?,?,'active',?)",
+                    (space_id, token, through, space["auth_version"]),
+                )
+                active = self.db.execute(
+                    "SELECT * FROM artist_claims WHERE space_id=? AND token=?", (space_id, token)
+                ).fetchone()
+            events = [
+                dict(row)
+                for row in self.db.execute(
+                    """SELECT event_id,kind,text,source_ref FROM artist_wakes
+                WHERE space_id=? AND id>? AND id<=? ORDER BY id""",
+                    (space_id, state["acked_through"], active["through"]),
+                )
+            ]
+            return {
+                "token": token,
+                "through": active["through"],
+                "events": events,
+                "auth_version": active["auth_version"],
+            }
+
+    def finish_wake(self, space_id, scope, *, token, acknowledge=True, retry_after=0) -> None:
+        nonempty(token, "token")
+        if (
+            type(acknowledge) is not bool
+            or type(retry_after) is not int
+            or not (retry_after == 0 or 60 <= retry_after <= 86400)
+        ):
+            raise StoreError("INVALID_ARGUMENT", "Invalid wake acknowledgement or retry interval")
+        with self._transaction():
+            self._space(space_id, scope)
+            claim = self.db.execute(
+                "SELECT * FROM artist_claims WHERE space_id=? AND token=?", (space_id, token)
+            ).fetchone()
+            if claim is None or claim["state"] in {"recovered", "released"}:
+                raise StoreError("CLAIM_MISMATCH", "No active claim for this token")
+            if claim["state"] == "finished":
+                return
+            now, _ = self._now()
+            backoff = (
+                (datetime.fromisoformat(now) + timedelta(seconds=retry_after)).isoformat()
+                if retry_after
+                else None
+            )
+            if acknowledge:
+                self.db.execute(
+                    "UPDATE artist_state SET acked_through=max(acked_through,?) WHERE space_id=?",
+                    (claim["through"], space_id),
+                )
+            self.db.execute("UPDATE artist_state SET backoff_until=? WHERE space_id=?", (backoff, space_id))
+            self.db.execute(
+                "UPDATE artist_claims SET state=? WHERE space_id=? AND token=?",
+                ("finished" if acknowledge else "released", space_id, token),
+            )
+
+    def recover_artist(self, space_id, scope, *, offline=False):
+        if offline is not True:
+            raise StoreError("OFFLINE_REQUIRED", "Stop previous workers before recovery")
+        with self._transaction():
+            self._space(space_id, scope)
+            now, _ = self._now()
+            self.db.execute(
+                "UPDATE artist_claims SET state='recovered' WHERE space_id=? AND state='active'", (space_id,)
+            )
+            return self.db.execute(
+                """UPDATE operations SET state='unknown',evidence='explicit offline recovery',updated_at=?
+                WHERE space_id=? AND state IN ('submitting','accepted')""",
+                (now, space_id),
+            ).rowcount
+
+    @staticmethod
+    def _string_list(values, field):
+        if not isinstance(values, list):
+            raise StoreError("INVALID_ARGUMENT", f"{field} must be a list")
+        for value in values:
+            nonempty(value, field)
+        return list(dict.fromkeys(values))
+
+    @staticmethod
+    def _decode(row, *fields):
+        result = dict(row)
+        for field in fields:
+            result[field] = json.loads(result[field])
+        return result
+
+    def remember_inspiration(
+        self,
+        space_id,
+        scope,
+        *,
+        key,
+        summary,
+        source_refs,
+        ttl_seconds=604800,
+        origin="chat",
+        expected_auth_version=None,
+    ):
+        nonempty(key, "key")
+        nonempty(summary, "summary")
+        refs = self._string_list(source_refs, "source_refs")
+        if origin not in {"chat", "idle", "completion"} or (origin == "chat" and not refs):
+            raise StoreError("INVALID_ARGUMENT", "Chat inspirations require verified source references")
+        if type(ttl_seconds) is not int or not 0 < ttl_seconds <= 365 * 86400:
+            raise StoreError("INVALID_ARGUMENT", "ttl_seconds must be a positive bounded integer")
+        with self._transaction():
+            space = self._space(space_id, scope)
+            self._expected_authorization(space, expected_auth_version)
+            self._authorized(space)
+            now, _ = self._now()
+            expires = (datetime.fromisoformat(now) + timedelta(seconds=ttl_seconds)).isoformat()
+            self.db.execute("DELETE FROM inspirations WHERE space_id=? AND expires_at<=?", (space_id, now))
+            old = self.db.execute(
+                "SELECT * FROM inspirations WHERE space_id=? AND key=?", (space_id, key)
+            ).fetchone()
+            if old:
+                if old["origin"] != origin:
+                    raise StoreError("REQUEST_CONFLICT", "Inspiration provenance cannot change origin")
+                refs = list(dict.fromkeys(json.loads(old["source_refs"]) + refs))
+            self.db.execute(
+                """INSERT INTO inspirations VALUES(?,?,?,?,?,?,NULL,?) ON CONFLICT(space_id,key) DO UPDATE SET
+                summary=excluded.summary,source_refs=excluded.source_refs,
+                expires_at=excluded.expires_at,updated_at=excluded.updated_at""",
+                (space_id, key, summary, canonical_json(refs), origin, expires, now),
+            )
+            self.db.execute(
+                """DELETE FROM inspirations WHERE space_id=? AND key NOT IN
+                            (SELECT key FROM inspirations WHERE space_id=? ORDER BY updated_at DESC,rowid DESC
+                             LIMIT 100)""",
+                (space_id, space_id),
+            )
+            return self._decode(
+                self.db.execute(
+                    "SELECT * FROM inspirations WHERE space_id=? AND key=?", (space_id, key)
+                ).fetchone(),
+                "source_refs",
+            )
+
+    def list_inspirations(self, space_id, scope):
+        with self.lock:
+            self._authorized(self._space(space_id, scope))
+            now, _ = self._now()
+            return [
+                self._decode(row, "source_refs")
+                for row in self.db.execute(
+                    "SELECT * FROM inspirations WHERE space_id=? AND expires_at>? ORDER BY updated_at,key",
+                    (space_id, now),
+                )
+            ]
+
+    def _artist_work(self, space_id, scope, work_id):
+        self._space(space_id, scope)
+        row = self.db.execute(
+            "SELECT * FROM artist_works WHERE space_id=? AND work_id=?", (space_id, work_id)
+        ).fetchone()
+        if row is None:
+            raise StoreError("NOT_FOUND", "Artist work not found in this space")
+        return self._decode(row, "brief", "inspiration_keys")
+
+    def _check_active_work(self, space_id, work_id):
+        row = self.db.execute(
+            """SELECT 1 FROM artist_works WHERE space_id=? AND work_id!=?
+                              AND status IN ('planned','deferred','creating','review_pending') LIMIT 1""",
+            (space_id, work_id),
+        ).fetchone()
+        if row:
+            raise StoreError("WORK_BUSY", "This space already has an active artist work")
+
+    def plan_work(self, space_id, scope, *, work_id, brief, inspiration_keys, expected_auth_version=None):
+        nonempty(work_id, "work_id")
+        if (
+            not isinstance(brief, dict)
+            or not {"intent", "subject", "mood", "prompt", "completion_criteria"} <= brief.keys()
+        ):
+            raise StoreError("INVALID_ARGUMENT", "A complete validated brief is required")
+        payload = canonical_json(brief)
+        keys = self._string_list(inspiration_keys, "inspiration_keys")
+        with self._transaction():
+            space = self._space(space_id, scope)
+            self._expected_authorization(space, expected_auth_version)
+            self._authorized(space)
+            now, _ = self._now()
+            old = self.db.execute(
+                "SELECT * FROM artist_works WHERE space_id=? AND work_id=?", (space_id, work_id)
+            ).fetchone()
+            if old:
+                if old["brief"] != payload or json.loads(old["inspiration_keys"]) != keys:
+                    raise StoreError("REQUEST_CONFLICT", "Work brief and inspiration bindings are immutable")
+                return self._artist_work(space_id, scope, work_id)
+            self._check_active_work(space_id, work_id)
+            for key in keys:
+                idea = self.db.execute(
+                    "SELECT * FROM inspirations WHERE space_id=? AND key=? AND expires_at>?",
+                    (space_id, key, now),
+                ).fetchone()
+                if idea is None or idea["consumed_by"] not in {None, work_id}:
+                    raise StoreError("NOT_FOUND", "Inspiration unavailable in this space")
+            self.db.execute("INSERT OR IGNORE INTO works VALUES(?,?,?)", (space_id, work_id, now))
+            self.db.execute(
+                """INSERT INTO artist_works(space_id,work_id,status,brief,inspiration_keys)
+                            VALUES(?,?,'planned',?,?)""",
+                (space_id, work_id, payload, canonical_json(keys)),
+            )
+            for key in keys:
+                self.db.execute(
+                    "UPDATE inspirations SET consumed_by=? WHERE space_id=? AND key=?",
+                    (work_id, space_id, key),
+                )
+            return self._artist_work(space_id, scope, work_id)
+
+    def get_artist_work(self, space_id, scope, work_id):
+        with self.lock:
+            return self._artist_work(space_id, scope, work_id)
+
+    def list_artist_works(self, space_id, scope):
+        with self.lock:
+            self._space(space_id, scope)
+            return [
+                self._decode(row, "brief", "inspiration_keys")
+                for row in self.db.execute(
+                    "SELECT * FROM artist_works WHERE space_id=? ORDER BY rowid",
+                    (space_id,),
+                )
+            ]
+
+    def update_artist_work(self, space_id, scope, work_id, *, changes):
+        allowed = {
+            "status",
+            "reason",
+            "pending_request",
+            "parent_version",
+            "edit_prompt",
+            "best_version",
+            "next_check_at",
+        }
+        if not isinstance(changes, dict) or not changes.keys() <= allowed:
+            raise StoreError("INVALID_ARGUMENT", "Unknown or immutable work fields")
+        changes = dict(changes)
+        with self._transaction():
+            current = self._artist_work(space_id, scope, work_id)
+            space = self._space(space_id, scope)
+            status = changes.get("status", current["status"])
+            if status not in {*_ACTIVE_WORK, "finished", "abandoned"}:
+                raise StoreError("INVALID_ARGUMENT", "Unknown artist work status")
+            if not space["authorized"] and (
+                ("status" in changes and status not in {"review_pending", "finished", "abandoned"})
+                or changes.get("edit_prompt") is not None
+                or changes.get("parent_version") is not None
+                or changes.get("next_check_at") is not None
+            ):
+                raise StoreError("AUTH_REQUIRED", "Revoked spaces can only retain existing results")
+            if status in _ACTIVE_WORK:
+                self._check_active_work(space_id, work_id)
+            for key in ("parent_version", "best_version"):
+                if (
+                    changes.get(key) is not None
+                    and self._version(space_id, scope, changes[key])["work_id"] != work_id
+                ):
+                    raise StoreError("NOT_FOUND", "Version does not belong to this work")
+            if changes.get("pending_request") is not None:
+                op = self._operation(space_id, scope, changes["pending_request"])
+                if op["work_id"] != work_id or op["category"] != "render":
+                    raise StoreError("NOT_FOUND", "Pending render does not belong to this work")
+            for key in ("reason", "edit_prompt"):
+                if changes.get(key) is not None and not isinstance(changes[key], str):
+                    raise StoreError("INVALID_ARGUMENT", f"{key} must be text or null")
+            if changes.get("next_check_at") is not None:
+                try:
+                    when = datetime.fromisoformat(changes["next_check_at"])
+                    budget_day(when)
+                    changes["next_check_at"] = when.astimezone(timezone.utc).isoformat()
+                except (ValueError, TypeError) as exc:
+                    raise StoreError(
+                        "INVALID_ARGUMENT", "next_check_at must be an aware ISO datetime"
+                    ) from exc
+            if changes:
+                fields = ",".join(f"{key}=?" for key in changes)
+                self.db.execute(
+                    f"UPDATE artist_works SET {fields} WHERE space_id=? AND work_id=?",
+                    (*changes.values(), space_id, work_id),
+                )
+            return self._artist_work(space_id, scope, work_id)
+
+    def _version(self, space_id, scope, version_id):
+        self._space(space_id, scope)
+        row = self.db.execute(
+            "SELECT * FROM versions WHERE space_id=? AND version_id=?", (space_id, version_id)
+        ).fetchone()
+        if row is None:
+            raise StoreError("NOT_FOUND", "Version not found in this space")
+        return dict(row)
+
+    def record_version(
+        self, space_id, scope, *, work_id, version_id, request_id, job_id, data, mime, parent_id=None
+    ):
+        nonempty(version_id, "version_id")
+        if not isinstance(data, bytes) or not 0 < len(data) <= 8 * 1024 * 1024:
+            raise StoreError("INVALID_ARGUMENT", "Version data must be 1 byte to 8 MiB")
+        if mime not in {"image/png", "image/jpeg", "image/webp"} or parent_id == version_id:
+            raise StoreError("INVALID_ARGUMENT", "Invalid image MIME or self parent")
+        digest = hashlib.sha256(data).hexdigest()
+        with self._transaction():
+            op = self._operation(space_id, scope, request_id)
+            if (
+                op["category"] != "render"
+                or op["work_id"] != work_id
+                or op["job_id"] != job_id
+                or op["state"] in {"reserved", "rejected"}
+                or job_id is None
+            ):
+                raise StoreError("NOT_FOUND", "Version requires its original bound render job")
+            if parent_id is not None and self._version(space_id, scope, parent_id)["work_id"] != work_id:
+                raise StoreError("NOT_FOUND", "Parent version belongs to another work")
+            old = self.db.execute(
+                """SELECT * FROM versions WHERE space_id=?
+                                  AND (version_id=? OR request_id=?)""",
+                (space_id, version_id, request_id),
+            ).fetchone()
+            fields = (version_id, work_id, request_id, job_id, data, digest, mime, parent_id)
+            if old:
+                if (
+                    tuple(
+                        old[key]
+                        for key in (
+                            "version_id",
+                            "work_id",
+                            "request_id",
+                            "job_id",
+                            "data",
+                            "sha256",
+                            "mime",
+                            "parent_id",
+                        )
+                    )
+                    != fields
+                ):
+                    raise StoreError("REQUEST_CONFLICT", "Version and request bindings are immutable")
+                return dict(old)
+            now, _ = self._now()
+            self.db.execute("INSERT INTO versions VALUES(?,?,?,?,?,?,?,?,?,?)", (space_id, *fields, now))
+            return self._version(space_id, scope, version_id)
+
+    def get_version(self, space_id, scope, version_id):
+        with self.lock:
+            return self._version(space_id, scope, version_id)
+
+    def list_versions(self, space_id, scope, work_id):
+        with self.lock:
+            self.get_work(space_id, scope, work_id)
+            return [
+                dict(row)
+                for row in self.db.execute(
+                    f"SELECT {_VERSION_META} FROM versions WHERE space_id=? AND work_id=? ORDER BY rowid",
+                    (space_id, work_id),
+                )
+            ]
+
+    def record_review(self, space_id, scope, *, version_id, request_id, review):
+        if not isinstance(review, dict):
+            raise StoreError("INVALID_ARGUMENT", "A validated review object is required")
+        payload = canonical_json(review)
+        with self._transaction():
+            version = self._version(space_id, scope, version_id)
+            op = self._operation(space_id, scope, request_id)
+            if (
+                op["action"] != "think"
+                or op["work_id"] != version["work_id"]
+                or op["state"] in {"reserved", "rejected", "failed"}
+            ):
+                raise StoreError(
+                    "NOT_FOUND", "Review must belong to an attempted think operation on this work"
+                )
+            old = self.db.execute(
+                "SELECT * FROM reviews WHERE space_id=? AND request_id=?", (space_id, request_id)
+            ).fetchone()
+            if old and (old["version_id"], old["review"]) != (version_id, payload):
+                raise StoreError("REQUEST_CONFLICT", "Review is immutable")
+            if not old:
+                now, _ = self._now()
+                self.db.execute(
+                    """INSERT INTO reviews(space_id,work_id,version_id,request_id,review,created_at)
+                                VALUES(?,?,?,?,?,?)""",
+                    (space_id, version["work_id"], version_id, request_id, payload, now),
+                )
+                old = self.db.execute(
+                    "SELECT * FROM reviews WHERE space_id=? AND request_id=?", (space_id, request_id)
+                ).fetchone()
+            return self._decode(old, "review")
+
+    def list_reviews(self, space_id, scope, work_id):
+        with self.lock:
+            self.get_work(space_id, scope, work_id)
+            return [
+                self._decode(row, "review")
+                for row in self.db.execute(
+                    "SELECT * FROM reviews WHERE space_id=? AND work_id=? ORDER BY id",
+                    (space_id, work_id),
+                )
+            ]
 
     def close(self):
         with self.lock:

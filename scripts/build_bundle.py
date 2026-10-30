@@ -7,11 +7,13 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = json.loads((ROOT / "_manifest.json").read_text(encoding="utf-8"))["version"]
 PLUGIN_FILES = (
-    "plugin.py", "bridge.py", "delivery.py", "policy.py", "store.py", "_manifest.json", "config.example.toml",
+    "plugin.py", "bridge.py", "delivery.py", "policy.py", "store.py", "artist.py", "thinking.py",
+    "_manifest.json", "config.example.toml",
     "requirements.txt", "README.md", "LICENSE", "CHANGELOG.md",
     "docs/quickstart.md", "docs/advanced.md", "docs/troubleshooting.md",
     "docs/development.md", "docs/validation.md",
     "docs/artist-design.md", "docs/artist-stage-0.md", "docs/implementation-stage-1.md",
+    "docs/implementation-stage-2.md",
 )
 
 

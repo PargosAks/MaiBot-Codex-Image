@@ -43,9 +43,11 @@ Docker bridge 容器内的 `localhost` / `127.0.0.1` 指向容器自身。连接
 
 ## 小画师开发阶段
 
-自主创作采用插件内部决策循环，设计见 [小画师设计](docs/artist-design.md)。当前开发只增加阶段 0/1 的环境核查和离线状态、授权、预算及迁移底座；尚未接入插件生命周期，不会自动迁移已有数据、绘图或发送，现有命令行为保持不变。
+自主创作采用插件内部决策循环，设计见 [小画师设计](docs/artist-design.md)。阶段 2 已在状态底座上实现可显式驱动的模拟创作运行器，支持聊天/定时统一唤醒、灵感、计划、评审和独立分享决策。它仅接受模拟绘图与发送后端，尚未接入插件生命周期，不会自动迁移已有数据、绘图或发送，现有命令行为保持不变。
 
 [环境核查](docs/artist-stage-0.md) · [阶段 1 实现与验证](docs/implementation-stage-1.md)。MCP 编辑与只读查询仍是后续接口契约，当前没有实现，也不扩大已声明的 SDK 兼容范围。
+
+[阶段 2 运行方式与验证](docs/implementation-stage-2.md)。模拟查询和编辑端口不代表实际 MCP 已支持这些接口。
 
 [安装与升级](docs/quickstart.md) · [配置与迁移](docs/advanced.md) · [排错](docs/troubleshooting.md) · [开发](docs/development.md) · [验证](docs/validation.md)
 
