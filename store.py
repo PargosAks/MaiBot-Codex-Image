@@ -919,6 +919,48 @@ class ArtistStore:
             )
             return added
 
+    def _chat_interrupts_wait(self, space, state) -> bool:
+        # Infer only a successful model wait from the existing durable ledger.
+        # A later released/recovered/active claim, or any later operation, must
+        # not borrow an old wait's evidence to bypass a failure backoff.
+        space_id = space["space_id"]
+        if self.db.execute(
+            """SELECT 1 FROM (SELECT kind FROM artist_wakes
+            WHERE space_id=? AND id>? ORDER BY id LIMIT 64) WHERE kind='chat' LIMIT 1""",
+            (space_id, state["acked_through"]),
+        ).fetchone() is None:
+            # Never wake a model for chat beyond the batch it will actually see,
+            # or skip/ack the preceding backlog merely to reach that chat.
+            return False
+        claim = self.db.execute(
+            "SELECT * FROM artist_claims WHERE space_id=? ORDER BY rowid DESC LIMIT 1", (space_id,)
+        ).fetchone()
+        if claim is None or claim["state"] != "finished" or claim["through"] != state["acked_through"]:
+            return False
+        operation = self.db.execute(
+            "SELECT * FROM operations WHERE space_id=? ORDER BY id DESC LIMIT 1", (space_id,)
+        ).fetchone()
+        if operation is None or (
+            operation["action"], operation["category"], operation["state"], operation["trigger_ref"],
+            operation["auth_version"], operation["scope_snapshot"], operation["binding_id"],
+        ) != (
+            "think", "think", "succeeded", str(claim["through"]),
+            claim["auth_version"], space["scope"], space["binding_id"],
+        ):
+            return False
+        try:
+            params, result = json.loads(operation["params_json"]), json.loads(operation["evidence"])
+        except (TypeError, ValueError):
+            return False
+        # The old claim's epoch proves the wait's origin, not current authority.
+        # claim_wake checks the live grant; dispatch still checks budgets/epochs
+        # and the existing unknown-operation locks, including after re-grant.
+        return (
+            isinstance(params, dict) and params.get("task") == "plan"
+            and isinstance(result, dict) and isinstance(result.get("decision"), dict)
+            and result["decision"].get("action") == "wait"
+        )
+
     def claim_wake(self, space_id, scope, *, token):
         nonempty(token, "token")
         with self._transaction():
@@ -929,7 +971,12 @@ class ArtistStore:
             if state["backoff_until"] and datetime.fromisoformat(now) < datetime.fromisoformat(
                 state["backoff_until"]
             ):
-                return None
+                if not self._chat_interrupts_wait(space, state):
+                    return None
+                # Proof, interruption and the new claim share BEGIN IMMEDIATE:
+                # chat arriving during model await/finish is never lost, and a
+                # second connection cannot clear a competing worker's backoff.
+                self.db.execute("UPDATE artist_state SET backoff_until=NULL WHERE space_id=?", (space_id,))
             active = self.db.execute(
                 "SELECT * FROM artist_claims WHERE space_id=? AND state='active'",
                 (space_id,),
