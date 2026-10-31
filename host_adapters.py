@@ -83,13 +83,18 @@ def _json_response(text):
 
 
 class HostThinking:
-    def __init__(self, ctx, *, plan_task: str, review_task: str, max_tokens: int = 2048):
+    def __init__(self, ctx, *, plan_task: str, review_task: str,
+                 timeout_seconds: float = 30, max_tokens: int | None = None):
         nonempty(plan_task, "plan_task")
         nonempty(review_task, "review_task")
-        if type(max_tokens) is not int or not 1 <= max_tokens <= 4096:
+        if max_tokens is not None and (type(max_tokens) is not int or not 1 <= max_tokens <= 4096):
             raise StoreError("INVALID_ARGUMENT", "max_tokens must be between 1 and 4096")
+        if (isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
+                or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 300):
+            raise StoreError("INVALID_ARGUMENT", "timeout_seconds must be positive and at most 300")
         self.ctx, self.task_name, self.review_task_name = ctx, plan_task, review_task
         self.max_tokens = max_tokens
+        self.timeout_ms = math.ceil(timeout_seconds * 1000)
 
     def _messages(self, request):
         if (type(request) is not dict or type(request.get("task")) is not str
@@ -137,13 +142,18 @@ class HostThinking:
     async def __call__(self, request: dict) -> dict:
         messages = await ReadOnlyRecovery._db(self._messages, request)
         task = self.review_task_name if request["task"] == "review" else self.task_name
+        args = {"prompt": messages, "task_name": task}
+        # Omit the override so Host uses this task's configured output limit.
+        if self.max_tokens is not None:
+            args["max_tokens"] = self.max_tokens
         try:
             # LLMCapability rewrites a non-dict response as success=False. Keep
             # the raw receipt so a lost/malformed result stays uncertain.
             result = await self.ctx.call_host_method(
-                "cap.call", payload={"capability": "llm.generate", "args": {
-                    "prompt": messages, "task_name": task, "max_tokens": self.max_tokens,
-                }},
+                "cap.call", payload={"capability": "llm.generate", "args": args},
+                # Raw cap.call otherwise falls back to the Runner's 30s timer,
+                # independently of Artist's configured outer timeout.
+                timeout_ms=self.timeout_ms,
             )
         except asyncio.CancelledError:
             raise

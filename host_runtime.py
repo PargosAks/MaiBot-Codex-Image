@@ -207,7 +207,8 @@ class HostRuntime:
             from .host_adapters import HostThinking, HostSender
             artist = Artist(
                 self.store, item.space_id, scope,
-                Thinking(HostThinking(plugin.ctx, plan_task=cfg.plan_task, review_task=cfg.review_task)),
+                Thinking(HostThinking(plugin.ctx, plan_task=cfg.plan_task, review_task=cfg.review_task,
+                                      timeout_seconds=cfg.timeout_seconds)),
                 plugin._artist_renderer(self.store, item.space_id, scope, binding),
                 HostSender(plugin.ctx, plugin.journal, store=self.store, space_id=item.space_id, scope=scope),
                 persona=cfg.persona, idle_seconds=cfg.idle_seconds, timeout_seconds=cfg.timeout_seconds,

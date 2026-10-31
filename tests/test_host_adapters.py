@@ -40,6 +40,7 @@ class Context:
         self.sdk = context_class("isolated-adapter-test", rpc_call=self._rpc)
         self.llm, self.send = self.sdk.llm, self.sdk.send
         self.calls = []
+        self.rpc_timeouts = []
         self.result = {"success": True, "response": json.dumps(WAIT)}
         self.failure = None
         self.handler = None
@@ -52,12 +53,13 @@ class Context:
             raise self.failure
         return self.result
 
-    async def call_host_method(self, method, *, payload):
-        return await self.sdk.call_host_method(method, payload=payload)
+    async def call_host_method(self, method, *, payload, timeout_ms=None):
+        return await self.sdk.call_host_method(method, payload=payload, timeout_ms=timeout_ms)
 
-    async def _rpc(self, method, plugin_id, payload):
+    async def _rpc(self, method, plugin_id, payload, timeout_ms=None):
         assert method == "cap.call" and payload["capability"] in {"send.image", "llm.generate"}
         assert set(payload) == {"capability", "args"}
+        self.rpc_timeouts.append(timeout_ms)
         return await self.call_capability(payload["capability"], **payload["args"])
 
 
@@ -98,7 +100,7 @@ async def test_actual_sdk_plan_and_inspiration_capability_no_tools(ctx):
     assert await thinking(ctx).inspire({}) == {"ideas": []}
     for name, payload in ctx.calls:
         assert name == "llm.generate"
-        assert payload["task_name"] == "synthetic-plan" and payload["max_tokens"] == 2048
+        assert payload["task_name"] == "synthetic-plan" and "max_tokens" not in payload
         assert "tools" not in payload and "model_name" not in payload
         assert [message["role"] for message in payload["prompt"]] == ["system", "user"]
         assert payload["prompt"][1]["content"] == [{"type": "text", "text": "{}"}]
@@ -149,7 +151,7 @@ async def test_v2_host_sdk_preserves_labels_order_original_bytes_and_routing(cou
     assert len(ctx.calls) == 1
     name, payload = ctx.calls[0]
     assert name == "llm.generate" and payload["task_name"] == "synthetic-vision"
-    assert set(payload) == {"prompt", "task_name", "max_tokens"} and payload["max_tokens"] == 2048
+    assert set(payload) == {"prompt", "task_name"}
     content = payload["prompt"][1]["content"]
     assert len(content) == 1 + 2 * count
     assert json.loads(content[0]["text"]) == context
@@ -645,9 +647,10 @@ async def test_real_plugin_context_send_exception_certainty(sender_state, denied
 async def test_real_plugin_context_llm_keeps_original_success_type_and_error(receipt, code):
     calls = []
 
-    async def rpc(method, plugin_id, payload):
+    async def rpc(method, plugin_id, payload, timeout_ms=None):
         calls.append(payload)
         assert method == "cap.call" and payload["capability"] == "llm.generate"
+        assert timeout_ms == 30000
         return receipt
 
     ctx = PluginContext("isolated-test", rpc_call=rpc)
@@ -670,3 +673,34 @@ async def test_shared_send_helper_preserves_capability_denial_for_caller():
     with pytest.raises(Denied) as caught:
         await send_image_receipt(ctx, base64.b64encode(PNG).decode("ascii"), SCOPE.stream_id)
     assert caught.value is failure
+
+
+@pytest.mark.parametrize("timeout,expected_ms", [(30, 30000), (150.1234, 150124), (0.0001, 1)])
+async def test_sdk_receives_explicit_thinking_rpc_timeout(ctx, timeout, expected_ms):
+    adapter = HostThinking(ctx, plan_task="plan", review_task="vision", timeout_seconds=timeout)
+    assert await Thinking(adapter).plan({}) == WAIT
+    assert ctx.rpc_timeouts == [expected_ms]
+    assert "max_tokens" not in ctx.calls[0][1]
+    assert "timeout_ms" not in ctx.calls[0][1]
+
+
+async def test_explicit_adapter_token_override_is_still_supported(ctx):
+    adapter = HostThinking(ctx, plan_task="plan", review_task="vision", max_tokens=2048)
+    assert await Thinking(adapter).plan({}) == WAIT
+    assert ctx.calls[0][1]["max_tokens"] == 2048 and ctx.rpc_timeouts == [30000]
+
+
+@pytest.mark.parametrize("value", [True, 0, -1, 4097, 1.5, "2048"])
+def test_invalid_explicit_token_override_fails_before_rpc(value):
+    ctx = Context()
+    with pytest.raises(StoreError, check=lambda exc: exc.code == "INVALID_ARGUMENT"):
+        HostThinking(ctx, plan_task="plan", review_task="vision", max_tokens=value)
+    assert not ctx.calls and not ctx.rpc_timeouts
+
+
+@pytest.mark.parametrize("value", [True, 0, -1, 301, float("nan"), float("inf"), "150"])
+def test_invalid_thinking_timeout_fails_before_rpc(value):
+    ctx = Context()
+    with pytest.raises(StoreError, check=lambda exc: exc.code == "INVALID_ARGUMENT"):
+        HostThinking(ctx, plan_task="plan", review_task="vision", timeout_seconds=value)
+    assert not ctx.calls and not ctx.rpc_timeouts
