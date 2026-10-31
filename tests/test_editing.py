@@ -1,6 +1,7 @@
 """Original-image edit orchestration with isolated SQLite, no network or drawing."""
 
 from contextlib import closing
+from datetime import datetime, timedelta, timezone
 from threading import Event
 import asyncio
 import base64
@@ -11,10 +12,11 @@ import json
 import pytest
 
 from image_plugin_under_test.artist import render_digest
-from image_plugin_under_test.bridge import BridgeError
+from image_plugin_under_test.bridge import Bridge, BridgeError
 from image_plugin_under_test.editing import ImageEdits
 from image_plugin_under_test.policy import Delegation, Limits, Scope, StoreError
 from image_plugin_under_test.store import ArtistStore
+from conftest import SECRET
 
 
 SCOPE = Scope("test", "verified-stream", "verified-owner")
@@ -88,7 +90,9 @@ class FakeBridge:
             result["found"] = True
         return result
 
-    async def edit(self, scope, request_id, source_job_id, source_sha256, prompt):
+    async def edit(self, scope, request_id, source_job_id, source_sha256, prompt, *, before_dispatch=None):
+        if before_dispatch is not None:
+            await before_dispatch()
         params = {"source_job_id": source_job_id, "source_sha256": source_sha256, "prompt": prompt}
         self.edits.append((copy.deepcopy(scope), request_id, params))
         if self.failure:
@@ -165,6 +169,52 @@ async def test_submit_freezes_source_and_one_attempt_then_collect_immutable(ledg
     assert await edits.collect("s", SCOPE, "edit", "parent") == child
     assert (len(bridge.lookups), len(bridge.images)) == calls
     assert len(bridge.edits) == 1
+
+
+@pytest.mark.parametrize(
+    "change,code",
+    [
+        ("revoke", "AUTH_REQUIRED"),
+        ("regrant", "AUTH_CHANGED"),
+        ("space", "BUDGET_EXCEEDED"),
+        ("global", "BUDGET_EXCEEDED"),
+        ("revision", "REVISION_LIMIT"),
+        ("day", "BUDGET_DAY_CHANGED"),
+    ],
+)
+async def test_standalone_edit_rechecks_policy_after_bridge_health(ledger, change, code):
+    now = datetime(2026, 10, 31, 2, tzinfo=timezone.utc)
+    ledger.clock = lambda: now
+    bridge, calls = Bridge("http://127.0.0.1/mcp", SECRET), []
+
+    async def call(operation, scope, args):
+        nonlocal now
+        calls.append(operation)
+        assert operation == "health", "Policy changes must stop the actual edit"
+        with closing(ArtistStore(ledger.path, clock=ledger.clock)) as other:
+            if change in {"revoke", "regrant"}:
+                other.revoke("s", SCOPE, source_ref="withdrawn", granted_by="trusted-admin")
+                if change == "regrant":
+                    other.grant("s", SCOPE, Delegation("new-consent", "trusted-admin", continuous=True))
+            elif change == "global":
+                other.set_global_limits(Limits(think=20, render=0, share=20, max_inflight=20))
+            elif change == "space":
+                other.set_limits("s", SCOPE, Limits(think=20, render=0, share=20, max_inflight=20))
+            elif change == "revision":
+                other.set_limits(
+                    "s", SCOPE, Limits(think=20, render=20, share=20, max_inflight=20, max_revisions=0)
+                )
+            elif change == "day":
+                now += timedelta(days=1)
+        return {"capabilities": ["edit_v1", "lookup_v1"]}
+
+    bridge.call = call
+    with error(code):
+        await submit(ImageEdits(ledger, bridge))
+    assert calls == ["health"]
+    op = ledger.get_operation("s", SCOPE, "edit")
+    assert op["state"] == "unknown" and op["job_id"] is None
+    assert ledger.budget_usage("s", SCOPE)["render"]["held"] == 1
 
 
 @pytest.mark.parametrize(

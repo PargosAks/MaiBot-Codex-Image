@@ -107,8 +107,15 @@ class ImageEdits:
             await self.recovery._db(self.recovery._unknown, space_id, scope, request_id, "EDIT_CANCELLED")
             raise
         try:
+
+            async def before_dispatch():
+                await self.recovery._db(self.store.validate_submitting, space_id, scope, request_id)
+
             result = await self.bridge.edit(
-                json.loads(operation["scope_snapshot"]), operation["request_id"], **operation["params"]
+                json.loads(operation["scope_snapshot"]),
+                operation["request_id"],
+                **operation["params"],
+                before_dispatch=before_dispatch,
             )
             job = _receipt(operation, result)
             return await self.recovery._db(self.recovery._apply, space_id, scope, request_id, job)

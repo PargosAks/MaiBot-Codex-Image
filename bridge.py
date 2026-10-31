@@ -1,6 +1,7 @@
 """MCP client. Only trusted plugin code constructs signed contexts."""
 
 from datetime import timedelta
+from typing import Awaitable, Callable, Optional
 import base64
 import hashlib
 import hmac
@@ -141,7 +142,14 @@ class Bridge:
         return result
 
     async def edit(
-        self, scope: dict, request_id: str, source_job_id: str, source_sha256: str, prompt: str
+        self,
+        scope: dict,
+        request_id: str,
+        source_job_id: str,
+        source_sha256: str,
+        prompt: str,
+        *,
+        before_dispatch: Optional[Callable[[], Awaitable[None]]] = None,
     ) -> dict:
         if not (
             _text(request_id) and _text(source_job_id) and _digest(source_sha256) and _text(prompt, 4000)
@@ -162,6 +170,10 @@ class Bridge:
             separators=(",", ":"),
         )
         expected = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        if before_dispatch is not None:
+            # Capability probing awaited the network. A trusted ledger owner
+            # can recheck its current authority/budget before the edit write.
+            await before_dispatch()
         result = await self.call("edit", scope, args)
         if (
             not isinstance(result, dict)

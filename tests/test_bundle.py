@@ -26,6 +26,7 @@ def inspect_plugin_bundle(destination):
             "plugin.py", "bridge.py", "delivery.py", "policy.py", "store.py", "artist.py", "thinking.py",
             "recovery.py", "docs/implementation-stage-3.md",
             "editing.py", "docs/implementation-stage-4.md",
+            "rendering.py", "docs/implementation-stage-5.md",
             "config.example.toml", "_manifest.json", "docs/artist-design.md",
             "docs/artist-stage-0.md", "docs/implementation-stage-1.md", "docs/implementation-stage-2.md",
         } <= names

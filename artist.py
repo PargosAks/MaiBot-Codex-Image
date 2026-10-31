@@ -1,4 +1,4 @@
-"""Explicitly driven, simulation-only artist runtime. No default network adapters.
+"""Explicit artist runtime with opt-in MCP rendering and simulated delivery.
 
 The Host integration is intentionally not activated by plugin.py. A trusted
 adapter supplies the space/scope; models supply creative suggestions only.
@@ -10,8 +10,10 @@ from typing import Optional, Protocol
 import asyncio
 import hashlib
 import json
+import re
 import uuid
 
+from .bridge import BridgeError
 from .policy import Scope, StoreError, canonical_json
 from .store import ArtistStore
 from .thinking import Thinking
@@ -26,6 +28,7 @@ class RenderResult:
     image: Optional[bytes] = None
     mime: str = "image/png"
     sha256: Optional[str] = None
+    error_code: Optional[str] = None
 
 
 class Renderer(Protocol):
@@ -72,9 +75,15 @@ class Artist:
         persona: str = "热爱观察与绘画的小画师",
         idle_seconds: int = 300,
         timeout_seconds: float = 30,
+        allow_network_renderer: bool = False,
     ):
-        if renderer.simulation is not True or sender.simulation is not True:
-            raise StoreError("SIMULATION_REQUIRED", "Stage 2 requires simulated drawing and sending")
+        if type(allow_network_renderer) is not bool:
+            raise StoreError("INVALID_ARGUMENT", "Network rendering requires an explicit boolean opt-in")
+        if (renderer.simulation is not True and not allow_network_renderer) or sender.simulation is not True:
+            raise StoreError(
+                "SIMULATION_REQUIRED",
+                "Use simulated drawing unless explicitly opted in; sending must remain simulated",
+            )
         if type(idle_seconds) is not int or not 60 <= idle_seconds <= 86400:
             raise StoreError("INVALID_ARGUMENT", "idle_seconds must be 60..86400")
         if not isinstance(persona, str) or not persona.strip() or len(persona) > 4000:
@@ -102,8 +111,18 @@ class Artist:
         )
         try:
             return await asyncio.shield(task)
-        except asyncio.CancelledError:
-            await task
+        except asyncio.CancelledError as cancelled:
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            try:
+                task.result()
+            except Exception as exc:
+                raise cancelled from exc
             raise
 
     def _now(self) -> datetime:
@@ -148,8 +167,24 @@ class Artist:
             except TimeoutError:
                 pass
 
-    async def recover(self, *, offline: bool = False) -> None:
-        await self._db("recover_artist", offline=offline)
+    async def recover(self, *, offline: bool = False, reconcile: bool = False) -> list:
+        """After stopping old workers, optionally read original render results.
+
+        Revocation does not erase results. This path never thinks, generates or
+        sends, and does not acknowledge queued chat or make a new plan.
+        """
+        if type(reconcile) is not bool:
+            raise StoreError("INVALID_ARGUMENT", "reconcile must be a boolean")
+        async with self.lock:
+            await self._db("recover_artist", offline=offline)
+            results = []
+            if reconcile:
+                for work in await self._db("list_artist_works"):
+                    if work["pending_request"]:
+                        operation = await self._db("get_operation", work["pending_request"])
+                        if operation["state"] in {"submitting", "accepted", "unknown", "succeeded", "failed"}:
+                            results.append(await self._poll(work))
+            return results
 
     async def _operation(self, request_id):
         try:
@@ -195,8 +230,40 @@ class Artist:
         }
 
     async def _think(self, task: str, context: dict, cycle: dict, *, work_id=None, version=None):
+        operations = await self._db("audit_operations")
+        if any(
+            op["action"] == "think" and op["state"] in {"submitting", "accepted", "unknown"}
+            for op in operations
+        ):
+            # A new chat or timer changes the wake watermark, not the certainty
+            # of a previous model call. Do not evade its hold with another key.
+            raise StoreError("THINK_UNKNOWN", "An earlier model call remains unresolved")
+        cached_review = next(
+            (
+                op
+                for op in reversed(operations)
+                if task == "review"
+                and op["action"] == "think"
+                and op["work_id"] == work_id
+                and op["params"].get("task") == "review"
+                and op["params"].get("version_id") == version["version_id"]
+                and op["state"] == "succeeded"
+            ),
+            None,
+        )
+        if cached_review is not None:
+            if (
+                cached_review["auth_version"] != cycle["auth_version"]
+                or await self._epoch() != cycle["auth_version"]
+            ):
+                raise StoreError("AUTH_CHANGED", "Stored review belongs to an older authorization")
+            return json.loads(cached_review["evidence"]), cached_review["request_id"]
         identity = stable_id(
-            task, self.space_id, str(cycle["through"]), work_id or "", (version or {}).get("version_id", "")
+            task,
+            self.space_id,
+            "version" if task == "review" else str(cycle["through"]),
+            work_id or "",
+            (version or {}).get("version_id", ""),
         )
         # A known failed model call may be attempted later after persisted
         # backoff. An unknown call is not repeated, even after restart.
@@ -434,10 +501,11 @@ class Artist:
                 self.timeout,
             )
         except BaseException as exc:
-            await self._db("mark_unknown", request_id, reason="SUBMIT_UNCONFIRMED")
+            reason = exc.code if isinstance(exc, (BridgeError, StoreError)) else "SUBMIT_UNCONFIRMED"
+            await self._db("mark_unknown", request_id, reason=reason)
             if isinstance(exc, asyncio.CancelledError):
                 raise
-            return {"state": "blocked", "reason": "SUBMIT_UNCONFIRMED"}
+            return {"state": "blocked", "reason": reason}
         return await self._receive(work, result)
 
     async def _poll(self, work: dict) -> dict:
@@ -458,6 +526,8 @@ class Artist:
                 )
         except asyncio.CancelledError:
             raise
+        except (BridgeError, StoreError) as exc:
+            return {"state": "blocked", "reason": exc.code}
         except Exception:
             return {"state": "blocked", "reason": "LOOKUP_UNAVAILABLE"}
         if result is None:
@@ -475,6 +545,13 @@ class Artist:
             and bool(result.job_id.strip())
             and (not operation["job_id"] or operation["job_id"] == result.job_id)
             and result.state in {"queued", "running", "completed", "failed", "outcome_unknown"}
+            and (
+                result.error_code is None
+                or (
+                    isinstance(result.error_code, str)
+                    and re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", result.error_code)
+                )
+            )
         )
         if not valid:
             if operation["state"] in {"submitting", "accepted", "unknown"}:
@@ -539,7 +616,7 @@ class Artist:
             await self._change(
                 work["work_id"],
                 status="finished" if work["best_version"] else "abandoned",
-                reason="RENDER_FAILED",
+                reason=result.error_code or "RENDER_FAILED",
             )
             return {"state": "finished" if work["best_version"] else "abandoned"}
         return {
@@ -566,6 +643,7 @@ class Artist:
         prior = next((r for r in reversed(reviews) if r["version_id"] == version["version_id"]), None)
         if prior is not None:
             review = prior["review"]
+            request_id = prior["request_id"]
         else:
             review, request_id = await self._think(
                 "review", review_context, cycle, work_id=work["work_id"], version=version
@@ -573,6 +651,14 @@ class Artist:
             await self._db(
                 "record_review", version_id=version["version_id"], request_id=request_id, review=review
             )
+        # A review row is audit history, not renewed authority. Both persisted
+        # reviews and newly recorded advice must still belong to this grant.
+        reviewed_operation = await self._db("get_operation", request_id)
+        if (
+            reviewed_operation["auth_version"] != cycle["auth_version"]
+            or await self._epoch() != cycle["auth_version"]
+        ):
+            raise StoreError("AUTH_CHANGED", "Review cannot cross authorization versions")
         best = review.get(
             "best_version_id",
             version["version_id"]

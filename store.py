@@ -290,6 +290,22 @@ class ArtistStore:
         with self.lock:
             return self._snapshot(self._operation(space_id, scope, request_id))
 
+    def get_render_operation_by_job(self, space_id: str, scope: Scope, job_id: str) -> Dict[str, Any]:
+        """Resolve a persisted render job without guessing among ambiguous bindings."""
+        nonempty(job_id, "job_id")
+        with self.lock:
+            self._space(space_id, scope)
+            rows = self.db.execute(
+                """SELECT * FROM operations WHERE space_id=? AND job_id=?
+                AND category='render' AND action IN ('submit','edit') LIMIT 2""",
+                (space_id, job_id),
+            ).fetchall()
+            if not rows:
+                raise StoreError("NOT_FOUND", "Render job not found in this space")
+            if len(rows) != 1:
+                raise StoreError("REQUEST_CONFLICT", "Render job has ambiguous operation bindings")
+            return self._snapshot(rows[0])
+
     def audit_operations(self, space_id: str, scope: Scope):
         with self.lock:
             self._space(space_id, scope)
@@ -473,6 +489,24 @@ class ArtistStore:
                 (day, now, row["id"]),
             )
             return self._snapshot(self._operation(space_id, scope, request_id))
+
+    def validate_submitting(self, space_id: str, scope: Scope, request_id: str) -> Dict[str, Any]:
+        """Read-only dispatch check in one snapshot; never renew or refund a claim."""
+        with self._transaction():
+            _, day = self._now()
+            row = self._operation(space_id, scope, request_id)
+            space = self._space(space_id, scope)
+            if row["state"] != "submitting" or row["job_id"] is not None:
+                raise StoreError("INVALID_STATE", "Dispatch requires an unbound submitting operation")
+            self._authorized(space)
+            if row["auth_version"] != space["auth_version"]:
+                raise StoreError("AUTH_CHANGED", "Authorization changed since reservation")
+            if row["budget_day"] != day:
+                raise StoreError("BUDGET_DAY_CHANGED", "Dispatch cannot cross its recorded budget day")
+            self._check_budget(
+                space_id, row["category"], day, adding=0, work_id=row["work_id"], edit=row["action"] == "edit"
+            )
+            return self._snapshot(row)
 
     def _update(self, row, state, evidence, job_id=None):
         now, _ = self._now()

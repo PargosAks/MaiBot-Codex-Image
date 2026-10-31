@@ -43,13 +43,15 @@ Docker bridge 容器内的 `localhost` / `127.0.0.1` 指向容器自身。连接
 
 ## 小画师开发阶段
 
-自主创作采用插件内部决策循环，设计见 [小画师设计](docs/artist-design.md)。阶段 2 已在状态底座上实现可显式驱动的模拟创作运行器，支持聊天/定时统一唤醒、灵感、计划、评审和独立分享决策。它仅接受模拟绘图与发送后端，尚未接入插件生命周期，不会自动迁移已有数据、绘图或发送，现有命令行为保持不变。
+自主创作采用插件内部决策循环，设计见 [小画师设计](docs/artist-design.md)。阶段 2 建立显式驱动的模拟创作运行器，支持聊天/定时统一唤醒、灵感、计划、评审和独立分享决策。阶段 5 将它连接到 MCP 协议适配层；默认仍要求模拟后端，网络绘图需要开发调用方显式启用，发送仍限定模拟。尚未接入插件生命周期，不会自动迁移已有数据、绘图或发送，现有命令行为保持不变。
 
 [环境核查](docs/artist-stage-0.md) · [阶段 1 实现与验证](docs/implementation-stage-1.md)。开发阶段不扩大已声明的 SDK 兼容范围。
 
 [阶段 2 运行方式与验证](docs/implementation-stage-2.md)。阶段 3 已增加 Bridge 能力探测、错误码透传和原请求查询恢复，独立 MCP 源码增加 `lookup_v1`，尚未部署或自动启用；旧服务缺少能力声明时不会盲猜支持。详见 [阶段 3](docs/implementation-stage-3.md)。
 
-阶段 4 增加显式原图编辑组件、源图校验、跨 submit/edit 幂等和不可变父子版本关联。独立 MCP 的 `edit_v1` 使用实际图片输入；已用模拟 Codex 验证，尚未验证真实账号编辑效果。组件未接入 Host 或自主创作运行器，不自动绘图、分享或升级服务。详见 [阶段 4](docs/implementation-stage-4.md)。
+阶段 4 增加显式原图编辑组件、源图校验、跨 submit/edit 幂等和不可变父子版本关联。独立 MCP 的 `edit_v1` 使用实际图片输入；已用模拟 Codex 验证，尚未验证真实账号编辑效果。详见 [阶段 4](docs/implementation-stage-4.md)。
+
+阶段 5 复用同一创作状态机串联新图、原图编辑、按图片字节评审、最佳版本选择和独立分享决策；丢回执或重启只恢复原操作，未知发送不重发。验证使用模拟绘图、评审和发送，以及隔离的真实本机 MCP 传输，不代表真实模型效果或聊天收图通过。运行与恢复入口见 [阶段 5](docs/implementation-stage-5.md)。
 
 [安装与升级](docs/quickstart.md) · [配置与迁移](docs/advanced.md) · [排错](docs/troubleshooting.md) · [开发](docs/development.md) · [验证](docs/validation.md)
 

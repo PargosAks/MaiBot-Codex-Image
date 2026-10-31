@@ -4,12 +4,14 @@ from copy import deepcopy
 from unittest.mock import AsyncMock
 import base64
 import hashlib
+import asyncio
 
 from mcp.types import CallToolResult, ImageContent
 import pytest
 
 from image_plugin_under_test.artist import render_digest
 from image_plugin_under_test.bridge import Bridge, BridgeError
+from image_plugin_under_test.policy import StoreError
 from conftest import SCOPE, SECRET
 from protocol_fixture import PNG
 
@@ -45,6 +47,31 @@ async def test_unsupported_edit_has_no_text_only_fallback():
     with pytest.raises(BridgeError, check=lambda e: e.code == "EDIT_UNSUPPORTED"):
         await bridge.edit(SCOPE, "edit-request", **PARAMS)
     bridge.call.assert_awaited_once_with("health", SCOPE, {})
+
+
+@pytest.mark.parametrize("denied", [False, True, "cancel"])
+async def test_edit_gate_runs_after_health_and_before_write(denied):
+    bridge, events = Bridge("http://127.0.0.1/mcp", SECRET), []
+
+    async def call(operation, scope, args):
+        events.append(operation)
+        return {"capabilities": ["edit_v1"]} if operation == "health" else deepcopy(RESPONSE)
+
+    async def gate():
+        events.append("gate")
+        if denied == "cancel":
+            raise asyncio.CancelledError
+        if denied:
+            raise StoreError("AUTH_CHANGED", "Synthetic withdrawal")
+
+    bridge.call = call
+    if denied:
+        with pytest.raises(asyncio.CancelledError if denied == "cancel" else StoreError):
+            await bridge.edit(SCOPE, "edit-request", **PARAMS, before_dispatch=gate)
+        assert events == ["health", "gate"]
+    else:
+        assert await bridge.edit(SCOPE, "edit-request", **PARAMS, before_dispatch=gate) == RESPONSE
+        assert events == ["health", "gate", "edit"]
 
 
 @pytest.mark.parametrize(
