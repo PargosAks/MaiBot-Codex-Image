@@ -39,15 +39,17 @@ Docker bridge 容器内的 `localhost` / `127.0.0.1` 指向容器自身。连接
 | `/重发画图 任务编号` | 按发送记录规则发送已有图片，不重新生成 |
 | `/画图诊断` | 检查 MCP 连接，不生成图片；不证明绘图登录或聊天收图成功 |
 
-仅支持命令触发，不支持改图、参考图或批量生成。超时或结果未知时先查原任务；`sending/send_unknown` 自动和手动均禁止重发，不要清库绕过。
+当前用户入口仅支持命令触发，尚未提供改图、参考图或批量生成入口。超时或结果未知时先查原任务；`sending/send_unknown` 自动和手动均禁止重发，不要清库绕过。
 
 ## 小画师开发阶段
 
 自主创作采用插件内部决策循环，设计见 [小画师设计](docs/artist-design.md)。阶段 2 已在状态底座上实现可显式驱动的模拟创作运行器，支持聊天/定时统一唤醒、灵感、计划、评审和独立分享决策。它仅接受模拟绘图与发送后端，尚未接入插件生命周期，不会自动迁移已有数据、绘图或发送，现有命令行为保持不变。
 
-[环境核查](docs/artist-stage-0.md) · [阶段 1 实现与验证](docs/implementation-stage-1.md)。原图编辑仍是后续接口契约，不扩大已声明的 SDK 兼容范围。
+[环境核查](docs/artist-stage-0.md) · [阶段 1 实现与验证](docs/implementation-stage-1.md)。开发阶段不扩大已声明的 SDK 兼容范围。
 
 [阶段 2 运行方式与验证](docs/implementation-stage-2.md)。阶段 3 已增加 Bridge 能力探测、错误码透传和原请求查询恢复，独立 MCP 源码增加 `lookup_v1`，尚未部署或自动启用；旧服务缺少能力声明时不会盲猜支持。详见 [阶段 3](docs/implementation-stage-3.md)。
+
+阶段 4 增加显式原图编辑组件、源图校验、跨 submit/edit 幂等和不可变父子版本关联。独立 MCP 的 `edit_v1` 使用实际图片输入；已用模拟 Codex 验证，尚未验证真实账号编辑效果。组件未接入 Host 或自主创作运行器，不自动绘图、分享或升级服务。详见 [阶段 4](docs/implementation-stage-4.md)。
 
 [安装与升级](docs/quickstart.md) · [配置与迁移](docs/advanced.md) · [排错](docs/troubleshooting.md) · [开发](docs/development.md) · [验证](docs/validation.md)
 

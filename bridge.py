@@ -110,14 +110,7 @@ class Bridge:
         self.url, self.secret = url, secret
 
     async def call(self, operation: str, scope: dict, args: dict):
-        try:
-            result = await self._exchange(operation, scope, args)
-        except Exception as exc:
-            # Cancellation propagates. No transport retry: a submit might have
-            # been accepted even when the response/session could not be read.
-            raise BridgeError("TRANSPORT_UNKNOWN", kind="transport") from exc
-        if result.isError:
-            raise _response_error(result)
+        result = await self._checked_exchange(operation, scope, args)
         if operation == "result":
             for block in result.content:
                 if block.type == "image":
@@ -135,6 +128,85 @@ class Bridge:
                 except (TypeError, ValueError) as exc:
                     raise BridgeError("INVALID_RESPONSE", kind="protocol") from exc
         raise BridgeError("INVALID_RESPONSE", kind="protocol", message="服务没有返回有效状态")
+
+    async def _checked_exchange(self, operation: str, scope: dict, args: dict):
+        try:
+            result = await self._exchange(operation, scope, args)
+        except Exception as exc:
+            # Cancellation propagates. No transport retry: a submit might have
+            # been accepted even when the response/session could not be read.
+            raise BridgeError("TRANSPORT_UNKNOWN", kind="transport") from exc
+        if result.isError:
+            raise _response_error(result)
+        return result
+
+    async def edit(
+        self, scope: dict, request_id: str, source_job_id: str, source_sha256: str, prompt: str
+    ) -> dict:
+        if not (
+            _text(request_id) and _text(source_job_id) and _digest(source_sha256) and _text(prompt, 4000)
+        ):
+            raise BridgeError("INVALID_ARGUMENTS", kind="local")
+        if "edit_v1" not in await self.capabilities(scope):
+            raise BridgeError("EDIT_UNSUPPORTED", kind="capability")
+        args = {
+            "request_id": request_id,
+            "source_job_id": source_job_id,
+            "source_sha256": source_sha256,
+            "prompt": prompt,
+        }
+        canonical = json.dumps(
+            {"operation": "edit", **{k: v for k, v in args.items() if k != "request_id"}},
+            sort_keys=True,
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
+        expected = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        result = await self.call("edit", scope, args)
+        if (
+            not isinstance(result, dict)
+            or not {"operation", "request_id", "request_digest", "job"} <= result.keys()
+        ):
+            raise BridgeError("INVALID_RESPONSE", kind="protocol")
+        if (
+            result["operation"] != "edit"
+            or result["request_id"] != request_id
+            or result["request_digest"] != expected
+        ):
+            raise BridgeError("RECEIPT_MISMATCH", kind="binding")
+        _validate_job(result["job"])
+        return result
+
+    async def image(
+        self, scope: dict, job_id: str, *, expected_sha256: str, expected_mime: str, expected_size: int
+    ) -> dict:
+        # ArtistStore versions are limited to 8 MiB, independently of the legacy
+        # command path's 20 MiB result limit. Do not alter existing command behavior.
+        maximum = 8 * 1024 * 1024
+        if (
+            not _text(job_id)
+            or not _digest(expected_sha256)
+            or not isinstance(expected_mime, str)
+            or expected_mime not in {"image/png", "image/jpeg", "image/webp"}
+            or type(expected_size) is not int
+            or not 0 < expected_size <= maximum
+        ):
+            raise BridgeError("INVALID_ARGUMENTS", kind="local")
+        result = await self._checked_exchange("result", scope, {"job_id": job_id})
+        images = [block for block in result.content if block.type == "image"]
+        if (
+            len(images) != 1
+            or images[0].mimeType != expected_mime
+            or len(images[0].data) > ((maximum + 2) // 3) * 4
+        ):
+            raise BridgeError("ARTIFACT_INVALID", kind="protocol")
+        try:
+            data = base64.b64decode(images[0].data, validate=True)
+        except (TypeError, ValueError) as exc:
+            raise BridgeError("ARTIFACT_INVALID", kind="protocol") from exc
+        if len(data) != expected_size or hashlib.sha256(data).hexdigest() != expected_sha256:
+            raise BridgeError("ARTIFACT_INVALID", kind="protocol")
+        return {"data": data, "mime": expected_mime, "sha256": expected_sha256}
 
     async def capabilities(self, scope: dict) -> frozenset[str]:
         health = await self.call("health", scope, {})

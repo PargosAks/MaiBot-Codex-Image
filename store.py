@@ -190,6 +190,11 @@ class ArtistStore:
             )
             return dict(self._space(space_id, scope))
 
+    def get_space(self, space_id: str, scope: Scope) -> Dict[str, Any]:
+        """Read authority version and immutable binding for a trusted adapter."""
+        with self.lock:
+            return dict(self._space(space_id, scope))
+
     def grant(self, space_id: str, scope: Scope, delegation: Delegation) -> int:
         if not isinstance(delegation, Delegation):
             raise StoreError("AUTH_REQUIRED", "An explicit delegation record is required")
@@ -1105,6 +1110,16 @@ class ArtistStore:
                 raise StoreError("NOT_FOUND", "Version requires its original bound render job")
             if parent_id is not None and self._version(space_id, scope, parent_id)["work_id"] != work_id:
                 raise StoreError("NOT_FOUND", "Parent version belongs to another work")
+            if op["action"] == "edit":
+                if parent_id is None:
+                    raise StoreError("REQUEST_CONFLICT", "An edit version requires its source parent")
+                parent = self._version(space_id, scope, parent_id)
+                source = json.loads(op["params_json"])
+                if (source.get("source_job_id"), source.get("source_sha256")) != (
+                    parent["job_id"],
+                    parent["sha256"],
+                ):
+                    raise StoreError("REQUEST_CONFLICT", "Edit parent does not match the frozen source")
             old = self.db.execute(
                 """SELECT * FROM versions WHERE space_id=?
                                   AND (version_id=? OR request_id=?)""",

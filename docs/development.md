@@ -10,6 +10,8 @@
 
 阶段 3 新增 `recovery.py`，Bridge 支持能力探测、错误码和只读 lookup；恢复入口须显式调用，不启动真实创作。独立服务位于单独的 `codex-image-service` 仓库，未重新加入插件。跨仓库联调说明见 [阶段 3](implementation-stage-3.md)。
 
+阶段 4 新增 `editing.py`，显式提交原图编辑并取回同一任务的子版本；Bridge 严格验证编辑回执和图片摘要，状态库绑定父版本。自主运行器仍只接受模拟后端，详见 [阶段 4](implementation-stage-4.md)。
+
 不再维护 `service/` 或宿主机安装部署工具；协议、配置字段、任务归属、幂等和发送库格式保持不变。服务与 Codex 登录由独立服务维护者管理，插件生命周期不得管理服务进程。
 
 ## 根目录开发环境
@@ -19,7 +21,7 @@
 ```sh
 uv sync --locked
 uv run --locked pytest -q
-uv run --locked ruff check --select E4,E7,E9,F plugin.py bridge.py delivery.py policy.py store.py artist.py thinking.py recovery.py scripts/build_bundle.py tests
+uv run --locked ruff check --select E4,E7,E9,F plugin.py bridge.py delivery.py policy.py store.py artist.py thinking.py recovery.py editing.py scripts/build_bundle.py tests
 ```
 
 根 `pyproject.toml` / `uv.lock` 管理插件开发依赖。这些是开发命令，不是用户安装 MCP 的步骤，不应修改 MaiBot 已安装环境。定向检查可在 pytest 后指定相关文件；不再使用 `--project service` 或 `service/tests`。
