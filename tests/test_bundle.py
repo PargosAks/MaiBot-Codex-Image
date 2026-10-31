@@ -18,7 +18,7 @@ def inspect_plugin_bundle(destination):
     outputs = bundle.build(destination)
     assert len(outputs) == 1
     output, digest = outputs[0]
-    assert output.name == "MaiBot-Codex-Image-plugin-v0.8.0.zip"
+    assert output.name == "MaiBot-Codex-Image-plugin-v0.9.0.zip"
     assert hashlib.sha256(output.read_bytes()).hexdigest() == digest
     with zipfile.ZipFile(output) as archive:
         names = set(archive.namelist())
@@ -42,8 +42,8 @@ def inspect_plugin_bundle(destination):
             "setup.sh",
         }
         manifest = json.loads(archive.read("_manifest.json"))
-        assert manifest["version"] == "0.8.0"
-        assert {x["name"] for x in manifest["dependencies"]} == {"httpx", "mcp"}
+        assert manifest["version"] == "0.9.0"
+        assert {x["name"] for x in manifest["dependencies"]} == {"httpx", "mcp", "pillow"}
     assert (destination / "SHA256SUMS").read_text(encoding="ascii") == f"{digest}  {output.name}\n"
     return output, names
 

@@ -11,6 +11,8 @@ import uuid
 
 from .bridge import BridgeError
 from .policy import Scope, StoreError, canonical_json
+from .profiles import render_prompt
+from .assets import reference_prompt
 from .store import ArtistStore
 from .thinking import Thinking
 
@@ -47,7 +49,18 @@ class Sender(Protocol):
 
 
 def render_digest(action: str, params: dict) -> str:
-    if action == "submit":
+    if params.get("transport_operation") == "render":
+        if type(params.get("reference_contract")) is not int or params["reference_contract"] != 1:
+            raise StoreError("REQUEST_CONFLICT", "Unknown frozen reference contract")
+        payload = canonical_json({
+            "operation": "render", "mode": "create" if action == "submit" else "edit",
+            "prompt": params["prompt"],
+            "source": None if action == "submit" else {
+                "job_id": params["source_job_id"], "sha256": params["source_sha256"],
+            },
+            "references": params["reference_inputs"],
+        })
+    elif action == "submit":
         payload = params["prompt"]
     else:
         payload = canonical_json({"operation": "edit", **params})
@@ -73,8 +86,9 @@ class Artist:
         timeout_seconds: float = 30,
         allow_network_renderer: bool = False,
         allow_host_sender: bool = False,
+        reference_inputs: bool = False,
     ):
-        if type(allow_network_renderer) is not bool or type(allow_host_sender) is not bool:
+        if any(type(value) is not bool for value in (allow_network_renderer, allow_host_sender, reference_inputs)):
             raise StoreError("INVALID_ARGUMENT", "Network rendering requires an explicit boolean opt-in")
         if (renderer.simulation is not True and not allow_network_renderer) or (
             sender.simulation is not True and not allow_host_sender
@@ -94,6 +108,7 @@ class Artist:
         self.store, self.space_id, self.scope = store, space_id, scope
         self.thinking, self.renderer, self.sender = thinking, renderer, sender
         self.persona, self.idle_seconds, self.timeout = persona, idle_seconds, timeout_seconds
+        self.reference_inputs = reference_inputs
         self.lock = asyncio.Lock()
 
     async def _db(self, name: str, *args, **kwargs):
@@ -211,7 +226,7 @@ class Artist:
         works = await self._db("list_artist_works")
         visible = [w for w in works if w["status"] not in {"finished", "abandoned"}]
         visible += [w for w in works if w["status"] in {"finished", "abandoned"}][-20:]
-        return {
+        context = {
             "persona": self.persona,
             "events": [
                 {k: event.get(k) for k in ("event_id", "kind", "text", "source_ref")} for event in events
@@ -227,8 +242,25 @@ class Artist:
                 for work in visible
             ],
         }
+        profiles = await self._db("list_profiles")
+        series = await self._db("list_series")
+        if profiles:
+            context["profiles"] = profiles
+        if series:
+            context["series"] = series
+        assets = await self._db("list_assets", query=" ".join(e.get("text", "") for e in events)[-500:])
+        if not assets and events:
+            # Ordinary chat is not a search expression. A full-sentence miss
+            # must not hide the bounded catalogue, especially for image-only events.
+            assets = await self._db("list_assets")
+        details = await self._db("selected_assets")
+        if assets:
+            context["assets"] = assets
+        if details:
+            context["asset_details"] = details
+        return context
 
-    async def _think(self, task: str, context: dict, cycle: dict, *, work_id=None, version=None):
+    async def _think(self, task: str, context: dict, cycle: dict, *, work_id=None, version=None, images=None):
         operations = await self._db("audit_operations")
         if any(
             op["action"] == "think" and op["state"] in {"submitting", "accepted", "unknown"}
@@ -237,6 +269,11 @@ class Artist:
             # A new chat or timer changes the wake watermark, not the certainty
             # of a previous model call. Do not evade its hold with another key.
             raise StoreError("THINK_UNKNOWN", "An earlier model call remains unresolved")
+        contract = context.get("review_contract", 1) if task == "review" else None
+        input_digest = (
+            hashlib.sha256(canonical_json(context).encode("utf-8")).hexdigest()
+            if contract == 2 else None
+        )
         cached_review = next(
             (
                 op
@@ -246,6 +283,8 @@ class Artist:
                 and op["work_id"] == work_id
                 and op["params"].get("task") == "review"
                 and op["params"].get("version_id") == version["version_id"]
+                and op["params"].get("review_contract", 1) == contract
+                and (contract != 2 or op["params"].get("input_digest") == input_digest)
                 and op["state"] == "succeeded"
             ),
             None,
@@ -264,6 +303,8 @@ class Artist:
             work_id or "",
             (version or {}).get("version_id", ""),
         )
+        if contract == 2:
+            identity = stable_id("review-v2", self.space_id, work_id, version["version_id"], input_digest)
         # A known failed model call may be attempted later after persisted
         # backoff. An unknown call is not repeated, even after restart.
         attempt = 0
@@ -274,12 +315,15 @@ class Artist:
                 break
             attempt += 1
         if operation is None:
+            params = {"task": task, "context": context, "version_id": (version or {}).get("version_id")}
+            if contract == 2:
+                params.update(review_contract=2, input_digest=input_digest)
             operation = await self._db(
                 "reserve",
                 request_id=request_id,
                 action="think",
                 work_id=work_id,
-                params={"task": task, "context": context, "version_id": (version or {}).get("version_id")},
+                params=params,
                 trigger="chat" if any(e["kind"] == "chat" for e in cycle["events"]) else "idle",
                 trigger_ref=str(cycle["through"]),
                 expected_auth_version=cycle["auth_version"],
@@ -294,8 +338,12 @@ class Artist:
         try:
             saved = operation["params"]["context"]
             if task == "review":
+                media = (
+                    {"images": images} if contract == 2
+                    else {"image": version["data"], "mime": version["mime"]}
+                )
                 result = await asyncio.wait_for(
-                    self.thinking.review(saved, image=version["data"], mime=version["mime"]),
+                    self.thinking.review(saved, **media),
                     self.timeout,
                 )
             elif task == "inspire":
@@ -404,6 +452,12 @@ class Artist:
 
     async def _decide(self, decision: dict, cycle: dict) -> dict:
         action = decision["action"]
+        if action == "close_series":
+            await self._db("close_series", decision["series_id"], expected_auth_version=cycle["auth_version"])
+            return {"state": "series_closed", "series_id": decision["series_id"]}
+        if action == "inspect_assets":
+            await self._db("select_assets", decision["asset_ids"], expected_auth_version=cycle["auth_version"])
+            return {"state": "assets_selected"}
         if action == "wait":
             return {
                 "state": "waiting",
@@ -418,11 +472,20 @@ class Artist:
                 brief=decision["brief"],
                 inspiration_keys=decision["inspiration_keys"],
                 expected_auth_version=cycle["auth_version"],
+                creative=decision.get("creative"),
+                references=decision.get("references"),
+                reference_usage="image_input" if self.reference_inputs else "text_context",
             )
             return {"state": work["status"], "work_id": work_id}
         work = await self._db("get_artist_work", decision["work_id"])
         if action == "share":
             return await self._share(work, cycle)
+        if action == "archive" and work["status"] == "finished" and work["best_version"]:
+            asset = await self._db(
+                "archive_version", version_id=work["best_version"], roles=decision["roles"],
+                tags=decision["tags"], reason=decision["reason"], expected_auth_version=cycle["auth_version"],
+            )
+            return {"state": "archived", "asset_id": asset["asset_id"]}
         if action == "continue" and work["status"] in {"planned", "deferred"}:
             if work["next_check_at"] and datetime.fromisoformat(work["next_check_at"]) > self._now():
                 return {"state": "waiting", "work_id": work["work_id"]}
@@ -459,10 +522,29 @@ class Artist:
             await self._change(work["work_id"], reason="EDIT_UNSUPPORTED")
             return {"state": "blocked", "reason": "EDIT_UNSUPPORTED"}
         request_id = stable_id("render", work["work_id"], work["parent_version"] or "original")
-        params = {"prompt": work["edit_prompt"] if parent else work["brief"]["prompt"]}
+        params = {"prompt": reference_prompt(render_prompt(
+            work["edit_prompt"] if parent else work["brief"]["prompt"], work["brief"].get("creative")
+        ), work["brief"].get("references", []))}
         action = "edit" if parent else "submit"
         if parent:
             params.update(source_job_id=parent["job_id"], source_sha256=parent["sha256"])
+        references = work["brief"].get("references", [])
+        if any(ref["usage"] == "image_input" for ref in references):
+            if not self.reference_inputs or not all(ref["usage"] == "image_input" for ref in references):
+                return {"state": "blocked", "reason": "REFERENCE_INPUTS_DISABLED"}
+            prepare = getattr(self.renderer, "prepare_references", None)
+            if prepare is None:
+                return {"state": "blocked", "reason": "REFERENCE_INPUTS_UNSUPPORTED"}
+            try:
+                inputs = await asyncio.wait_for(prepare(
+                    scope=self.scope, references=references, expected_auth_version=cycle["auth_version"],
+                    source_size=0 if parent is None else len(parent["data"]),
+                ), self.timeout)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                return {"state": "blocked", "reason": getattr(exc, "code", "REFERENCE_INPUT_UNKNOWN")}
+            params.update(transport_operation="render", reference_contract=1, reference_inputs=inputs)
         try:
             operation = await self._db(
                 "reserve",
@@ -638,6 +720,59 @@ class Artist:
                 {k: v.get(k) for k in ("version_id", "parent_id", "sha256", "mime")} for v in versions
             ],
         }
+        snapshot = await self._db("get_review_snapshot", version["version_id"])
+        operations = await self._db("audit_operations")
+        # An upgrade must finish the original single-image request, including a
+        # reserved call that never dispatched. Unknown calls keep their identity.
+        legacy = next((op for op in reversed(operations) if (
+            op["action"] == "think" and op["work_id"] == work["work_id"]
+            and op["params"].get("task") == "review"
+            and op["params"].get("version_id") == version["version_id"]
+            and op["params"].get("review_contract", 1) == 1
+            and op["state"] in {"reserved", "submitting", "accepted", "unknown", "succeeded"}
+        )), None)
+        images = None
+        if snapshot is None and legacy is not None:
+            review_context = legacy["params"]["context"]
+        else:
+            if snapshot is None:
+                inputs = {}
+                for role, version_id in (
+                    ("current", version["version_id"]),
+                    ("parent", version["parent_id"]),
+                    ("previous_best", work["best_version"]),
+                ):
+                    if version_id is None:
+                        continue
+                    item = await self._version(version_id)
+                    if item["work_id"] != work["work_id"]:
+                        raise StoreError("ARTIFACT_INVALID", "Review input belongs to another work")
+                    if version_id not in inputs:
+                        inputs[version_id] = {
+                            **{k: item[k] for k in ("version_id", "sha256", "mime")}, "roles": [],
+                        }
+                    inputs[version_id]["roles"].append(role)
+                review_context.update(review_contract=2, review_inputs=list(inputs.values()))
+                review_context["versions"] = [
+                    row for row in review_context["versions"] if row["version_id"] in inputs
+                ]
+                snapshot = await self._db(
+                    "freeze_review_snapshot", version_id=version["version_id"], context=review_context,
+                    expected_auth_version=cycle["auth_version"],
+                )
+            if snapshot["auth_version"] != cycle["auth_version"]:
+                raise StoreError("AUTH_CHANGED", "Frozen review belongs to an older authorization")
+            review_context = snapshot["context"]
+            if hashlib.sha256(canonical_json(review_context).encode("utf-8")).hexdigest() != snapshot["input_digest"]:
+                raise StoreError("ARTIFACT_INVALID", "Review snapshot digest mismatch")
+            images = []
+            for item in review_context["review_inputs"]:
+                picture = await self._version(item["version_id"])
+                if (picture["work_id"], picture["sha256"], picture["mime"]) != (
+                    work["work_id"], item["sha256"], item["mime"],
+                ):
+                    raise StoreError("ARTIFACT_INVALID", "Frozen review image changed")
+                images.append({**item, "data": picture["data"]})
         reviews = await self._db("list_reviews", work["work_id"])
         prior = next((r for r in reversed(reviews) if r["version_id"] == version["version_id"]), None)
         if prior is not None:
@@ -645,7 +780,7 @@ class Artist:
             request_id = prior["request_id"]
         else:
             review, request_id = await self._think(
-                "review", review_context, cycle, work_id=work["work_id"], version=version
+                "review", review_context, cycle, work_id=work["work_id"], version=version, images=images
             )
             await self._db(
                 "record_review", version_id=version["version_id"], request_id=request_id, review=review
@@ -658,6 +793,13 @@ class Artist:
             or await self._epoch() != cycle["auth_version"]
         ):
             raise StoreError("AUTH_CHANGED", "Review cannot cross authorization versions")
+        if reviewed_operation["state"] != "succeeded" or reviewed_operation["evidence"] != canonical_json(review):
+            raise StoreError("INVALID_DECISION", "Review must match its successful original operation")
+        if snapshot is not None and (
+            reviewed_operation["params"].get("review_contract") != 2
+            or reviewed_operation["params"].get("input_digest") != snapshot["input_digest"]
+        ):
+            raise StoreError("REQUEST_CONFLICT", "Review does not match its frozen inputs")
         best = review.get(
             "best_version_id",
             version["version_id"]
@@ -689,6 +831,10 @@ class Artist:
     async def _share(self, work: dict, cycle: dict) -> dict:
         if work["status"] != "finished" or not work["best_version"]:
             raise StoreError("INVALID_DECISION", "Only finished reviewed work can be shared")
+        if not await self._db(
+            "version_accepted", work["best_version"], expected_auth_version=cycle["auth_version"],
+        ):
+            raise StoreError("REVIEW_REQUIRED", "Autonomous sharing requires explicit visual acceptance")
         version = await self._version(work["best_version"])
         request_id = stable_id("share", work["work_id"], version["version_id"])
         operation = await self._db(

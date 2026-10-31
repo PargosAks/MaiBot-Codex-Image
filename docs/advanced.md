@@ -2,7 +2,9 @@
 
 ## 插件与服务边界
 
-插件 **0.8.0** 原命令兼容独立 MCP **0.5.0**，保留原协议与发送库；自主创作另需 `lookup_v1` / `edit_v1`。插件提交、查询和取图发送，服务负责 Codex、登录、队列、任务、产物与 `state`。本仓库不提供新的独立 MCP 仓库地址或服务安装器。
+插件 **0.9.0** 原命令兼容独立 MCP **0.5.0** 旧接口，保留原协议与发送库；自主创作另需 `lookup_v1` / `edit_v1`。插件提交、查询和取图发送，服务负责 Codex、登录、队列、任务、产物与 `state`。本仓库不提供新的独立 MCP 仓库地址或服务安装器。
+
+I5 参考图片功能由独立 MCP **0.6.0** 提供，以 health 协商的 `reference_inputs_v1` 与 `reference_limits` 为准，不仅检查版本号；缺少能力时阻止依赖操作，不降级纯文字绘图。协议兼容不表示旧服务可读取新版 state，具体见 [I5 接口与兼容](implementation-i5.md)。
 
 配置包含 `plugin.enabled/config_version`、`connection.url/secret/allowed_users/poll_seconds/watch_seconds` 和默认关闭的 `autonomy`，不增加 `service.mode` 或插件 `codex.*`。白名单由插件面板维护，不要求服务另建名单；连接鉴权与任务归属校验继续生效。
 

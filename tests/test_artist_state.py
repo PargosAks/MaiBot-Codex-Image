@@ -444,7 +444,7 @@ def test_schema_1_upgrade_preserves_all_old_records_and_is_passive(tmp_path):
     before = create_v1(path)
     db = ArtistStore(path)
     try:
-        assert db.db.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert db.db.execute("PRAGMA user_version").fetchone()[0] == store_module.SCHEMA_VERSION
         for table, rows in before.items():
             assert [tuple(row) for row in db.db.execute(f"SELECT * FROM {table}")] == rows
         assert db.get_operation("s", SCOPE, "old-request")["state"] == "unknown"

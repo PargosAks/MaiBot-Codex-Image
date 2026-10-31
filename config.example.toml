@@ -1,5 +1,5 @@
 [plugin]
-config_version = "0.8.0"
+config_version = "0.9.0"
 enabled = true
 
 [connection]
@@ -30,4 +30,10 @@ max_revisions = 0
 # (existing Host session), group_id (empty for private), continuous=false,
 # consent_ref, and limits with the same five fields as global_limits.
 # See docs/implementation-stage-6.md. All budgets default to zero.
+# Each space may also define profiles=[] and series=[]; these remain private to
+# that delegated space. Profile content changes require a new revision. See
+# docs/artist-iteration-plan.md and the implementation notes for I2.
+# Image references require reference_inputs=true plus a separate, nonempty
+# media_consent_ref in that space. Both default to disabled/empty. Current-message
+# images from the delegator only; no history scan. See docs/implementation-i5.md.
 

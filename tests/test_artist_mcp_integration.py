@@ -40,10 +40,13 @@ class Script:
         if request["task"] == "inspire":
             return {"ideas": ideas}
         if request["task"] == "review":
-            image = request["image"]
+            image = request["images"][0]["data"]
             assert type(image) is bytes and image in self.driver.outputs.values()
-            assert request["mime"] == context["current_version"]["mime"] == "image/png"
+            assert request["images"][0]["mime"] == context["current_version"]["mime"] == "image/png"
             assert hashlib.sha256(image).hexdigest() == context["current_version"]["sha256"]
+            for item in request["images"]:
+                assert item["data"] in self.driver.outputs.values()
+                assert hashlib.sha256(item["data"]).hexdigest() == item["sha256"]
             self.reviews.append(deepcopy(request))
             if self.review_errors:
                 self.review_errors -= 1
@@ -55,6 +58,10 @@ class Script:
                               edit_prompt="降低背景亮度", preserve="保留小猫姿态和原构图")
             elif self.keep_first:
                 result["best_version_id"] = context["versions"][0]["version_id"]
+            result["comparison"] = {
+                "improvements": [], "regressions": list(result["issues"]), "preserved": ["原构图"],
+                "evidence_version_ids": [item["version_id"] for item in request["images"]],
+            }
             return result
         assert request["task"] == "plan"
         active = next((work for work in context["works"]
@@ -81,7 +88,7 @@ class SyntheticDriver:
         self.gate, self.unknown = asyncio.Event(), False
 
     async def generate(self, job, ids, image):
-        self.calls.append(deepcopy(job))
+        self.calls.append(deepcopy({key: val for key, val in job.items() if key != "_execution"}))
         if job["operation"] == "edit":
             source = job["source_image"]
             assert set(source) == {"data", "mime", "sha256", "job_id"}
@@ -230,7 +237,7 @@ async def test_chat_and_idle_full_edit_review_and_independent_share(studio, chat
     assert studio.works()[0]["best_version"] == parent["version_id"]
     assert studio.driver.calls[1]["source_image"]["data"] == studio.driver.images[0]
     assert "保留小猫姿态和原构图" in studio.driver.calls[1]["prompt"]
-    assert [review["image"] for review in studio.model.reviews] == studio.driver.images
+    assert [review["images"][0]["data"] for review in studio.model.reviews] == studio.driver.images
     assert (await studio.step())["state"] == "waiting" and not studio.sender.calls
     studio.model.share = True
     assert (await studio.step())["state"] == "shared"
@@ -292,7 +299,8 @@ async def test_known_review_failure_retries_only_same_image_review(studio):
     assert len(studio.model.calls) == calls
     assert (await studio.step())["state"] == "finished"
     assert len(studio.driver.calls) == 1 and len(studio.model.reviews) == 2
-    assert studio.model.reviews[0]["image"] == studio.model.reviews[1]["image"] == studio.driver.images[0]
+    assert studio.model.reviews[0]["images"] == studio.model.reviews[1]["images"]
+    assert studio.model.reviews[0]["images"][0]["data"] == studio.driver.images[0]
     assert sum(operation == "submit" for operation, _ in studio.trace) == 1
 
 

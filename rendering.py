@@ -10,7 +10,7 @@ import json
 import re
 
 from .artist import RenderResult, render_digest
-from .bridge import Bridge, BridgeError, _validate_job
+from .bridge import Bridge, BridgeError, _reference_digest, _reference_params, _validate_asset, _validate_job
 from .policy import Scope, StoreError, nonempty
 from .recovery import ReadOnlyRecovery
 from .store import ArtistStore
@@ -51,7 +51,13 @@ class MCPRenderer:
             "failed",
         }:
             raise StoreError("INVALID_STATE", "Only an attempted render can use this adapter")
+        try:
+            reference = _reference_params(op["action"], op["params"])
+        except BridgeError as exc:
+            raise StoreError("REQUEST_CONFLICT", "Invalid frozen reference transport parameters") from exc
         expected = {"prompt"} if op["action"] == "submit" else {"prompt", "source_job_id", "source_sha256"}
+        if reference is not None:
+            expected |= {"transport_operation", "reference_inputs", "reference_contract"}
         if set(op["params"]) != expected:
             raise StoreError("REQUEST_CONFLICT", "Unexpected frozen render parameters")
         return op
@@ -64,6 +70,8 @@ class MCPRenderer:
         work = self.store.get_artist_work(self.space_id, scope, op["work_id"])
         if work["pending_request"] != request_id:
             raise StoreError("REQUEST_CONFLICT", "Work does not own this pending request")
+        if _reference_params(op["action"], op["params"]) is not None:
+            self._reference_submission(scope, op, work)
         if op["action"] == "submit":
             if source is not None or work["parent_version"] is not None:
                 raise StoreError("REQUEST_CONFLICT", "An original render cannot take an edit source")
@@ -87,6 +95,53 @@ class MCPRenderer:
             raise StoreError("REQUEST_CONFLICT", "Edit source differs from the work's frozen parent")
         return op
 
+    def _reference_submission(self, scope: Scope, op: dict, work: dict) -> None:
+        policy = self.store.validate_reference_authorization(
+            self.space_id, scope, expected_auth_version=op["auth_version"],
+        )
+        references = work["brief"].get("references")
+        if type(references) is not list or not 1 <= len(references) <= 3:
+            raise StoreError("REQUEST_CONFLICT", "Render requires the original frozen image references")
+        handles = []
+        for reference in references:
+            if type(reference) is not dict or reference.get("usage") != "image_input":
+                raise StoreError("REQUEST_CONFLICT", "Render cannot replace text-only reference usage")
+            if type(reference.get("policy_version")) is not int or (
+                reference.get("policy_version"), reference.get("consent_ref")
+            ) != (policy["version"], policy["consent_ref"]):
+                raise StoreError("REFERENCE_AUTH_CHANGED", "Frozen image delegation no longer matches")
+            registration = self.store.get_asset_registration(self.space_id, scope, reference["asset_id"])
+            if (
+                not isinstance(registration, dict) or registration.get("state") != "succeeded"
+                or registration.get("binding_id") != self.binding_id
+                or registration.get("asset_id") != reference["asset_id"]
+            ):
+                raise StoreError("REQUEST_CONFLICT", "Reference registration is not confirmed for this service")
+            receipt = registration.get("receipt")
+            _validate_asset(receipt)
+            image = self.store.get_asset_image(self.space_id, scope, reference["asset_id"])
+            identity = (reference["sha256"], reference["mime"], len(image["data"]))
+            if (image["sha256"], image["mime"], len(image["data"])) != identity or any(
+                (item.get("sha256"), item.get("mime"), item.get("size_bytes")) != identity
+                for item in (registration, receipt)
+            ):
+                raise StoreError("ARTIFACT_INVALID", "Frozen reference and registered source image differ")
+            handles.append({"asset_id": receipt["asset_id"], "sha256": reference["sha256"],
+                            "role": reference["role"]})
+        if handles != op["params"]["reference_inputs"]:
+            raise StoreError("REQUEST_CONFLICT", "Remote handles differ from the ordered frozen references")
+
+    async def prepare_references(
+        self, *, scope: Scope, references: list, expected_auth_version: int, source_size: int = 0,
+    ) -> list:
+        # The registry owns durable registration intent, policy and aggregate limits.
+        await ReadOnlyRecovery._db(self._space, scope)
+        from .references import ReferenceInputs
+
+        return await ReferenceInputs(
+            self.store, self.space_id, self.scope, self.bridge, binding_id=self.binding_id,
+        ).prepare(references, expected_auth_version=expected_auth_version, source_size=source_size)
+
     @staticmethod
     def _job(job):
         _validate_job(job)
@@ -96,13 +151,21 @@ class MCPRenderer:
         return job
 
     @staticmethod
+    def _transport(op):
+        reference = _reference_params(op["action"], op["params"])
+        if reference is not None:
+            return "render", _reference_digest(reference)
+        return op["action"], render_digest(op["action"], op["params"])
+
+    @staticmethod
     def _receipt(op, receipt, *, expected_job_id=None):
         if not isinstance(receipt, dict):
             raise BridgeError("INVALID_RESPONSE", kind="protocol")
+        operation, digest = MCPRenderer._transport(op)
         if (
-            receipt.get("operation") != op["action"]
+            receipt.get("operation") != operation
             or receipt.get("request_id") != op["request_id"]
-            or receipt.get("request_digest") != render_digest(op["action"], op["params"])
+            or receipt.get("request_digest") != digest
         ):
             raise BridgeError("RECEIPT_MISMATCH", kind="binding")
         job = receipt.get("job")
@@ -114,11 +177,12 @@ class MCPRenderer:
         return job
 
     async def _lookup(self, op, *, expected_job_id=None):
+        operation, digest = self._transport(op)
         result = await self.bridge.lookup(
             json.loads(op["scope_snapshot"]),
             op["request_id"],
-            expected_operation=op["action"],
-            expected_digest=render_digest(op["action"], op["params"]),
+            expected_operation=operation,
+            expected_digest=digest,
             expected_job_id=op["job_id"] if expected_job_id is None else expected_job_id,
         )
         if not isinstance(result, dict) or type(result.get("found")) is not bool:
@@ -163,7 +227,7 @@ class MCPRenderer:
             image = await ReadOnlyRecovery._db(self._image, image, artifact)
         return RenderResult(
             op["request_id"],
-            render_digest(op["action"], op["params"]),
+            self._transport(op)[1],
             job["job_id"],
             state,
             image.get("data"),
@@ -181,7 +245,18 @@ class MCPRenderer:
         # Health awaits network I/O. Recheck the dispatch claim and authority
         # before generation rather than using a pre-health ledger snapshot.
         op = await ReadOnlyRecovery._db(self._submission, scope, request_id, prompt, source)
-        if op["action"] == "edit":
+        reference = _reference_params(op["action"], op["params"])
+        if reference is not None:
+
+            async def before_dispatch():
+                await ReadOnlyRecovery._db(self._submission, scope, request_id, prompt, source)
+
+            result = await self.bridge.reference_render(
+                json.loads(op["scope_snapshot"]), op["request_id"], **reference,
+                before_dispatch=before_dispatch,
+            )
+            job = self._receipt(op, result)
+        elif op["action"] == "edit":
 
             async def before_dispatch():
                 await ReadOnlyRecovery._db(self._submission, scope, request_id, prompt, source)

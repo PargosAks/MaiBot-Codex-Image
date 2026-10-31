@@ -1,10 +1,12 @@
 """Isolated Host capability contracts; no real model, RPC, image generation or send."""
 
+from copy import deepcopy
 from pathlib import Path
 from threading import Event
 import ast
 import asyncio
 import base64
+import hashlib
 import importlib.util
 import json
 import os
@@ -112,6 +114,105 @@ async def test_actual_sdk_review_carries_original_multimodal_bytes(ctx):
     url = content[1]["image_url"]["url"]
     assert url.startswith("data:image/png;base64,")
     assert base64.b64decode(url.split(",", 1)[1], validate=True) == PNG
+
+
+def review_v2_case(count=3):
+    images = []
+    for index, (role, mime) in enumerate((("current", "image/png"), ("parent", "image/jpeg"),
+                                         ("previous_best", "image/webp"))):
+        data = PNG + bytes([index])
+        images.append({"version_id": f"v{index}", "roles": [role], "mime": mime,
+                       "sha256": hashlib.sha256(data).hexdigest(), "data": data})
+    images = images[:count]
+    if count == 2:
+        images[1]["roles"].append("previous_best")
+    inputs = [{key: deepcopy(value) for key, value in image.items() if key != "data"} for image in images]
+    context = {"review_contract": 2, "current_version": {"version_id": "v0"}, "review_inputs": inputs}
+    return context, images
+
+
+def review_v2_answer():
+    return dict(REVIEW, best_version_id="v0", comparison={
+        "improvements": [], "regressions": [], "preserved": ["synthetic subject"],
+        "evidence_version_ids": ["v0"],
+    })
+
+
+@pytest.mark.parametrize("count", [1, 2, 3])
+async def test_v2_host_sdk_preserves_labels_order_original_bytes_and_routing(count):
+    ctx = Context()
+    context, images = review_v2_case(count)
+    before = deepcopy((context, images))
+    answer = review_v2_answer()
+    ctx.result = {"success": True, "response": json.dumps(answer)}
+    assert await thinking(ctx).review(context, images=images) == answer
+    assert len(ctx.calls) == 1
+    name, payload = ctx.calls[0]
+    assert name == "llm.generate" and payload["task_name"] == "synthetic-vision"
+    assert set(payload) == {"prompt", "task_name", "max_tokens"} and payload["max_tokens"] == 2048
+    content = payload["prompt"][1]["content"]
+    assert len(content) == 1 + 2 * count
+    assert json.loads(content[0]["text"]) == context
+    for index, image in enumerate(images):
+        label, part = content[1 + 2 * index:3 + 2 * index]
+        assert label["type"] == "text"
+        assert json.loads(label["text"]) == {"roles": image["roles"], "version_id": image["version_id"]}
+        assert part["type"] == "image_url"
+        header, encoded = part["image_url"]["url"].split(",", 1)
+        assert header == f"data:{image['mime']};base64"
+        assert base64.b64decode(encoded, validate=True) == image["data"]
+    assert (context, images) == before
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda r: r.update(image=PNG, mime="image/png"),
+    lambda r: r.pop("images"),
+    lambda r: r.update(images=[]),
+    lambda r: r["images"].reverse(),
+    lambda r: r["images"][0].update(data=b"wrong hash"),
+    lambda r: r["images"][0].update(data=b"x" * (8 * 1024 * 1024 + 1)),
+    lambda r: r["images"][0].update(mime="image/gif"),
+    lambda r: r["images"][0].update(owner="forged"),
+    lambda r: r["context"]["review_inputs"][1].update(roles=["current"]),
+    lambda r: r["context"]["review_inputs"][1].update(version_id="v0"),
+    lambda r: r["context"].update(current_version={"version_id": "wrong"}),
+    lambda r: r["context"].update(owner="forged"),
+    lambda r: r["context"].update(request_id="forged"),
+    lambda r: r["context"].update(review_contract=True),
+    lambda r: r["context"].pop("review_contract"),
+    lambda r: r.update(owner="forged"),
+    lambda r: r.update(task="plan"),
+    lambda r: r.update(task=[]),
+    lambda r: r.pop("context"),
+])
+async def test_v2_host_direct_request_validation_precedes_dispatch(mutate):
+    ctx = Context()
+    context, images = review_v2_case()
+    request = dict(task="review", instructions="Inspect every image", context=context, images=images)
+    mutate(request)
+    with pytest.raises(StoreError):
+        await HostThinking(ctx, plan_task="plan", review_task="vision")(request)
+    assert not ctx.calls
+
+
+@pytest.mark.parametrize("receipt,code", [
+    ({"success": False}, "THINKING_UNKNOWN"),
+    ({"success": "true", "response": "{}"}, "THINKING_UNKNOWN"),
+    ({"success": True, "response": "{}", "error": "private provider error"}, "THINKING_UNKNOWN"),
+    ({"response": "{}"}, "THINKING_UNKNOWN"),
+    (None, "THINKING_UNKNOWN"),
+    ({"success": True, "response": "{}", "tool_calls": [{"name": "send"}]}, "INVALID_DECISION"),
+    ({"success": True, "response": '```json\n{}\n```'}, "INVALID_DECISION"),
+    ({"success": True, "response": json.dumps(REVIEW)}, "INVALID_DECISION"),
+    ({"success": True, "response": '{"comparison":{},"comparison":{}}'}, "INVALID_DECISION"),
+])
+async def test_v2_host_strict_receipt_and_missing_comparison_never_retry(receipt, code):
+    ctx = Context()
+    ctx.result = receipt
+    context, images = review_v2_case()
+    with pytest.raises(StoreError, check=lambda exc: exc.code == code) as caught:
+        await thinking(ctx).review(context, images=images)
+    assert "private" not in str(caught.value) and len(ctx.calls) == 1
 
 
 @pytest.mark.parametrize(
@@ -383,7 +484,8 @@ async def test_cancel_claim_waits_for_sqlite_worker_then_preserves_lock(sender_s
     assert not ctx.calls and delivery_state(journal) == "send_unknown"
 
 
-def test_installed_host_public_parser_preserves_image_payload():
+@pytest.mark.parametrize("multi_image", [False, True])
+def test_installed_host_public_parser_preserves_image_payload(multi_image):
     source = os.environ.get("CODEX_IMAGE_TEST_HOST_SOURCE")
     if not source:
         pytest.skip("Set CODEX_IMAGE_TEST_HOST_SOURCE to opt in to public Host source tests")
@@ -403,22 +505,35 @@ def test_installed_host_public_parser_preserves_image_payload():
 
     class Builder:
         def __init__(self):
-            self.images, self.texts = [], []
+            self.images, self.texts, self.parts = [], [], []
 
         def add_image_content(self, **args):
             self.images.append(args)
+            self.parts.append(("image", args))
 
         def add_text_content(self, text):
             self.texts.append(text)
+            self.parts.append(("text", text))
 
     adapter = HostThinking(Context(), plan_task="plan", review_task="vision")
-    messages = adapter._messages(
-        dict(task="review", instructions="inspect original image", context={}, image=PNG, mime="image/png")
-    )
+    if multi_image:
+        context, images = review_v2_case()
+        request = dict(task="review", instructions="inspect every original image", context=context, images=images)
+    else:
+        images = [{"data": PNG, "mime": "image/png"}]
+        request = dict(task="review", instructions="inspect original image", context={}, image=PNG, mime="image/png")
+    messages = adapter._messages(request)
     builder = Builder()
     namespace["_append_content_parts"](builder, messages[1]["content"])
-    assert len(builder.images) == 1 and builder.images[0]["image_format"] == "png"
-    assert base64.b64decode(builder.images[0]["image_base64"], validate=True) == PNG
+    assert len(builder.images) == len(images)
+    for index, (parsed, original) in enumerate(zip(builder.images, images)):
+        assert parsed["image_format"] == original["mime"].removeprefix("image/")
+        assert base64.b64decode(parsed["image_base64"], validate=True) == original["data"]
+        if multi_image:
+            kind, label = builder.parts[1 + 2 * index]
+            assert kind == "text"
+            assert json.loads(label) == {"roles": original["roles"], "version_id": original["version_id"]}
+            assert builder.parts[2 + 2 * index] == ("image", parsed)
 
 
 @pytest.mark.parametrize(

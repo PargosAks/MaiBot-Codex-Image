@@ -9,6 +9,7 @@ VERSION = json.loads((ROOT / "_manifest.json").read_text(encoding="utf-8"))["ver
 PLUGIN_FILES = (
     "plugin.py", "bridge.py", "delivery.py", "policy.py", "store.py", "artist.py", "thinking.py", "recovery.py", "editing.py", "rendering.py",
     "host_runtime.py", "host_adapters.py",
+    "profiles.py", "assets.py", "references.py", "host_media.py",
     "_manifest.json", "config.example.toml",
     "requirements.txt", "README.md", "LICENSE", "CHANGELOG.md",
     "docs/quickstart.md", "docs/advanced.md", "docs/troubleshooting.md",
@@ -19,6 +20,11 @@ PLUGIN_FILES = (
     "docs/implementation-stage-4.md",
     "docs/implementation-stage-5.md",
     "docs/implementation-stage-6.md",
+    "docs/artist-iteration-plan.md",
+    "docs/implementation-i1.md",
+    "docs/implementation-i2.md",
+    "docs/implementation-i3.md",
+    "docs/implementation-i5.md",
 )
 
 

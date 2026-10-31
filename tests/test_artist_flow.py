@@ -59,8 +59,11 @@ class Model:
         if request["task"] == "inspire":
             return {"ideas": ideas}
         if request["task"] == "review":
-            assert request["image"] == PNG
-            assert request["mime"] == "image/png"
+            if context.get("review_contract") == 2:
+                assert all(item["data"] == PNG and item["mime"] == "image/png" for item in request["images"])
+            else:
+                assert request["image"] == PNG
+                assert request["mime"] == "image/png"
             if self.review_errors:
                 self.review_errors -= 1
                 raise RuntimeError("synthetic model failure")
@@ -80,6 +83,11 @@ class Model:
                 )
             if self.keep_first:
                 result["best_version_id"] = context["versions"][0]["version_id"]
+            if context.get("review_contract") == 2:
+                result["comparison"] = {
+                    "improvements": [], "regressions": list(result["issues"]), "preserved": ["小猫姿态"],
+                    "evidence_version_ids": [item["version_id"] for item in request["images"]],
+                }
             return result
         works = context["works"]
         active = next((w for w in works if w["status"] not in {"finished", "abandoned"}), None)
@@ -330,7 +338,7 @@ async def test_chat_and_idle_share_one_full_flow_without_automatic_sharing(studi
     assert len(renderer.calls) == 1 and sender.calls == []
     assert (await step(studio))["state"] == "waiting"
     assert sender.calls == []
-    assert next(c for c in model.calls if c["task"] == "review")["image"] == PNG
+    assert next(c for c in model.calls if c["task"] == "review")["images"][0]["data"] == PNG
     model.share = True
     assert (await step(studio))["state"] == "shared"
     assert (await step(studio))["state"] == "share_recorded"

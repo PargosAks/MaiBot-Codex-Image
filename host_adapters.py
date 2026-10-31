@@ -16,6 +16,7 @@ from .delivery import Deliveries
 from .policy import Scope, StoreError, canonical_json, nonempty
 from .recovery import ReadOnlyRecovery
 from .store import ArtistStore
+from .thinking import _context, _review_images
 
 
 _IMAGE_LIMIT = 8 * 1024 * 1024
@@ -91,19 +92,34 @@ class HostThinking:
         self.max_tokens = max_tokens
 
     def _messages(self, request):
-        if not isinstance(request, dict) or request.get("task") not in {"plan", "inspire", "review"}:
+        if (type(request) is not dict or type(request.get("task")) is not str
+                or request["task"] not in {"plan", "inspire", "review"}):
             raise StoreError("INVALID_ARGUMENT", "Unexpected thinking task")
         required = {"task", "instructions", "context"}
+        if not required <= request.keys():
+            raise StoreError("INVALID_ARGUMENT", "Missing thinking request fields")
+        frozen = _context(request["context"])
+        v2 = request["task"] == "review" and frozen.get("review_contract") == 2
         if request["task"] == "review":
-            required |= {"image", "mime"}
+            required |= {"images"} if v2 else {"image", "mime"}
         if set(request) != required:
             raise StoreError("INVALID_ARGUMENT", "Unexpected thinking request fields")
         instructions = nonempty(request["instructions"], "instructions")
-        context = canonical_json(request["context"])
+        context = canonical_json(frozen)
         if len(instructions) > 16384 or len(context) > 512 * 1024:
             raise StoreError("INVALID_CONTEXT", "Thinking context exceeds the adapter limit")
         content = [{"type": "text", "text": context}]
-        if request["task"] == "review":
+        if v2:
+            for image in _review_images(frozen, request["images"]):
+                # Keep each version/role label adjacent to its own image. Never
+                # reconstruct the order from roles, hashes or historical rows.
+                label = canonical_json({"roles": image["roles"], "version_id": image["version_id"]})
+                content.append({"type": "text", "text": label})
+                encoded = _image(image["data"], image["mime"])
+                content.append({"type": "image_url", "image_url": {
+                    "url": f"data:{image['mime']};base64,{encoded}",
+                }})
+        elif request["task"] == "review":
             encoded = _image(request["image"], request["mime"])
             content.append(
                 {

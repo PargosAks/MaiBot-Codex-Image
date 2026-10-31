@@ -7,6 +7,7 @@ are synthetic. This proves the fixed ingress method's hookup, not a live adapter
 deployed Host, final Maisaka admission, model quality or platform delivery.
 """
 
+from abc import ABC, abstractmethod
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -87,7 +88,9 @@ def public_host(monkeypatch, tmp_path):
     ns.update(vars(typing))
     ns.update(__name__=module.__name__, asyncio=asyncio, contextlib=contextlib, inspect=inspect,
               dataclass=dataclass, field=field, deepcopy=deepcopy, Enum=Enum, BaseModel=BaseModel,
-              Field=Field, time=time, datetime=datetime, traceback=traceback,
+              Field=Field, time=time, datetime=datetime, traceback=traceback, base64=base64, hashlib=hashlib,
+              ABC=ABC, abstractmethod=abstractmethod, Seg=typing.Any, StandardMessageComponents=typing.Any,
+              ForwardComponent=typing.Any,
               logger=logging.getLogger("isolated-host-test"), PROTOCOL_VERSION="1.0.0",
               PluginMeta=typing.Any, PluginPaths=PluginPaths, _ContextAwarePlugin=typing.Any,
               _PLUGIN_ALLOWED_RAW_HOST_METHODS=frozenset({"cap.call", "host.route_message", "host.update_message_gateway_state"}),
@@ -111,8 +114,11 @@ def public_host(monkeypatch, tmp_path):
     runner_methods = {"_inject_context", "_create_plugin_context", "_resolve_component_handler_name",
                       "_resolve_component_handler", "_invoke_plugin_callable", "_handle_hook_invoke"}
     load_nodes(ns, public_source("runner/runner_main.py"), {"PluginRunner"}, {"PluginRunner": runner_methods})
+    load_nodes(ns, host_file("common/data_models/message_component_data_model.py"),
+               {"BaseMessageComponentModel", "ByteComponent", "TextComponent", "ImageComponent", "EmojiComponent"})
     load_nodes(ns, public_source("host/message_utils.py"), {"PluginMessageUtils"},
-               {"PluginMessageUtils": {"_session_message_to_dict", "_message_info_to_dict", "_message_sequence_to_dict"}})
+               {"PluginMessageUtils": {"_session_message_to_dict", "_message_info_to_dict", "_message_sequence_to_dict",
+                                       "_component_to_dict", "_binary_component_to_base64"}})
     schema_tree = ast.parse(public_source("hook_schema_utils.py"))
     functions = [node.name for node in schema_tree.body if isinstance(node, ast.FunctionDef)]
     load_nodes(ns, public_source("hook_schema_utils.py"), set(functions))
@@ -153,6 +159,7 @@ class Harness:
         self.clock, self.renderer, self.gate = Clock(), Renderer(), asyncio.Event()
         self.calls, self.sends, self.reviews, self.received, self.hook_calls = [], [], [], [], []
         self.revise, self.share, self.lose_send = True, False, False
+        self.creative_choice = None
         self.send_override = None
         self.stream_override = None
         self.data_paths = PluginPaths(data_dir=path / "data", runtime_dir=path / "runtime")
@@ -260,15 +267,21 @@ class Harness:
                  for event in context.get("events", []) if event["kind"] == "chat"][:8]
         if len(content) > 1:
             assert args["task_name"] == "vlm"
-            assert content[1]["type"] == "image_url"
-            url = content[1]["image_url"]["url"]
-            assert url.startswith("data:image/png;base64,")
-            assert base64.b64decode(url.split(",", 1)[1], validate=True) == PNG
+            images = [item for item in content if item["type"] == "image_url"]
+            assert len(images) == len(context["review_inputs"])
+            for image in images:
+                url = image["image_url"]["url"]
+                assert url.startswith("data:image/png;base64,")
+                assert base64.b64decode(url.split(",", 1)[1], validate=True) == PNG
             self.reviews.append(deepcopy(args))
             answer = {"decision": "accept", "reason": "脚本接受合成图", "strengths": ["合成样例"], "issues": []}
             if self.revise:
                 self.revise = False
                 answer.update(decision="revise", issues=["脚本修订"], edit_prompt="降低背景亮度", preserve="保留小猫姿态")
+            answer["comparison"] = {
+                "improvements": [], "regressions": list(answer["issues"]), "preserved": ["小猫姿态"],
+                "evidence_version_ids": [item["version_id"] for item in context["review_inputs"]],
+            }
         elif "不得规划或覆盖" in messages[0]["content"]:
             assert args["task_name"] == "utils"
             answer = {"ideas": ideas}
@@ -285,9 +298,11 @@ class Harness:
             else:
                 decision = {"action": "wait", "reason": "先收藏"}
             answer = {"ideas": ideas, "decision": decision}
+            if decision["action"] == "create" and self.creative_choice is not None:
+                answer["decision"]["creative"] = deepcopy(self.creative_choice)
         return {"success": True, "response": json.dumps(answer, ensure_ascii=False), "model": "synthetic"}
 
-    def config(self, *, enabled=True, group=False):
+    def config(self, *, enabled=True, group=False, media=False, media_consent="synthetic-media-consent"):
         limits = {"think": 100, "render": 10, "share": 10, "max_inflight": 10, "max_revisions": 2}
         return {"plugin": self.plugin.get_default_config()["plugin"],
                 "connection": {"url": "http://127.0.0.1:9/mcp", "secret": SECRET,
@@ -295,20 +310,22 @@ class Harness:
                 "autonomy": {"enabled": enabled, "tick_seconds": .1, "idle_seconds": 300,
                              "global_limits": limits, "spaces": [{"space_id": "studio", "platform": PLATFORM,
                              "user_id": OWNER, "stream_id": STREAM, "group_id": "synthetic-group" if group else "",
-                             "continuous": True, "consent_ref": "synthetic-explicit-consent", "limits": limits}]}}
+                             "continuous": True, "consent_ref": "synthetic-explicit-consent", "limits": limits,
+                             "reference_inputs": media, "media_consent_ref": media_consent if media else ""}]}}
 
     async def load(self, **kwargs):
         self.plugin.set_plugin_config(self.config(**kwargs))
         await self.plugin.on_load()
         assert not self.plugin.startup_error, self.plugin.startup_error
 
-    async def message(self, text="雨夜暖光", *, owner=OWNER, command=False, notify=False):
+    async def message(self, text="雨夜暖光", *, owner=OWNER, command=False, notify=False,
+                      components=None, message_id=None):
         user = SimpleNamespace(user_id=owner, user_nickname="synthetic", user_cardname=None)
         group = self.plugin.config.autonomy.spaces[0].group_id
-        message = SimpleNamespace(message_id="msg-" + str(len(self.received)) + "-" + owner, platform=PLATFORM,
+        message = SimpleNamespace(message_id=message_id or "msg-" + str(len(self.received)) + "-" + owner, platform=PLATFORM,
             session_id=STREAM, message_info=SimpleNamespace(user_info=user, group_info=(
                 SimpleNamespace(group_id=group, group_name="synthetic-group") if group else None), additional_config={}),
-            raw_message=SimpleNamespace(components=[]), processed_plain_text=text, timestamp=self.clock(),
+            raw_message=SimpleNamespace(components=components or []), processed_plain_text=text, timestamp=self.clock(),
             received_at=self.clock(), account_id="", scope="", reply_to=None,
             is_mentioned=False, is_at=False, is_emoji=False, is_picture=False, is_command=command, is_notify=notify)
         message.process = self.noop
@@ -429,6 +446,30 @@ async def test_idle_timer_uses_sdk_without_chat(host_chain):
     assert not h.received and len(h.renderer.calls) == 1 and len(h.reviews) == 1 and not h.sends
 
 
+async def test_host_configuration_freezes_profile_for_drawing_and_review(host_chain):
+    from test_profiles_flow import CHOICE, PROFILES, SERIES
+
+    h = host_chain
+    original_config = h.config
+
+    def config(**kwargs):
+        result = original_config(**kwargs)
+        result["autonomy"]["spaces"][0].update(profiles=deepcopy(PROFILES), series=deepcopy(SERIES))
+        return result
+
+    h.config = config
+    h.creative_choice, h.revise = CHOICE, False
+    await h.load()
+    h.gate.set()
+    await h.until(lambda: h.state() == "planned")
+    await h.advance("review_pending")
+    await h.advance("finished")
+    assert "warm amber" in h.renderer.calls[0]["prompt"]
+    context = json.loads(h.reviews[0]["prompt"][1]["content"][0]["text"])
+    assert context["current_work"]["brief"]["creative"]["profile"] == PROFILES[0]["data"]
+    assert not h.sends
+
+
 @pytest.mark.parametrize("kwargs", [{"owner": "other-owner"}, {"text": " /绘图 命令"},
                                     {"command": True}, {"notify": True}, {"text": "  "}])
 async def test_ingress_rejects_nonowner_commands_notify_and_blank(host_chain, kwargs):
@@ -492,3 +533,68 @@ async def test_revoke_configuration_stops_sdk_models_and_sends(host_chain):
     await asyncio.sleep(.12)
     assert previous.store is None and not h.runtime.tasks
     assert len(h.calls) == count and not h.renderer.calls and not h.sends
+
+
+@pytest.mark.parametrize("group", [False, True])
+async def test_current_images_through_fixed_public_serializer_and_hook(host_chain, group):
+    from test_host_media import image_bytes
+
+    h = host_chain
+    await h.load(group=group, media=True)
+    data = image_bytes()
+    parts = [h.host.TextComponent("context"), h.host.ImageComponent(binary_hash="", binary_data=data),
+             h.host.EmojiComponent(binary_hash="", binary_data=data)]
+    await h.message(text="", components=parts, message_id="synthetic-media-event")
+    # A replay traverses the genuine dispatcher/Runner/SDK hook again.
+    await h.message(text="", components=parts, message_id="synthetic-media-event")
+    scope = Scope(PLATFORM, STREAM, OWNER)
+    catalog = h.runtime.store.list_assets("studio", scope)
+    assert len(catalog) == 1
+    asset = h.runtime.store.get_asset("studio", scope, catalog[0]["asset_id"])
+    assert asset["sha256"] == hashlib.sha256(data).hexdigest() and asset["mime"] == "image/png"
+    assert set(asset["roles"]) == {"character", "style", "composition", "palette"}
+    from image_plugin_under_test.host_media import IMAGE_ONLY_TEXT, UNREVIEWED_DESCRIPTION
+
+    assert asset["description"].endswith(UNREVIEWED_DESCRIPTION)
+    wakes = h.runtime.store.db.execute("SELECT event_id,text FROM artist_wakes").fetchall()
+    assert [tuple(row) for row in wakes] == [("chat:synthetic-media-event", IMAGE_ONLY_TEXT)]
+    serialized = h.hook_calls[0]["message"]["raw_message"]
+    assert base64.b64decode(serialized[1]["binary_data_base64"], validate=True) == data
+    assert serialized[2]["type"] == "emoji"
+    assert not h.runtime.media_errors and not h.renderer.calls and not h.sends
+    assert all(name.startswith("chat.get_stream_by_") for name, _ in h.calls)
+
+
+@pytest.mark.parametrize("media,kwargs", [
+    (False, {}), (True, {"owner": "other-owner"}), (True, {"command": True}),
+    (True, {"notify": True}), (True, {"text": " /command"}),
+])
+async def test_fixed_public_ingress_rejects_unauthorized_image_inputs(host_chain, media, kwargs):
+    from test_host_media import image_bytes
+
+    h = host_chain
+    await h.load(media=media, group=True)
+    part = h.host.ImageComponent(binary_hash="", binary_data=image_bytes())
+    await h.message(**{"text": "", **kwargs}, components=[part])
+    assert not h.runtime.store.list_assets("studio", Scope(PLATFORM, STREAM, OWNER))
+    assert not h.runtime.store.db.execute("SELECT 1 FROM artist_wakes").fetchone()
+    assert not h.renderer.calls and not h.sends
+
+
+async def test_media_optin_without_separate_consent_fails_at_host_startup(host_chain):
+    h = host_chain
+    h.plugin.set_plugin_config(h.config(media=True, media_consent=""))
+    await h.plugin.on_load()
+    assert "Separate media consent" in h.plugin.startup_error
+    assert h.runtime is None and not h.renderer.calls and not h.sends
+
+
+async def test_fixed_public_ingress_bad_image_keeps_text_and_records_code(host_chain):
+    h = host_chain
+    await h.load(media=True)
+    part = h.host.ImageComponent(binary_hash="", binary_data=b"synthetic invalid image")
+    await h.message("keep existing text", components=[part])
+    assert h.runtime.media_errors == {"studio": "MEDIA_FORMAT_INVALID"}
+    assert not h.runtime.store.list_assets("studio", Scope(PLATFORM, STREAM, OWNER))
+    assert h.runtime.store.db.execute("SELECT text FROM artist_wakes").fetchone()[0] == "keep existing text"
+    assert not h.renderer.calls and not h.sends

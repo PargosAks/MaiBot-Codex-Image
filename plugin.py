@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 class PluginSection(PluginConfigBase):
-    config_version: str = "0.8.0"
+    config_version: str = "0.9.0"
     enabled: bool = True
 
 

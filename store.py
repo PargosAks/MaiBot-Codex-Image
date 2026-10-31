@@ -14,7 +14,17 @@ import hashlib
 import json
 import os
 import sqlite3
+import unicodedata
 
+from .assets import (
+    MAX_ASSETS,
+    MAX_ASSET_BYTES,
+    REFERENCE_FIELDS,
+    reference_prompt,
+    validate_asset_image,
+    validate_archive,
+    validate_references,
+)
 from .policy import (
     ACTIONS,
     CONSUMED,
@@ -27,9 +37,17 @@ from .policy import (
     nonempty,
     parameters,
 )
+from .profiles import (
+    CHOICE_FIELDS,
+    normalize_objective,
+    render_prompt,
+    validate_catalog,
+    validate_choice,
+    validate_creative,
+)
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 6
 PREACCEPT_REJECTIONS = frozenset(
     {
         "INVALID_ARGUMENTS",
@@ -107,6 +125,89 @@ _SCHEMA_2 = (
 )
 _ACTIVE_WORK = ("planned", "deferred", "creating", "review_pending")
 _VERSION_META = "space_id,version_id,work_id,request_id,job_id,sha256,mime,parent_id,created_at"
+_SCHEMA_3 = (
+    """CREATE TABLE review_snapshots (
+        space_id TEXT NOT NULL, version_id TEXT NOT NULL, auth_version INTEGER NOT NULL,
+        context TEXT NOT NULL, input_digest TEXT NOT NULL, PRIMARY KEY(space_id,version_id),
+        FOREIGN KEY(space_id,version_id) REFERENCES versions(space_id,version_id))""",
+)
+_SCHEMA_4 = (
+    """CREATE TABLE profile_versions (
+        space_id TEXT NOT NULL REFERENCES spaces, profile_id TEXT NOT NULL,
+        revision INTEGER NOT NULL, data TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1,
+        PRIMARY KEY(space_id,profile_id,revision))""",
+    """CREATE TABLE series (
+        space_id TEXT NOT NULL REFERENCES spaces, series_id TEXT NOT NULL, title TEXT NOT NULL,
+        goal TEXT NOT NULL, profile_id TEXT NOT NULL, profile_revision INTEGER NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1, closed INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(space_id,series_id), FOREIGN KEY(space_id,profile_id,profile_revision)
+        REFERENCES profile_versions(space_id,profile_id,revision))""",
+    """CREATE TABLE series_members (
+        space_id TEXT NOT NULL, series_id TEXT NOT NULL, work_id TEXT NOT NULL, objective TEXT NOT NULL,
+        PRIMARY KEY(space_id,work_id), UNIQUE(space_id,series_id,objective),
+        FOREIGN KEY(space_id,series_id) REFERENCES series(space_id,series_id),
+        FOREIGN KEY(space_id,work_id) REFERENCES artist_works(space_id,work_id))""",
+)
+_SCHEMA_5 = (
+    """CREATE TABLE asset_catalog (
+        space_id TEXT NOT NULL REFERENCES spaces, asset_id TEXT NOT NULL,
+        source_version_id TEXT NOT NULL, work_id TEXT NOT NULL, job_id TEXT NOT NULL,
+        sha256 TEXT NOT NULL, mime TEXT NOT NULL, size_bytes INTEGER NOT NULL,
+        roles TEXT NOT NULL, tags TEXT NOT NULL, reason TEXT NOT NULL, summary TEXT NOT NULL,
+        description TEXT NOT NULL, source_kind TEXT NOT NULL, review_request_id TEXT NOT NULL,
+        auth_version INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL,
+        PRIMARY KEY(space_id,asset_id), UNIQUE(space_id,source_version_id),
+        FOREIGN KEY(space_id,source_version_id) REFERENCES versions(space_id,version_id))""",
+    """CREATE TABLE asset_selection (
+        space_id TEXT NOT NULL, asset_id TEXT NOT NULL, position INTEGER NOT NULL,
+        auth_version INTEGER NOT NULL, selected INTEGER NOT NULL DEFAULT 1,
+        PRIMARY KEY(space_id,asset_id),
+        FOREIGN KEY(space_id,asset_id) REFERENCES asset_catalog(space_id,asset_id))""",
+)
+_SCHEMA_6 = (
+    # Rebuild both ends of the FK in one transaction. Renaming the replacement
+    # parent updates the replacement child's FK without disabling constraints.
+    """CREATE TABLE asset_catalog_v6 (
+        space_id TEXT NOT NULL REFERENCES spaces, asset_id TEXT NOT NULL,
+        source_version_id TEXT, work_id TEXT, job_id TEXT,
+        sha256 TEXT NOT NULL, mime TEXT NOT NULL, size_bytes INTEGER NOT NULL,
+        roles TEXT NOT NULL, tags TEXT NOT NULL, reason TEXT NOT NULL, summary TEXT NOT NULL,
+        description TEXT NOT NULL, source_kind TEXT NOT NULL, review_request_id TEXT,
+        auth_version INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL,
+        PRIMARY KEY(space_id,asset_id), UNIQUE(space_id,source_version_id),
+        FOREIGN KEY(space_id,source_version_id) REFERENCES versions(space_id,version_id),
+        CHECK ((source_kind='reviewed_work' AND source_version_id IS NOT NULL AND work_id IS NOT NULL
+                AND job_id IS NOT NULL AND review_request_id IS NOT NULL)
+            OR (source_kind='authorized_chat' AND source_version_id IS NULL AND work_id IS NULL
+                AND job_id IS NULL AND review_request_id IS NULL)))""",
+    "INSERT INTO asset_catalog_v6 SELECT * FROM asset_catalog",
+    """CREATE TABLE asset_selection_v6 (
+        space_id TEXT NOT NULL, asset_id TEXT NOT NULL, position INTEGER NOT NULL,
+        auth_version INTEGER NOT NULL, selected INTEGER NOT NULL DEFAULT 1,
+        PRIMARY KEY(space_id,asset_id),
+        FOREIGN KEY(space_id,asset_id) REFERENCES asset_catalog_v6(space_id,asset_id))""",
+    "INSERT INTO asset_selection_v6 SELECT * FROM asset_selection",
+    "DROP TABLE asset_selection",
+    "DROP TABLE asset_catalog",
+    "ALTER TABLE asset_catalog_v6 RENAME TO asset_catalog",
+    "ALTER TABLE asset_selection_v6 RENAME TO asset_selection",
+    """CREATE TABLE external_assets (
+        space_id TEXT NOT NULL, asset_id TEXT NOT NULL, event_id TEXT NOT NULL,
+        message_index INTEGER NOT NULL, data BLOB NOT NULL, consent_ref TEXT NOT NULL,
+        source_description TEXT NOT NULL,
+        PRIMARY KEY(space_id,asset_id), UNIQUE(space_id,event_id,message_index),
+        FOREIGN KEY(space_id,asset_id) REFERENCES asset_catalog(space_id,asset_id))""",
+    """CREATE TABLE reference_policy (
+        space_id TEXT PRIMARY KEY REFERENCES spaces, enabled INTEGER NOT NULL,
+        consent_ref TEXT NOT NULL, version INTEGER NOT NULL, auth_version INTEGER NOT NULL)""",
+    """CREATE TABLE asset_registrations (
+        space_id TEXT NOT NULL, asset_id TEXT NOT NULL, request_id TEXT NOT NULL,
+        binding_id TEXT NOT NULL, auth_version INTEGER NOT NULL, policy_version INTEGER NOT NULL,
+        consent_ref TEXT NOT NULL, sha256 TEXT NOT NULL, mime TEXT NOT NULL, size_bytes INTEGER NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('reserved','submitting','unknown','succeeded','failed')),
+        receipt TEXT, reason TEXT, PRIMARY KEY(space_id,asset_id), UNIQUE(binding_id,space_id,request_id),
+        FOREIGN KEY(space_id,asset_id) REFERENCES asset_catalog(space_id,asset_id))""",
+)
 
 
 class ArtistStore:
@@ -127,10 +228,22 @@ class ArtistStore:
                         raise StoreError("SCHEMA_UNSUPPORTED", "Unversioned nonempty database")
                     for statement in _SCHEMA:
                         self.db.execute(statement)
-                elif version not in {1, SCHEMA_VERSION}:
+                elif version not in {1, 2, 3, 4, 5, SCHEMA_VERSION}:
                     raise StoreError("SCHEMA_UNSUPPORTED", "Artist database schema is not supported")
                 if version in {0, 1}:
                     for statement in _SCHEMA_2:
+                        self.db.execute(statement)
+                if version in {0, 1, 2}:
+                    for statement in _SCHEMA_3:
+                        self.db.execute(statement)
+                if version in {0, 1, 2, 3}:
+                    for statement in _SCHEMA_4:
+                        self.db.execute(statement)
+                if version in {0, 1, 2, 3, 4}:
+                    for statement in _SCHEMA_5:
+                        self.db.execute(statement)
+                if version in {0, 1, 2, 3, 4, 5}:
+                    for statement in _SCHEMA_6:
                         self.db.execute(statement)
                     self.db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         except BaseException:
@@ -1004,14 +1117,527 @@ class ArtistStore:
         if row:
             raise StoreError("WORK_BUSY", "This space already has an active artist work")
 
-    def plan_work(self, space_id, scope, *, work_id, brief, inspiration_keys, expected_auth_version=None):
+    def configure_creative(self, space_id, scope, *, profiles, series, expected_auth_version):
+        """Trusted Host configuration: synchronize visibility, never grant authority.
+
+        Old revisions and closed series are durable history. A removed item can
+        be configured again, but closing a series is irreversible through sync.
+        """
+        validate_catalog(profiles, series)
+        profiles, series = json.loads(canonical_json([profiles, series]))
+        with self._transaction():
+            space = self._space(space_id, scope)
+            self._expected_authorization(space, expected_auth_version)
+            self._authorized(space)
+            self.db.execute("UPDATE profile_versions SET active=0 WHERE space_id=?", (space_id,))
+            self.db.execute("UPDATE series SET active=0 WHERE space_id=?", (space_id,))
+            for profile in profiles:
+                identity = (space_id, profile["profile_id"], profile["revision"])
+                data = canonical_json(profile["data"])
+                old = self.db.execute(
+                    "SELECT data FROM profile_versions WHERE space_id=? AND profile_id=? AND revision=?",
+                    identity,
+                ).fetchone()
+                if old is not None and old["data"] != data:
+                    raise StoreError("REQUEST_CONFLICT", "Profile revision data is immutable")
+                self.db.execute(
+                    """INSERT INTO profile_versions(space_id,profile_id,revision,data,active) VALUES(?,?,?,?,1)
+                    ON CONFLICT(space_id,profile_id,revision) DO UPDATE SET active=1""", (*identity, data),
+                )
+            for item in series:
+                old = self.db.execute(
+                    "SELECT title,goal,profile_id,profile_revision FROM series WHERE space_id=? AND series_id=?",
+                    (space_id, item["series_id"]),
+                ).fetchone()
+                if old is not None and (old["title"], old["goal"], old["profile_id"], old["profile_revision"]) != (
+                    item["title"], item["goal"], item["profile_id"], item["profile_revision"],
+                ):
+                    raise StoreError("REQUEST_CONFLICT", "Series title, goal and profile bindings are immutable")
+                self.db.execute(
+                    """INSERT INTO series(space_id,series_id,title,goal,profile_id,profile_revision,active)
+                    VALUES(?,?,?,?,?,?,1) ON CONFLICT(space_id,series_id) DO UPDATE SET active=1""",
+                    (space_id, item["series_id"], item["title"], item["goal"],
+                     item["profile_id"], item["profile_revision"]),
+                )
+            return {"profiles": self.list_profiles(space_id, scope), "series": self.list_series(space_id, scope)}
+
+    def list_profiles(self, space_id, scope) -> list[dict]:
+        with self.lock:
+            self._authorized(self._space(space_id, scope))
+            return [
+                self._decode(row, "data") for row in self.db.execute(
+                    "SELECT profile_id,revision,data FROM profile_versions WHERE space_id=? AND active=1 "
+                    "ORDER BY profile_id,revision", (space_id,),
+                )
+            ]
+
+    def list_series(self, space_id, scope) -> list[dict]:
+        with self.lock:
+            self._authorized(self._space(space_id, scope))
+            return [
+                dict(row) for row in self.db.execute(
+                    """SELECT s.series_id,s.title,s.goal,s.profile_id,s.profile_revision FROM series AS s
+                    JOIN profile_versions AS p ON p.space_id=s.space_id AND p.profile_id=s.profile_id
+                    AND p.revision=s.profile_revision
+                    WHERE s.space_id=? AND s.active=1 AND s.closed=0 AND p.active=1 ORDER BY s.series_id""",
+                    (space_id,),
+                )
+            ]
+
+    def close_series(self, space_id, scope, series_id, expected_auth_version):
+        nonempty(series_id, "series_id")
+        with self._transaction():
+            space = self._space(space_id, scope)
+            self._expected_authorization(space, expected_auth_version)
+            self._authorized(space)
+            old = self.db.execute(
+                "SELECT 1 FROM series WHERE space_id=? AND series_id=?", (space_id, series_id)
+            ).fetchone()
+            if old is None:
+                raise StoreError("NOT_FOUND", "Series not found in this space")
+            self.db.execute("UPDATE series SET closed=1 WHERE space_id=? AND series_id=?", (space_id, series_id))
+
+    def _freeze_creative(self, space_id, scope, creative):
+        profiles, series = self.list_profiles(space_id, scope), self.list_series(space_id, scope)
+        selected = validate_choice(creative, profiles, series)
+        profile = next(item for item in profiles if item["profile_id"] == selected["profile_id"])
+        item = next((item for item in series if item["series_id"] == selected["series_id"]), None)
+        return {**selected, "profile": profile["data"], "series": item}
+
+    def get_asset(self, space_id, scope, asset_id):
+        """Scoped historical metadata; no image bytes or authorization renewal."""
+        with self.lock:
+            self._space(space_id, scope)
+            row = self.db.execute(
+                "SELECT * FROM asset_catalog WHERE space_id=? AND asset_id=?", (space_id, asset_id)
+            ).fetchone()
+            if row is None:
+                raise StoreError("NOT_FOUND", "Asset not found in this space")
+            return self._decode(row, "roles", "tags")
+
+    def configure_reference_policy(self, space_id, scope, *, enabled, consent_ref, expected_auth_version):
+        if (
+            type(enabled) is not bool or type(consent_ref) is not str or len(consent_ref) > 500
+            or type(expected_auth_version) is not int or expected_auth_version < 0
+        ):
+            raise StoreError("INVALID_ARGUMENT", "Reference policy needs a boolean and bounded consent reference")
+        if enabled:
+            nonempty(consent_ref, "consent_ref")
+        with self._transaction():
+            space = self._space(space_id, scope)
+            self._expected_authorization(space, expected_auth_version)
+            self._authorized(space)
+            old = self.db.execute("SELECT * FROM reference_policy WHERE space_id=?", (space_id,)).fetchone()
+            changed = old is None or (old["enabled"], old["consent_ref"], old["auth_version"]) != (
+                int(enabled), consent_ref, space["auth_version"],
+            )
+            version = (old["version"] if old is not None else 0) + int(changed)
+            self.db.execute(
+                """INSERT INTO reference_policy VALUES(?,?,?,?,?) ON CONFLICT(space_id) DO UPDATE SET
+                enabled=excluded.enabled,consent_ref=excluded.consent_ref,version=excluded.version,
+                auth_version=excluded.auth_version""", (space_id, int(enabled), consent_ref, version, space["auth_version"]),
+            )
+            return {"enabled": enabled, "consent_ref": consent_ref, "version": version,
+                    "auth_version": space["auth_version"]}
+
+    def _reference_policy(self, space_id, scope, expected_auth_version):
+        if type(expected_auth_version) is not int or expected_auth_version < 0:
+            raise StoreError("INVALID_ARGUMENT", "An explicit current authorization version is required")
+        space = self._space(space_id, scope)
+        self._expected_authorization(space, expected_auth_version)
+        self._authorized(space)
+        row = self.db.execute("SELECT * FROM reference_policy WHERE space_id=?", (space_id,)).fetchone()
+        if row is None or not row["enabled"] or not row["consent_ref"].strip():
+            raise StoreError("REFERENCE_AUTH_REQUIRED", "Explicit image-reference delegation is not active")
+        if row["auth_version"] != space["auth_version"]:
+            raise StoreError("AUTH_CHANGED", "Image-reference policy belongs to an older authorization")
+        return {"enabled": True, "consent_ref": row["consent_ref"], "version": row["version"],
+                "auth_version": row["auth_version"]}
+
+    def validate_reference_authorization(self, space_id, scope, *, expected_auth_version):
+        # Match grant and policy in one database snapshot, including writers
+        # using another ArtistStore connection.
+        with self._transaction():
+            return self._reference_policy(space_id, scope, expected_auth_version)
+
+    def import_asset(self, space_id, scope, *, event_id, message_index, data, mime, roles, tags,
+                     description, consent_ref, expected_auth_version):
+        nonempty(event_id, "event_id")
+        nonempty(consent_ref, "consent_ref")
+        nonempty(description, "description")
+        if len(event_id) > 512 or len(description) > 1000 or type(message_index) is not int or not 0 <= message_index < 2**31:
+            raise StoreError("INVALID_ARGUMENT", "External image provenance and description must be bounded")
+        validate_archive(roles, tags, "Host metadata import")
+        roles, tags = sorted(roles), sorted(tags)
+        image = validate_asset_image(data, mime)
+        identifier = "asset:" + hashlib.sha256(canonical_json(
+            ["authorized_chat", space_id, event_id, message_index]
+        ).encode("utf-8")).hexdigest()
+        metadata = ("来源元数据 source_metadata（图片内容未审阅，未进行图像分析）：" + description)[:1000]
+        with self._transaction():
+            policy = self._reference_policy(space_id, scope, expected_auth_version)
+            if consent_ref != policy["consent_ref"]:
+                raise StoreError("REFERENCE_AUTH_CHANGED", "Image consent does not match the current delegation")
+            old = self.db.execute(
+                "SELECT * FROM external_assets WHERE space_id=? AND event_id=? AND message_index=?",
+                (space_id, event_id, message_index),
+            ).fetchone()
+            if old is not None:
+                asset = self.get_asset(space_id, scope, old["asset_id"])
+                if (
+                    old["data"] != data or old["consent_ref"] != consent_ref or old["source_description"] != description
+                    or any(asset[key] != image[key] for key in ("mime", "sha256"))
+                    or asset["roles"] != roles or asset["tags"] != tags or asset["description"] != metadata
+                ):
+                    raise StoreError("REQUEST_CONFLICT", "Original event image and import metadata are immutable")
+                return asset
+            usage = self.db.execute(
+                "SELECT count(*) AS count,COALESCE(sum(size_bytes),0) AS bytes FROM asset_catalog WHERE space_id=?",
+                (space_id,),
+            ).fetchone()
+            if usage["count"] >= MAX_ASSETS or usage["bytes"] + len(data) > MAX_ASSET_BYTES:
+                raise StoreError("ASSET_QUOTA", "Space asset count or retained-image byte quota is exhausted")
+            now, _ = self._now()
+            self.db.execute(
+                """INSERT INTO asset_catalog(space_id,asset_id,source_version_id,work_id,job_id,sha256,mime,
+                size_bytes,roles,tags,reason,summary,description,source_kind,review_request_id,auth_version,created_at)
+                VALUES(?,?,NULL,NULL,NULL,?,?,?,?,?,?,?,?,'authorized_chat',NULL,?,?)""",
+                (space_id, identifier, image["sha256"], mime, len(data), canonical_json(roles), canonical_json(tags),
+                 "Host metadata import", metadata[:1000], metadata, policy["auth_version"], now),
+            )
+            self.db.execute("INSERT INTO external_assets VALUES(?,?,?,?,?,?,?)",
+                            (space_id, identifier, event_id, message_index, data, consent_ref, description))
+            return self.get_asset(space_id, scope, identifier)
+
+    def get_asset_image(self, space_id, scope, asset_id):
+        """Read the original image for scoped history/reconciliation, even after revocation."""
+        with self.lock:
+            asset = self.get_asset(space_id, scope, asset_id)
+            source = self._asset_source(space_id, scope, asset)
+            image = validate_asset_image(source["data"], asset["mime"])
+            if image["sha256"] != asset["sha256"]:
+                raise StoreError("ARTIFACT_INVALID", "Asset image digest changed")
+            return image
+
+    @staticmethod
+    def _registration_snapshot(row):
+        snapshot = {key: row[key] for key in (
+            "request_id", "asset_id", "state", "binding_id", "auth_version", "sha256", "mime", "size_bytes",
+            "policy_version", "consent_ref",
+        )}
+        if row["receipt"] is not None:
+            snapshot["receipt"] = json.loads(row["receipt"])
+        return snapshot
+
+    def get_asset_registration(self, space_id, scope, asset_id):
+        with self.lock:
+            self._space(space_id, scope)
+            row = self.db.execute(
+                "SELECT * FROM asset_registrations WHERE space_id=? AND asset_id=?", (space_id, asset_id)
+            ).fetchone()
+            return self._registration_snapshot(row) if row is not None else None
+
+    def reserve_asset_registration(self, space_id, scope, *, asset_id, expected_auth_version):
+        with self._transaction():
+            policy = self._reference_policy(space_id, scope, expected_auth_version)
+            space = self._space(space_id, scope)
+            old = self.get_asset_registration(space_id, scope, asset_id)
+            if old is not None:
+                if old["binding_id"] != space["binding_id"]:
+                    raise StoreError("REQUEST_CONFLICT", "Registration belongs to another service binding")
+                # Inspection never renews authority or replaces unknown work.
+                return old
+            asset = self.get_asset(space_id, scope, asset_id)
+            if not asset["active"]:
+                raise StoreError("NOT_FOUND", "Inactive asset cannot be registered")
+            if asset["source_kind"] == "authorized_chat":
+                original = self.db.execute("SELECT consent_ref FROM external_assets WHERE space_id=? AND asset_id=?",
+                                            (space_id, asset_id)).fetchone()
+                if original is None or original["consent_ref"] != policy["consent_ref"]:
+                    raise StoreError("REFERENCE_AUTH_CHANGED", "External image requires its original consent")
+            self.get_asset_image(space_id, scope, asset_id)
+            request = "asset-register:" + hashlib.sha256(canonical_json(
+                [space["binding_id"], space_id, asset_id]
+            ).encode("utf-8")).hexdigest()
+            self.db.execute(
+                """INSERT INTO asset_registrations(space_id,asset_id,request_id,binding_id,auth_version,
+                policy_version,consent_ref,sha256,mime,size_bytes,state) VALUES(?,?,?,?,?,?,?,?,?,?,'reserved')""",
+                (space_id, asset_id, request, space["binding_id"], space["auth_version"], policy["version"],
+                 policy["consent_ref"], asset["sha256"], asset["mime"], asset["size_bytes"]),
+            )
+            return self.get_asset_registration(space_id, scope, asset_id)
+
+    def claim_asset_registration(self, space_id, scope, asset_id, expected_auth_version):
+        with self._transaction():
+            policy = self._reference_policy(space_id, scope, expected_auth_version)
+            space = self._space(space_id, scope)
+            old = self.get_asset_registration(space_id, scope, asset_id)
+            if old is None:
+                raise StoreError("NOT_FOUND", "Registration reservation not found")
+            if old["state"] != "reserved":
+                raise StoreError("INVALID_STATE", "Only an undispatched reservation can be claimed once")
+            if old["binding_id"] != space["binding_id"]:
+                raise StoreError("REQUEST_CONFLICT", "Registration service binding changed")
+            if old["auth_version"] != space["auth_version"]:
+                raise StoreError("AUTH_CHANGED", "Registration belongs to an older authorization")
+            if (old["policy_version"], old["consent_ref"]) != (policy["version"], policy["consent_ref"]):
+                raise StoreError("REFERENCE_AUTH_CHANGED", "Reference policy changed after reservation")
+            asset = self.get_asset(space_id, scope, asset_id)
+            if not asset["active"]:
+                raise StoreError("NOT_FOUND", "Inactive asset cannot be dispatched")
+            image = self.get_asset_image(space_id, scope, asset_id)
+            if (image["sha256"], image["mime"], len(image["data"])) != (
+                old["sha256"], old["mime"], old["size_bytes"],
+            ):
+                raise StoreError("ARTIFACT_INVALID", "Reserved asset bytes changed")
+            self.db.execute("UPDATE asset_registrations SET state='submitting' WHERE space_id=? AND asset_id=?",
+                            (space_id, asset_id))
+            return self.get_asset_registration(space_id, scope, asset_id)
+
+    def mark_asset_registration_unknown(self, space_id, scope, asset_id, reason):
+        nonempty(reason, "reason")
+        if len(reason) > 500:
+            raise StoreError("INVALID_ARGUMENT", "Registration uncertainty reason is too long")
+        with self._transaction():
+            old = self.get_asset_registration(space_id, scope, asset_id)
+            if old is None:
+                raise StoreError("NOT_FOUND", "Registration not found")
+            if old["state"] == "reserved":
+                raise StoreError("INVALID_STATE", "An undispatched registration has no unknown remote outcome")
+            if old["state"] == "submitting":
+                self.db.execute("UPDATE asset_registrations SET state='unknown',reason=? WHERE space_id=? AND asset_id=?",
+                                (reason, space_id, asset_id))
+            return self.get_asset_registration(space_id, scope, asset_id)
+
+    def complete_asset_registration(self, space_id, scope, asset_id, receipt):
+        if (
+            type(receipt) is not dict or receipt.keys() != {"asset_id", "sha256", "mime", "size_bytes"}
+            or type(receipt.get("asset_id")) is not str or not receipt["asset_id"].strip() or len(receipt["asset_id"]) > 128
+            or type(receipt.get("size_bytes")) is not int
+        ):
+            raise StoreError("INVALID_ARGUMENT", "Registration receipt must be exact, bounded asset metadata")
+        payload = canonical_json(receipt)
+        with self._transaction():
+            old = self.get_asset_registration(space_id, scope, asset_id)
+            if old is None:
+                raise StoreError("NOT_FOUND", "Registration not found")
+            if any(receipt[key] != old[key] for key in ("sha256", "mime", "size_bytes")):
+                raise StoreError("REQUEST_CONFLICT", "Registration receipt does not match the original image")
+            if old["state"] == "succeeded":
+                if old["receipt"] != receipt:
+                    raise StoreError("REQUEST_CONFLICT", "Successful registration receipt is immutable")
+                return old
+            if old["state"] not in {"submitting", "unknown"}:
+                raise StoreError("INVALID_STATE", "Only an attempted registration can be completed")
+            image = self.get_asset_image(space_id, scope, asset_id)
+            if (image["sha256"], image["mime"], len(image["data"])) != (old["sha256"], old["mime"], old["size_bytes"]):
+                raise StoreError("ARTIFACT_INVALID", "Original registration image changed")
+            self.db.execute("UPDATE asset_registrations SET state='succeeded',receipt=? WHERE space_id=? AND asset_id=?",
+                            (payload, space_id, asset_id))
+            return self.get_asset_registration(space_id, scope, asset_id)
+
+    def archive_version(self, space_id, scope, *, version_id, roles, tags, reason, expected_auth_version):
+        nonempty(version_id, "version_id")
+        validate_archive(roles, tags, reason)
+        roles, tags = sorted(roles), sorted(tags)
+        asset_id = "asset:" + hashlib.sha256(canonical_json([space_id, version_id]).encode("utf-8")).hexdigest()
+        with self._transaction():
+            space = self._space(space_id, scope)
+            self._expected_authorization(space, expected_auth_version)
+            self._authorized(space)
+            version = self._version(space_id, scope, version_id)
+            if (
+                not isinstance(version["data"], bytes) or not version["data"]
+                or hashlib.sha256(version["data"]).hexdigest() != version["sha256"]
+                or version["mime"] not in {"image/png", "image/jpeg", "image/webp"}
+            ):
+                raise StoreError("ARTIFACT_INVALID", "Archive source bytes failed verification")
+            proof = self._accepted_review(space_id, scope, space, version)
+            if proof is None:
+                raise StoreError("VERSION_NOT_ACCEPTED", "Only a version selected by a valid accepting review may be archived")
+            old = self.db.execute(
+                "SELECT * FROM asset_catalog WHERE space_id=? AND asset_id=?", (space_id, asset_id)
+            ).fetchone()
+            if old is not None:
+                if (old["roles"], old["tags"], old["reason"]) != (canonical_json(roles), canonical_json(tags), reason):
+                    raise StoreError("REQUEST_CONFLICT", "Archive roles, tags and reason are immutable")
+                self._asset_source(space_id, scope, self._decode(old, "roles", "tags"))
+                return self._decode(old, "roles", "tags")
+            # Inactive entries still retain bytes and consume quota. Disabling
+            # an asset cannot be used to evade the storage limit.
+            usage = self.db.execute(
+                "SELECT count(*) AS count,COALESCE(sum(size_bytes),0) AS bytes FROM asset_catalog WHERE space_id=?",
+                (space_id,),
+            ).fetchone()
+            if usage["count"] >= MAX_ASSETS or usage["bytes"] + len(version["data"]) > MAX_ASSET_BYTES:
+                raise StoreError("ASSET_QUOTA", "Space asset count or retained-image byte quota is exhausted")
+            review = json.loads(proof["review"])
+            review_reason, strengths = review.get("reason"), review.get("strengths", [])
+            if (
+                not isinstance(review_reason, str) or not review_reason.strip()
+                or not isinstance(strengths, list) or any(not isinstance(item, str) for item in strengths)
+            ):
+                raise StoreError("INVALID_ARGUMENT", "Accepting review has no usable descriptive evidence")
+            evidence_text = "评审理由：" + review_reason + "\n评审优点：" + "；".join(strengths)
+            summary = evidence_text[:1000]
+            description = (evidence_text + "\n入库用途说明：" + reason)[:2000]
+            now, _ = self._now()
+            self.db.execute(
+                """INSERT INTO asset_catalog(space_id,asset_id,source_version_id,work_id,job_id,sha256,mime,
+                size_bytes,roles,tags,reason,summary,description,source_kind,review_request_id,auth_version,created_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'reviewed_work',?,?,?)""",
+                (space_id, asset_id, version_id, version["work_id"], version["job_id"], version["sha256"],
+                 version["mime"], len(version["data"]), canonical_json(roles), canonical_json(tags), reason,
+                 summary, description, proof["request_id"], space["auth_version"], now),
+            )
+            return self.get_asset(space_id, scope, asset_id)
+
+    @staticmethod
+    def _asset_summary(asset):
+        return {key: asset[key] for key in ("asset_id", "summary", "roles", "tags", "source_kind")}
+
+    def list_assets(self, space_id, scope, query="", limit=8):
+        if type(query) is not str or len(query) > 500 or type(limit) is not int or not 1 <= limit <= 8:
+            raise StoreError("INVALID_ARGUMENT", "Asset query and candidate limit must be bounded")
+        terms = unicodedata.normalize("NFKC", query).casefold().split()
+        with self.lock:
+            self._authorized(self._space(space_id, scope))
+            candidates = []
+            for row in self.db.execute("SELECT * FROM asset_catalog WHERE space_id=? AND active=1", (space_id,)):
+                asset = self._decode(row, "roles", "tags")
+                tags = [unicodedata.normalize("NFKC", tag).casefold() for tag in asset["tags"]]
+                text = unicodedata.normalize("NFKC", asset["summary"] + " " + " ".join(asset["tags"])).casefold()
+                if terms and not all(term in text for term in terms):
+                    continue
+                score = sum(10 if term in tags else 3 if any(term in tag for tag in tags) else 1 for term in terms)
+                candidates.append((-score, asset["asset_id"], self._asset_summary(asset)))
+            return [item[2] for item in sorted(candidates, key=lambda item: item[:2])[:limit]]
+
+    def _asset_source(self, space_id, scope, asset):
+        if asset["source_kind"] == "authorized_chat":
+            self._space(space_id, scope)
+            row = self.db.execute("SELECT data FROM external_assets WHERE space_id=? AND asset_id=?",
+                                  (space_id, asset["asset_id"])).fetchone()
+            if (
+                row is None or not isinstance(row["data"], bytes) or len(row["data"]) != asset["size_bytes"]
+                or hashlib.sha256(row["data"]).hexdigest() != asset["sha256"]
+            ):
+                raise StoreError("ARTIFACT_INVALID", "Original external image bytes changed")
+            image = validate_asset_image(row["data"], asset["mime"])
+            return image
+        version = self._version(space_id, scope, asset["source_version_id"])
+        if (
+            any(version[key] != asset[key] for key in ("work_id", "job_id", "sha256", "mime"))
+            or not isinstance(version["data"], bytes) or len(version["data"]) != asset["size_bytes"]
+            or hashlib.sha256(version["data"]).hexdigest() != asset["sha256"]
+        ):
+            raise StoreError("ARTIFACT_INVALID", "Archived source identity or bytes changed")
+        return version
+
+    def _asset_details(self, assets):
+        details = [{**self._asset_summary(asset), **{key: asset[key] for key in ("sha256", "mime", "description")}}
+                   for asset in assets]
+        # Count actual Unicode JSON characters, including labels and metadata,
+        # rather than escaping Chinese into six-character ASCII sequences.
+        if len(json.dumps(details, ensure_ascii=False, separators=(",", ":"))) > 6000:
+            raise StoreError("ASSET_DETAILS_TOO_LONG", "Selected asset details exceed the 6000 character limit")
+        return details
+
+    def select_assets(self, space_id, scope, asset_ids, expected_auth_version):
+        if (
+            type(asset_ids) is not list or len(asset_ids) > 3
+            or any(type(identifier) is not str or not identifier.strip() or len(identifier) > 128 for identifier in asset_ids)
+            or len(set(asset_ids)) != len(asset_ids)
+        ):
+            raise StoreError("INVALID_ARGUMENT", "Select at most three distinct bounded asset IDs")
+        asset_ids = list(asset_ids)
+        with self._transaction():
+            space = self._space(space_id, scope)
+            self._expected_authorization(space, expected_auth_version)
+            self._authorized(space)
+            assets = [self.get_asset(space_id, scope, identifier) for identifier in asset_ids]
+            for asset in assets:
+                if not asset["active"]:
+                    raise StoreError("NOT_FOUND", "Inactive asset cannot be selected")
+                self._asset_source(space_id, scope, asset)
+            details = self._asset_details(assets)
+            self.db.execute("UPDATE asset_selection SET selected=0 WHERE space_id=?", (space_id,))
+            for position, identifier in enumerate(asset_ids):
+                self.db.execute(
+                    """INSERT INTO asset_selection(space_id,asset_id,position,auth_version,selected) VALUES(?,?,?,?,1)
+                    ON CONFLICT(space_id,asset_id) DO UPDATE SET position=excluded.position,
+                    auth_version=excluded.auth_version,selected=1""", (space_id, identifier, position, space["auth_version"]),
+                )
+            return details
+
+    def selected_assets(self, space_id, scope):
+        with self.lock:
+            self._space(space_id, scope)
+            assets = [self._decode(row, "roles", "tags") for row in self.db.execute(
+                """SELECT a.* FROM asset_selection AS s JOIN asset_catalog AS a
+                ON a.space_id=s.space_id AND a.asset_id=s.asset_id
+                WHERE s.space_id=? AND s.selected=1 AND a.active=1 ORDER BY s.position,a.asset_id""", (space_id,),
+            )]
+            return self._asset_details(assets)
+
+    def deactivate_asset(self, space_id, scope, asset_id, expected_auth_version):
+        with self._transaction():
+            space = self._space(space_id, scope)
+            self._expected_authorization(space, expected_auth_version)
+            self._authorized(space)
+            self.get_asset(space_id, scope, asset_id)
+            self.db.execute("UPDATE asset_catalog SET active=0 WHERE space_id=? AND asset_id=?", (space_id, asset_id))
+
+    def _freeze_references(self, space_id, scope, references, *, usage="text_context", policy=None):
+        # Resolve only caller-selected, same-space asset IDs. Neither a model
+        # version ID nor a filesystem path can become a new version here.
+        assets = []
+        for reference in references:
+            if type(reference) is not dict or reference.keys() != REFERENCE_FIELDS:
+                raise StoreError("INVALID_ARGUMENT", "References must be choices, not supplied snapshots")
+            nonempty(reference["asset_id"], "asset_id")
+            asset = self.get_asset(space_id, scope, reference["asset_id"])
+            if not asset["active"]:
+                raise StoreError("NOT_FOUND", "Inactive asset cannot enter a new plan")
+            if asset["source_kind"] == "authorized_chat":
+                active_policy = policy or self._reference_policy(
+                    space_id, scope, self._space(space_id, scope)["auth_version"]
+                )
+                original = self.db.execute("SELECT consent_ref FROM external_assets WHERE space_id=? AND asset_id=?",
+                                            (space_id, asset["asset_id"])).fetchone()
+                if original is None or original["consent_ref"] != active_policy["consent_ref"]:
+                    raise StoreError("REFERENCE_AUTH_CHANGED", "External image belongs to another consent reference")
+            self._asset_source(space_id, scope, asset)
+            assets.append(asset)
+        selected = validate_references(references, assets)
+        frozen = [{**choice, **{key: asset[key] for key in ("summary", "source_kind", "source_version_id", "sha256", "mime")},
+                   "usage": usage} for choice, asset in zip(selected, assets)]
+        if usage == "image_input":
+            for reference in frozen:
+                reference.update(policy_version=policy["version"], consent_ref=policy["consent_ref"])
+        return frozen
+
+    def plan_work(
+        self, space_id, scope, *, work_id, brief, inspiration_keys, creative=None, references=None,
+        reference_usage="text_context", expected_auth_version=None
+    ):
         nonempty(work_id, "work_id")
+        if reference_usage not in ("text_context", "image_input"):
+            raise StoreError("INVALID_ARGUMENT", "Reference usage is a trusted text_context or image_input value")
         if (
             not isinstance(brief, dict)
             or not {"intent", "subject", "mood", "prompt", "completion_criteria"} <= brief.keys()
+            or "creative" in brief
+            or "references" in brief
         ):
             raise StoreError("INVALID_ARGUMENT", "A complete validated brief is required")
         payload = canonical_json(brief)
+        brief = json.loads(payload)
+        selected = validate_creative(creative) if creative is not None else None
+        references = [] if references is None else references
+        if not isinstance(references, list) or len(references) > 3:
+            raise StoreError("INVALID_ARGUMENT", "At most three reference choices are allowed")
+        references = json.loads(canonical_json(references))
         keys = self._string_list(inspiration_keys, "inspiration_keys")
         with self._transaction():
             space = self._space(space_id, scope)
@@ -1022,10 +1648,41 @@ class ArtistStore:
                 "SELECT * FROM artist_works WHERE space_id=? AND work_id=?", (space_id, work_id)
             ).fetchone()
             if old:
-                if old["brief"] != payload or json.loads(old["inspiration_keys"]) != keys:
+                saved_brief = json.loads(old["brief"])
+                saved_creative = saved_brief.pop("creative", None)
+                saved_references = saved_brief.pop("references", [])
+                saved_reference_choices = [{key: item[key] for key in REFERENCE_FIELDS} for item in saved_references]
+                saved_choice = (
+                    {key: saved_creative[key] for key in CHOICE_FIELDS} if saved_creative is not None else None
+                )
+                if (
+                    canonical_json(saved_brief) != payload or saved_choice != selected
+                    or saved_reference_choices != references
+                    or any(item["usage"] != reference_usage for item in saved_references)
+                    or json.loads(old["inspiration_keys"]) != keys
+                ):
                     raise StoreError("REQUEST_CONFLICT", "Work brief and inspiration bindings are immutable")
                 return self._artist_work(space_id, scope, work_id)
             self._check_active_work(space_id, work_id)
+            policy = self._reference_policy(space_id, scope, expected_auth_version) if reference_usage == "image_input" else None
+            snapshot, objective = None, None
+            if selected is not None:
+                snapshot = self._freeze_creative(space_id, scope, selected)
+                brief["creative"] = snapshot
+                payload = canonical_json(brief)
+                if snapshot["series_id"] is not None:
+                    objective = normalize_objective(brief["intent"], brief["subject"])
+                    duplicate = self.db.execute(
+                        "SELECT 1 FROM series_members WHERE space_id=? AND series_id=? AND objective=?",
+                        (space_id, snapshot["series_id"], objective),
+                    ).fetchone()
+                    if duplicate is not None:
+                        raise StoreError("REQUEST_CONFLICT", "Series already contains this creative objective")
+            frozen_refs = self._freeze_references(space_id, scope, references, usage=reference_usage, policy=policy)
+            if frozen_refs:
+                brief["references"] = frozen_refs
+            payload = canonical_json(brief)
+            reference_prompt(render_prompt(brief["prompt"], snapshot), frozen_refs)
             for key in keys:
                 idea = self.db.execute(
                     "SELECT * FROM inspirations WHERE space_id=? AND key=? AND expires_at>?",
@@ -1039,6 +1696,11 @@ class ArtistStore:
                             VALUES(?,?,'planned',?,?)""",
                 (space_id, work_id, payload, canonical_json(keys)),
             )
+            if objective is not None:
+                self.db.execute(
+                    "INSERT INTO series_members(space_id,series_id,work_id,objective) VALUES(?,?,?,?)",
+                    (space_id, snapshot["series_id"], work_id, objective),
+                )
             for key in keys:
                 self.db.execute(
                     "UPDATE inspirations SET consumed_by=? WHERE space_id=? AND key=?",
@@ -1202,6 +1864,218 @@ class ArtistStore:
                     (space_id, work_id),
                 )
             ]
+
+    def get_review_snapshot(self, space_id, scope, version_id) -> Optional[Dict[str, Any]]:
+        """Historical metadata remains readable after delegation is withdrawn."""
+        with self.lock:
+            self._space(space_id, scope)
+            row = self.db.execute(
+                "SELECT * FROM review_snapshots WHERE space_id=? AND version_id=?", (space_id, version_id)
+            ).fetchone()
+            return self._decode(row, "context") if row is not None else None
+
+    def _validate_review_context(self, space_id, scope, version_id, context, *, check_best):
+        """Validate identities and bytes without putting media in the frozen JSON.
+
+        Only initial freezing consults the live best. Historical snapshots must
+        remain valid when applying a later review changes that best.
+        """
+        allowed = {
+            "persona", "events", "inspirations", "works", "versions", "current_work",
+            "current_version", "review_contract", "review_inputs", "profiles", "series", "assets", "asset_details",
+        }
+        if (
+            not isinstance(context, dict)
+            or not context.keys() <= allowed
+            or type(context.get("review_contract")) is not int
+            or context["review_contract"] != 2
+            or not isinstance(context.get("current_work"), dict)
+            or not isinstance(context.get("current_version"), dict)
+        ):
+            raise StoreError("INVALID_ARGUMENT", "A contract 2 review context is required")
+        current = self._version(space_id, scope, version_id)
+        work = self._artist_work(space_id, scope, current["work_id"])
+        work_meta, current_meta = context["current_work"], context["current_version"]
+        if work_meta.get("work_id") != work["work_id"]:
+            raise StoreError("NOT_FOUND", "Review context belongs to another work")
+        if (
+            not work_meta.keys() <= {"work_id", "brief", "best_version", "status", "reason"}
+            or "best_version" not in work_meta
+            or not current_meta.keys() <= {"version_id", "sha256", "mime", "parent_id"}
+            or any(current_meta.get(key) != current[key] for key in ("version_id", "sha256", "mime"))
+            or ("parent_id" in current_meta and current_meta["parent_id"] != current["parent_id"])
+        ):
+            raise StoreError("INVALID_ARGUMENT", "Review current metadata does not match its version")
+        if "brief" in work_meta and canonical_json(work_meta["brief"]) != canonical_json(work["brief"]):
+            raise StoreError("REQUEST_CONFLICT", "Review brief must match the immutable work plan")
+        best = work_meta["best_version"]
+        if best is not None:
+            nonempty(best, "best_version")
+        if check_best and best != work["best_version"]:
+            raise StoreError("REQUEST_CONFLICT", "Previous best changed before freezing the review")
+        expected_roles = {"current": version_id}
+        if current["parent_id"] is not None:
+            expected_roles["parent"] = current["parent_id"]
+        if best is not None:
+            expected_roles["previous_best"] = best
+        inputs = context.get("review_inputs")
+        if not isinstance(inputs, list) or not 1 <= len(inputs) <= 3:
+            raise StoreError("INVALID_ARGUMENT", "A review requires one to three distinct image versions")
+        seen_versions, roles = set(), {}
+        for item in inputs:
+            if not isinstance(item, dict) or item.keys() != {"version_id", "roles", "sha256", "mime"}:
+                raise StoreError("INVALID_ARGUMENT", "Review inputs must contain image metadata only")
+            identifier = nonempty(item["version_id"], "version_id")
+            assigned = item["roles"]
+            if (
+                identifier in seen_versions
+                or not isinstance(assigned, list)
+                or not assigned
+                or any(type(role) is not str or role not in expected_roles for role in assigned)
+                or len(set(assigned)) != len(assigned)
+            ):
+                raise StoreError("INVALID_ARGUMENT", "Review versions and roles must be unique")
+            seen_versions.add(identifier)
+            image = self._version(space_id, scope, identifier)
+            if image["work_id"] != work["work_id"]:
+                raise StoreError("NOT_FOUND", "All review inputs must belong to the current work")
+            if (
+                not isinstance(image["data"], bytes)
+                or not image["data"]
+                or hashlib.sha256(image["data"]).hexdigest() != image["sha256"]
+                or item["sha256"] != image["sha256"]
+                or item["mime"] != image["mime"]
+                or image["mime"] not in {"image/png", "image/jpeg", "image/webp"}
+            ):
+                raise StoreError("ARTIFACT_INVALID", "Review image metadata or bytes failed verification")
+            for role in assigned:
+                if role in roles or expected_roles[role] != identifier:
+                    raise StoreError("INVALID_ARGUMENT", "Review role does not match the original version")
+                roles[role] = identifier
+        if roles != expected_roles:
+            raise StoreError("INVALID_ARGUMENT", "Review must include current, parent and previous best")
+        return seen_versions
+
+    def freeze_review_snapshot(
+        self, space_id, scope, *, version_id, context, expected_auth_version
+    ) -> Dict[str, Any]:
+        payload = canonical_json(context)
+        # Validate exactly the serialized inputs, detached from caller-owned
+        # dictionaries that could change while the transaction waits for a lock.
+        context = json.loads(payload)
+        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        with self._transaction():
+            space = self._space(space_id, scope)
+            self._expected_authorization(space, expected_auth_version)
+            self._authorized(space)
+            old = self.db.execute(
+                "SELECT * FROM review_snapshots WHERE space_id=? AND version_id=?", (space_id, version_id)
+            ).fetchone()
+            if old is not None:
+                if old["auth_version"] != space["auth_version"]:
+                    raise StoreError("AUTH_CHANGED", "Review snapshot belongs to an older authorization")
+                if old["context"] != payload or old["input_digest"] != digest:
+                    raise StoreError("REQUEST_CONFLICT", "Review snapshot inputs are immutable")
+            self._validate_review_context(space_id, scope, version_id, context, check_best=old is None)
+            if old is None:
+                self.db.execute(
+                    "INSERT INTO review_snapshots(space_id,version_id,auth_version,context,input_digest) "
+                    "VALUES(?,?,?,?,?)", (space_id, version_id, space["auth_version"], payload, digest),
+                )
+            return self.get_review_snapshot(space_id, scope, version_id)
+
+    def version_accepted(self, space_id, scope, version_id, expected_auth_version=None) -> bool:
+        """Prove acceptance using the successful original review, never work status.
+
+        A review row alone is audit history: older callers may record one while
+        an operation is still unknown. Malformed or mismatched evidence cannot
+        certify an image, but is retained unchanged for investigation.
+        """
+        with self._transaction():
+            space = self._space(space_id, scope)
+            self._expected_authorization(space, expected_auth_version)
+            target = self._version(space_id, scope, version_id)
+            if not space["authorized"]:
+                return False
+            return self._accepted_review(space_id, scope, space, target) is not None
+
+    def _accepted_review(self, space_id, scope, space, target):
+        """Shared proof check for acceptance and archiving, inside the caller's transaction."""
+        rows = self.db.execute(
+                """SELECT r.version_id,r.request_id,r.review,o.params_json,o.evidence FROM reviews AS r
+                JOIN operations AS o ON o.space_id=r.space_id AND o.request_id=r.request_id
+                WHERE r.space_id=? AND r.work_id=? AND o.work_id=r.work_id
+                AND o.action='think' AND o.category='think' AND o.state='succeeded'
+                AND o.auth_version=? AND o.scope_snapshot=? AND o.binding_id=? ORDER BY r.id""",
+                (space_id, target["work_id"], space["auth_version"], space["scope"], space["binding_id"]),
+            ).fetchall()
+        for row in rows:
+            try:
+                if self._review_accepts(space_id, scope, space, target, row):
+                    return row
+            except (StoreError, ValueError, TypeError, KeyError, RecursionError):
+                # Fail closed on corrupt historical evidence; do not rewrite
+                # it or interfere with any other valid review of the work.
+                continue
+        return None
+
+    def _review_accepts(self, space_id, scope, space, target, row) -> bool:
+        review, params = json.loads(row["review"]), json.loads(row["params_json"])
+        if (
+            not isinstance(review, dict)
+            or review.get("decision") != "accept"
+            or row["evidence"] != canonical_json(review)
+            or not isinstance(params, dict)
+            or params.get("task") != "review"
+            or params.get("version_id") != row["version_id"]
+        ):
+            return False
+        context = params.get("context")
+        if not isinstance(context, dict):
+            return False
+        current = self._version(space_id, scope, row["version_id"])
+        work_meta, current_meta = context.get("current_work"), context.get("current_version")
+        if (
+            current["work_id"] != target["work_id"]
+            or not isinstance(work_meta, dict)
+            or work_meta.get("work_id") != target["work_id"]
+            or not isinstance(current_meta, dict)
+            or any(current_meta.get(key) != current[key] for key in ("version_id", "sha256", "mime"))
+        ):
+            return False
+        contract = context.get("review_contract", 1)
+        operation_contract = params.get("review_contract", 1)
+        if type(contract) is not int or type(operation_contract) is not int or operation_contract != contract:
+            return False
+        selected = review.get("best_version_id", current["version_id"])
+        if selected != target["version_id"]:
+            return False
+        if contract == 1:
+            # Contract 1 supplied only the current image, even if its version
+            # catalogue let the model name an unseen historical best.
+            return (
+                selected == current["version_id"]
+                and isinstance(current["data"], bytes)
+                and bool(current["data"])
+                and hashlib.sha256(current["data"]).hexdigest() == current["sha256"]
+                and current["mime"] in {"image/png", "image/jpeg", "image/webp"}
+            )
+        if contract != 2:
+            return False
+        snapshot = self.get_review_snapshot(space_id, scope, current["version_id"])
+        digest = hashlib.sha256(canonical_json(context).encode("utf-8")).hexdigest()
+        if (
+            snapshot is None
+            or snapshot["auth_version"] != space["auth_version"]
+            or snapshot["input_digest"] != digest
+            or params.get("input_digest") != digest
+            or canonical_json(snapshot["context"]) != canonical_json(context)
+        ):
+            return False
+        visible = self._validate_review_context(
+            space_id, scope, current["version_id"], context, check_best=False
+        )
+        return selected in visible
 
     def record_review(self, space_id, scope, *, version_id, request_id, review):
         if not isinstance(review, dict):

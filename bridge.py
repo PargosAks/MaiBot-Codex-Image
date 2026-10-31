@@ -1,5 +1,6 @@
 """MCP client. Only trusted plugin code constructs signed contexts."""
 
+from copy import deepcopy
 from datetime import timedelta
 from typing import Awaitable, Callable, Optional
 import base64
@@ -52,6 +53,67 @@ def _text(value, limit=200):
 
 def _digest(value):
     return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+
+def _reference_args(mode: str, prompt: str, source: Optional[dict], references: list) -> dict:
+    valid = (
+        type(mode) is str and mode in {"create", "edit"} and _text(prompt, 4000)
+        and type(references) is list and 1 <= len(references) <= 3
+    )
+    if valid and mode == "create":
+        valid = source is None
+    elif valid:
+        valid = (
+            type(source) is dict and source.keys() == {"job_id", "sha256"}
+            and _text(source["job_id"]) and _digest(source["sha256"])
+        )
+    if valid:
+        valid = all(
+            type(item) is dict and item.keys() == {"asset_id", "sha256", "role"}
+            and _text(item["asset_id"]) and _digest(item["sha256"])
+            and type(item["role"]) is str and item["role"] in {"character", "style", "composition", "palette"}
+            for item in references
+        )
+    if not valid:
+        raise BridgeError("INVALID_ARGUMENTS", kind="local")
+    return deepcopy(dict(mode=mode, prompt=prompt, source=source, references=references))
+
+
+def _reference_params(action: str, params: dict) -> Optional[dict]:
+    """Translate only the explicit frozen reference transport, never infer a fallback."""
+    if type(params) is not dict:
+        raise BridgeError("INVALID_ARGUMENTS", kind="local")
+    if not {"transport_operation", "reference_inputs", "reference_contract"}.intersection(params):
+        return None
+    expected = {"prompt", "reference_inputs", "transport_operation", "reference_contract"}
+    if action == "edit":
+        expected |= {"source_job_id", "source_sha256"}
+    if action not in {"submit", "edit"} or params.keys() != expected or params["transport_operation"] != "render":
+        raise BridgeError("INVALID_ARGUMENTS", kind="local")
+    if type(params["reference_contract"]) is not int or params["reference_contract"] != 1:
+        raise BridgeError("INVALID_ARGUMENTS", kind="local")
+    source = None if action == "submit" else {
+        "job_id": params["source_job_id"], "sha256": params["source_sha256"],
+    }
+    return _reference_args(
+        "create" if action == "submit" else "edit", params["prompt"], source, params["reference_inputs"],
+    )
+
+
+def _reference_digest(args: dict) -> str:
+    canonical = json.dumps({"operation": "render", **args}, ensure_ascii=True, sort_keys=True,
+                           separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _validate_asset(asset: dict) -> None:
+    if not (
+        type(asset) is dict and asset.keys() == {"asset_id", "sha256", "mime", "size_bytes"}
+        and _text(asset["asset_id"]) and _digest(asset["sha256"])
+        and type(asset["mime"]) is str and asset["mime"] in {"image/png", "image/jpeg", "image/webp"}
+        and type(asset["size_bytes"]) is int and 0 < asset["size_bytes"] <= 8 * 1024 * 1024
+    ):
+        raise BridgeError("INVALID_RESPONSE", kind="protocol")
 
 
 def _validate_job(job):
@@ -189,6 +251,83 @@ class Bridge:
         _validate_job(result["job"])
         return result
 
+    async def asset_register(
+        self, scope: dict, request_id: str, *, data: bytes, mime: str, expected_sha256: str,
+        before_dispatch: Optional[Callable[[], Awaitable[None]]] = None,
+    ) -> dict:
+        if not (
+            _text(request_id) and _digest(expected_sha256) and type(data) is bytes
+            and 0 < len(data) <= 8 * 1024 * 1024
+            and type(mime) is str and mime in {"image/png", "image/jpeg", "image/webp"}
+        ):
+            raise BridgeError("INVALID_ARGUMENTS", kind="local")
+        signatures = {
+            "image/png": data.startswith(b"\x89PNG\r\n\x1a\n"),
+            "image/jpeg": data.startswith(b"\xff\xd8\xff"),
+            "image/webp": data.startswith(b"RIFF") and data[8:12] == b"WEBP",
+        }
+        if hashlib.sha256(data).hexdigest() != expected_sha256 or not signatures[mime]:
+            raise BridgeError("INVALID_ARGUMENTS", kind="local")
+        if "reference_inputs_v1" not in await self.capabilities(scope):
+            raise BridgeError("REFERENCE_INPUTS_UNSUPPORTED", kind="capability")
+        args = dict(
+            request_id=request_id, sha256=expected_sha256, mime=mime,
+            image_base64=base64.b64encode(data).decode("ascii"),
+        )
+        if before_dispatch is not None:
+            await before_dispatch()
+        result = await self.call("asset_register", scope, args)
+        _validate_asset(result)
+        if (result["sha256"], result["mime"], result["size_bytes"]) != (expected_sha256, mime, len(data)):
+            raise BridgeError("RECEIPT_MISMATCH", kind="binding")
+        return result
+
+    async def asset_lookup(
+        self, scope: dict, request_id: str, *, expected_sha256: str, expected_mime: str, expected_size: int,
+    ) -> dict:
+        if not (
+            _text(request_id) and _digest(expected_sha256) and type(expected_mime) is str
+            and expected_mime in {"image/png", "image/jpeg", "image/webp"}
+            and type(expected_size) is int and 0 < expected_size <= 8 * 1024 * 1024
+        ):
+            raise BridgeError("INVALID_ARGUMENTS", kind="local")
+        # Recover an original registration independently of current drawing
+        # capability. An unsupported/missing read tool is still an error, never
+        # permission to register again.
+        result = await self.call("asset_lookup", scope, {"request_id": request_id})
+        if type(result) is not dict or type(result.get("found")) is not bool:
+            raise BridgeError("INVALID_RESPONSE", kind="protocol")
+        if result.keys() != ({"found", "asset"} if result["found"] else {"found"}):
+            raise BridgeError("INVALID_RESPONSE", kind="protocol")
+        if result["found"]:
+            _validate_asset(result["asset"])
+            asset = result["asset"]
+            if (asset["sha256"], asset["mime"], asset["size_bytes"]) != (
+                expected_sha256, expected_mime, expected_size,
+            ):
+                raise BridgeError("RECEIPT_MISMATCH", kind="binding")
+        return result
+
+    async def reference_render(
+        self, scope: dict, request_id: str, *, mode: str, prompt: str, source: Optional[dict], references: list,
+        before_dispatch: Optional[Callable[[], Awaitable[None]]] = None,
+    ) -> dict:
+        if not _text(request_id):
+            raise BridgeError("INVALID_ARGUMENTS", kind="local")
+        args = _reference_args(mode, prompt, source, references)
+        if "reference_inputs_v1" not in await self.capabilities(scope):
+            raise BridgeError("REFERENCE_INPUTS_UNSUPPORTED", kind="capability")
+        expected = _reference_digest(args)
+        if before_dispatch is not None:
+            await before_dispatch()
+        result = await self.call("render", scope, {"request_id": request_id, **args})
+        if type(result) is not dict or result.keys() != {"operation", "request_id", "request_digest", "job"}:
+            raise BridgeError("INVALID_RESPONSE", kind="protocol")
+        if (result["operation"], result["request_id"], result["request_digest"]) != ("render", request_id, expected):
+            raise BridgeError("RECEIPT_MISMATCH", kind="binding")
+        _validate_job(result["job"])
+        return result
+
     async def image(
         self, scope: dict, job_id: str, *, expected_sha256: str, expected_mime: str, expected_size: int
     ) -> dict:
@@ -247,7 +386,7 @@ class Bridge:
         if (
             not _text(request_id)
             or not isinstance(expected_operation, str)
-            or expected_operation not in {"submit", "edit"}
+            or expected_operation not in {"submit", "edit", "render"}
             or not _digest(expected_digest)
             or (expected_job_id is not None and not _text(expected_job_id))
         ):

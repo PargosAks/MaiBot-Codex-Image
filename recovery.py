@@ -9,7 +9,7 @@ import asyncio
 import json
 
 from .artist import render_digest
-from .bridge import Bridge, BridgeError
+from .bridge import Bridge, BridgeError, _reference_digest, _reference_params, _validate_job
 from .policy import Scope, StoreError
 from .store import ArtistStore
 
@@ -135,21 +135,36 @@ class ReadOnlyRecovery:
             raise StoreError("INVALID_STATE", "Only attempted render operations can be reconciled")
         try:
             frozen_scope = json.loads(operation["scope_snapshot"])
-            digest = render_digest(operation["action"], json.loads(operation["params_json"]))
+            params = json.loads(operation["params_json"])
+            reference = _reference_params(operation["action"], params)
+            remote_operation = "render" if reference is not None else operation["action"]
+            digest = (
+                _reference_digest(reference) if reference is not None else render_digest(operation["action"], params)
+            )
             result = await self.bridge.lookup(
                 frozen_scope,
                 operation["request_id"],
-                expected_operation=operation["action"],
+                expected_operation=remote_operation,
                 expected_digest=digest,
                 expected_job_id=operation["job_id"],
             )
+            if reference is not None:
+                if type(result) is not dict or type(result.get("found")) is not bool:
+                    raise BridgeError("INVALID_RESPONSE", kind="protocol")
+                expected = (
+                    {"found", "operation", "request_id", "request_digest", "job"} if result["found"] else {"found"}
+                )
+                if result.keys() != expected:
+                    raise BridgeError("INVALID_RESPONSE", kind="protocol")
+                if result["found"]:
+                    _validate_job(result["job"])
             if result.get("found") is False:
                 return await self._db(self._unknown, space_id, scope, request_id, "LOOKUP_NOT_FOUND")
             # Bridge performs the full schema check. Recheck the identity boundary
             # here before any local state change, even for an injected adapter.
             if (
                 result.get("found") is not True
-                or result.get("operation") != operation["action"]
+                or result.get("operation") != remote_operation
                 or result.get("request_id") != operation["request_id"]
                 or result.get("request_digest") != digest
             ):
