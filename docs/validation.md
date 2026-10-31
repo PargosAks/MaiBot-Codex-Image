@@ -1,5 +1,21 @@
 # 验证记录
 
+## 小画师阶段 6 / 插件 0.8.0
+
+2026-10-31，插件基线 `75fce22435713629034cb64f43850aa064dd1ac3`。固定公开 Host 源码 `062d45cf8bd4272ac57d7ec03fcf405e5a458211`，独立 MCP `9abea675f0d770afbfe4c34bd0495c805dcfdc1c` 均未修改。Windows、CPython 3.13.18、SDK 2.16.0、MCP 1.30.0、pytest 9.1.1、Pillow 12.3.0、httpx 0.28.1；另显式加载公开 SDK 2.17.0 的真实 PluginContext 验证能力调用，测试后恢复模块，不改安装环境。
+
+修复后的主线完整回归 **591 passed（35.94s）**，显式包含全部 16 项独立 MCP 联调、17 项 Host 完整链及 SDK 2.17 / Host 公共解析器检查，无跳过项。主线 Host/发送/生命周期组合 **138 passed（11.70s）**。Ruff `E4,E7,E9,F`、配置示例/manifest/项目版本/锁文件一致性和 `git diff --check` 通过。报告在忽略目录 `dist/validation/stage6-all-main-02.xml` 与 `stage6-host-main-04.xml`。
+
+Host 链路从固定公开 `ChatBot.receive_message` 执行，经消息序列化、真实 HookDispatcher、Runner 的 Hook 调用、SDK PluginContext、Host CapabilityService 与授权管理，到插件状态机、模拟绘图/原图编辑、脚本模型和模拟发送。只提取执行所需公共方法，外围消息处理、会话查询、RPC 传输和外部效果为合成替身，不引导整套 MaiBot、不读取实际配置或登录。覆盖私聊/群聊、无人时段、独立分享、撤权、重载、未知发送和畸形回执；不代表真实平台接入、最终 Maisaka 接收、模型质量或聊天收图验收。
+
+联调与审查发现并修复：旧 `ON_MESSAGE` 主链已停用，改用真实 `chat.receive.after_process` 观察 Hook；SDK 聊天解包与发送/模型归一化会隐藏原始回执，改用公开原始 `cap.call`；Host 可能把传输异常折叠为 false，因此模型/发送失败布尔值保留未知占用，只有明确的能力拒绝可确认未派发；配置回调可能等待命令锁，现于等待锁前停止自主 worker。命令和自主发送共用严格回执检查，重复取消也等待发送账本线程结束。
+
+独立审查 **PASS**，绑定 `dist/validation/stage6-review-02` 的 58 文件快照，清单 SHA256 `6a78636fe07585b8d103c7fd885f0ecf8f90f73f55fe7f8b36662e2039e6be34`，审查前后哈希一致。独立实际运行 **141 项定向测试（包含 17 项 Host 链路）＋4 个原阻塞探针全部通过**；探针仅更换快照和固定公开 Host 来源，不弱化断言。首轮 4 个探针复现了模型/发送异常被折叠后误作已知失败，以及等命令锁期间旧 worker 仍运行三类阻塞，最终均已修复。报告位于忽略目录 `dist/validation/reviewer-stage6-889f3eec0b4644bd822b7332ca0ea4b8/review-result.json`。之后仅补记本验证文档，代码、测试、配置与其他文档均按最终快照核对。
+
+主线另运行实际 Host 能力撤销探针 **1 passed**（`stage6-actual-denial-01.xml`）：当前 Runner 若把结构化拒绝折叠为无代码异常，插件保守记为 unknown、保留占用且不进入模型/发送处理器。不能通过解析错误文本冒充确定的拒绝。插件白名单包 31 文件，归档与源码逐字节一致，文档相对链接有效，不包含服务、测试、配置密钥或运行状态。
+
+自主开关与持续委托默认关闭、预算默认零。未修改 MaiBot 本体或独立 MCP，未部署、调用真实模型/绘图或向真实聊天发送；用户验收未执行。
+
 ## 小画师阶段 5
 
 2026-10-31，插件基线 `08c06ab`；配套独立 MCP 固定 `9abea67`，本轮未修改服务。Windows、CPython 3.13.18、SDK 2.16.0、MCP 1.30.0、pytest 9.1.1；跨仓库测试解释器另有 Pillow 12.3.0。没有变更依赖、安装环境或生产配置。

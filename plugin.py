@@ -3,16 +3,22 @@
 from pathlib import Path
 import asyncio
 import hashlib
+import logging
 import re
 
-from maibot_sdk import Command, Field, MaiBotPlugin, PluginConfigBase
+from maibot_sdk import Command, HookHandler, Field, MaiBotPlugin, PluginConfigBase
+from maibot_sdk.types import HookMode
 
 from .bridge import Bridge
 from .delivery import Deliveries
+from .host_runtime import Autonomy, HostRuntime, joined
+from .rendering import MCPRenderer
+
+logger = logging.getLogger(__name__)
 
 
 class PluginSection(PluginConfigBase):
-    config_version: str = "0.7.0"
+    config_version: str = "0.8.0"
     enabled: bool = True
 
 
@@ -33,6 +39,7 @@ class Connection(PluginConfigBase):
 class Config(PluginConfigBase):
     plugin: PluginSection = Field(default_factory=PluginSection)
     connection: Connection = Field(default_factory=Connection)
+    autonomy: Autonomy = Field(default_factory=Autonomy)
 
 
 def trusted_identity(kwargs: dict) -> tuple[dict, str]:
@@ -75,6 +82,7 @@ class CodexImagePlugin(MaiBotPlugin):
         self.startup_error = ""
         self.lifecycle = asyncio.Lock()
         self.watchers: dict[str, asyncio.Task] = {}
+        self.artist_runtime = None
 
     async def on_load(self):
         async with self.lifecycle:
@@ -85,25 +93,54 @@ class CodexImagePlugin(MaiBotPlugin):
             return
         cfg = self.config.connection
         self.startup_error = ""
+        connection_error = ""
         try:
             if self.config.plugin.enabled and cfg.allowed_users:
-                self.bridge = Bridge(cfg.url, cfg.secret)
-            self.journal = await asyncio.to_thread(
-                Deliveries, Path(self.ctx.paths.data_dir) / "delivery.sqlite3"
-            )
+                try:
+                    self.bridge = Bridge(cfg.url, cfg.secret)
+                except ValueError as exc:
+                    # Still reconcile revoked delegations even when a connection
+                    # edit is invalid. No worker can start without a Bridge.
+                    connection_error = str(exc)
+            await joined(self._open_journal())
+            self.artist_runtime = HostRuntime(self)
+            await self.artist_runtime.start()
+            if connection_error:
+                raise ValueError(connection_error)
         except ValueError as exc:
             # Keep configuration and the diagnostic command available for first-time setup.
-            self.startup_error = str(exc)
+            self.startup_error = connection_error or str(exc)
             await self._unload()
         except BaseException:
             await self._unload()
             raise
 
     async def on_unload(self):
+        self._stop_artist_workers()
         async with self.lifecycle:
             await self._unload()
 
+    async def _open_journal(self):
+        self.journal = await asyncio.to_thread(
+            Deliveries, Path(self.ctx.paths.data_dir) / "delivery.sqlite3"
+        )
+
+    def _stop_artist_workers(self):
+        # A command may hold lifecycle while awaiting MCP. Config is already
+        # replaced by SDK: stop autonomous dispatch before waiting for that lock.
+        if self.artist_runtime is not None:
+            self.artist_runtime.stopping = True
+            for task in self.artist_runtime.tasks.values():
+                task.cancel()
+
     async def _unload(self):
+        self._stop_artist_workers()
+        await joined(self._cleanup())
+
+    async def _cleanup(self):
+        if self.artist_runtime is not None:
+            await self.artist_runtime.close()
+            self.artist_runtime = None
         tasks = list(self.watchers.values())
         for task in tasks:
             task.cancel()
@@ -116,9 +153,31 @@ class CodexImagePlugin(MaiBotPlugin):
 
     async def on_config_update(self, scope, config_data, version):
         del scope, config_data, version
+        self._stop_artist_workers()
         async with self.lifecycle:
             await self._unload()
             await self._load()
+
+    def _artist_renderer(self, store, space_id, scope, binding_id):
+        return MCPRenderer(store, space_id, scope, self.bridge, binding_id=binding_id)
+
+    @HookHandler(
+        "chat.receive.after_process",
+        name="codex_image_artist_chat",
+        description="从受委托聊天积累绘画灵感，不拦截消息",
+        mode=HookMode.OBSERVE,
+    )
+    async def artist_chat(self, **kwargs):
+        async with self.lifecycle:
+            if not self.config.plugin.enabled or not self.config.autonomy.enabled or self.artist_runtime is None:
+                return None
+            try:
+                scope, message_id = trusted_identity(kwargs)
+                await self.artist_runtime.on_chat(scope, message_id, kwargs.get("message"))
+            except ValueError as exc:
+                # Rejected context must not interrupt MaiBot's normal chat flow.
+                logger.warning("Artist ignored Host message: %s", getattr(exc, "code", "IDENTITY_INVALID"))
+        return None
 
     @Command(
         "codex_image_command",
@@ -220,31 +279,26 @@ class CodexImagePlugin(MaiBotPlugin):
                 pass
 
     async def _deliver(self, scope, job, manual=False):
+        from .host_adapters import send_image_receipt
+
         image = await self.bridge.call("result", scope, {"job_id": job})
-        if not await asyncio.to_thread(self.journal.begin, job, manual):
+        if not await joined(asyncio.to_thread(self.journal.begin, job, manual)):
             raise ValueError("图片已处理或发送结果未知，请先检查聊天记录。")
         try:
-            result = await self.ctx.send.image(
-                image, scope["stream_id"], return_details=True
-            )
-            if isinstance(result, dict) and isinstance(result.get("sent"), bool):
-                state = "sent" if result["sent"] else "send_failed"
-            elif isinstance(result, bool):
-                state = "sent" if result else "send_failed"
-            else:
-                state = "send_unknown"
-            await asyncio.to_thread(self.journal.finish, job, state)
+            result = await send_image_receipt(self.ctx, image, scope["stream_id"])
+            state = "sent" if result else "send_failed"
+            await joined(asyncio.to_thread(self.journal.finish, job, state))
             if state != "sent":
                 raise ValueError("图片已生成，但未确认发送成功；不会重新生成。")
         except BaseException as exc:
             # Host authorization rejection occurs before invoking the send handler.
             # Other errors can have an unknown external outcome and remain locked.
             if getattr(exc, "code", None) == "E_CAPABILITY_DENIED":
-                await asyncio.shield(
+                await joined(
                     asyncio.to_thread(self.journal.finish, job, "send_failed")
                 )
             # Preserve a known failure; convert a still-pending intent to unknown.
-            await asyncio.shield(asyncio.to_thread(self._mark_uncertain, job))
+            await joined(asyncio.to_thread(self._mark_uncertain, job))
             raise
 
     def _mark_uncertain(self, job):

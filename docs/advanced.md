@@ -2,9 +2,9 @@
 
 ## 插件与服务边界
 
-插件 **0.7.0** 兼容独立 MCP **0.5.0**，保留协议、配置字段与发送库。插件提交、查询和取图发送，服务负责 Codex、登录、队列、任务、产物与 `state`。本仓库不提供新的独立 MCP 仓库地址或服务安装器。
+插件 **0.8.0** 原命令兼容独立 MCP **0.5.0**，保留原协议与发送库；自主创作另需 `lookup_v1` / `edit_v1`。插件提交、查询和取图发送，服务负责 Codex、登录、队列、任务、产物与 `state`。本仓库不提供新的独立 MCP 仓库地址或服务安装器。
 
-配置包含 `plugin.enabled/config_version` 和 `connection.url/secret/allowed_users/poll_seconds/watch_seconds`，不增加 `service.mode` 或插件 `codex.*`。白名单由插件面板维护，不要求服务另建名单；连接鉴权与任务归属校验继续生效。
+配置包含 `plugin.enabled/config_version`、`connection.url/secret/allowed_users/poll_seconds/watch_seconds` 和默认关闭的 `autonomy`，不增加 `service.mode` 或插件 `codex.*`。白名单由插件面板维护，不要求服务另建名单；连接鉴权与任务归属校验继续生效。
 
 ## 配置约束
 
@@ -40,3 +40,5 @@ Docker bridge 的 localhost 属于容器自身。核对实际 URL、监听、路
 发送前写入 `sending`，加载时遗留 `sending` 转为 `send_unknown`，两者均不能自动或手动重发。`sent/send_failed` 仅在手动路径按原规则发送原图，不创建新生成。
 
 绘图超时、`outcome_unknown` 或发送未知时，先查原任务与实际聊天记录，由维护者核对；不删发送库或换任务编号绕过保护。健康检查、任务完成、发送确认与聊天收图分别验证。
+
+自主创作默认关闭；如需了解持续委托、预算、Host 能力、模型任务和失败恢复，见 [阶段 6](implementation-stage-6.md)。MCP 0.5.0 的命令兼容性不等于具备自主创作所需的 `lookup_v1` / `edit_v1`。

@@ -18,7 +18,7 @@ def inspect_plugin_bundle(destination):
     outputs = bundle.build(destination)
     assert len(outputs) == 1
     output, digest = outputs[0]
-    assert output.name == "MaiBot-Codex-Image-plugin-v0.7.0.zip"
+    assert output.name == "MaiBot-Codex-Image-plugin-v0.8.0.zip"
     assert hashlib.sha256(output.read_bytes()).hexdigest() == digest
     with zipfile.ZipFile(output) as archive:
         names = set(archive.namelist())
@@ -27,6 +27,7 @@ def inspect_plugin_bundle(destination):
             "recovery.py", "docs/implementation-stage-3.md",
             "editing.py", "docs/implementation-stage-4.md",
             "rendering.py", "docs/implementation-stage-5.md",
+            "host_runtime.py", "host_adapters.py", "docs/implementation-stage-6.md",
             "config.example.toml", "_manifest.json", "docs/artist-design.md",
             "docs/artist-stage-0.md", "docs/implementation-stage-1.md", "docs/implementation-stage-2.md",
         } <= names
@@ -41,14 +42,14 @@ def inspect_plugin_bundle(destination):
             "setup.sh",
         }
         manifest = json.loads(archive.read("_manifest.json"))
-        assert manifest["version"] == "0.7.0"
+        assert manifest["version"] == "0.8.0"
         assert {x["name"] for x in manifest["dependencies"]} == {"httpx", "mcp"}
     assert (destination / "SHA256SUMS").read_text(encoding="ascii") == f"{digest}  {output.name}\n"
     return output, names
 
 
 def test_plugin_only_config_and_single_bundle(tmp_path):
-    assert set(Config.model_fields) == {"plugin", "connection"}
+    assert set(Config.model_fields) == {"plugin", "connection", "autonomy"}
     inspect_plugin_bundle(tmp_path / "dist")
 
 

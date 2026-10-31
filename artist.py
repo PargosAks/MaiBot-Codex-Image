@@ -1,8 +1,4 @@
-"""Explicit artist runtime with opt-in MCP rendering and simulated delivery.
-
-The Host integration is intentionally not activated by plugin.py. A trusted
-adapter supplies the space/scope; models supply creative suggestions only.
-"""
+"""Artist state machine; Host adapters explicitly opt into external effects."""
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -76,13 +72,16 @@ class Artist:
         idle_seconds: int = 300,
         timeout_seconds: float = 30,
         allow_network_renderer: bool = False,
+        allow_host_sender: bool = False,
     ):
-        if type(allow_network_renderer) is not bool:
+        if type(allow_network_renderer) is not bool or type(allow_host_sender) is not bool:
             raise StoreError("INVALID_ARGUMENT", "Network rendering requires an explicit boolean opt-in")
-        if (renderer.simulation is not True and not allow_network_renderer) or sender.simulation is not True:
+        if (renderer.simulation is not True and not allow_network_renderer) or (
+            sender.simulation is not True and not allow_host_sender
+        ):
             raise StoreError(
                 "SIMULATION_REQUIRED",
-                "Use simulated drawing unless explicitly opted in; sending must remain simulated",
+                "Use simulated drawing and sending unless each is explicitly opted in",
             )
         if type(idle_seconds) is not int or not 60 <= idle_seconds <= 86400:
             raise StoreError("INVALID_ARGUMENT", "idle_seconds must be 60..86400")
@@ -159,7 +158,7 @@ class Artist:
         return await self.run_once()
 
     async def serve(self, stop: asyncio.Event) -> None:
-        """Opt-in scheduler; never started during plugin import or load."""
+        """Standalone opt-in scheduler; HostRuntime owns plugin workers instead."""
         while not stop.is_set():
             await self.tick()
             try:
@@ -717,6 +716,6 @@ class Artist:
             "settle",
             request_id,
             outcome="succeeded" if result else "failed",
-            evidence="Simulated send receipt",
+            evidence="Sender confirmed receipt",
         )
         return {"state": "shared" if result else "share_failed"}

@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "id": "pargosaks.maibot-codex-image",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "name": "Codex 订阅绘图",
   "description": "连接独立部署的 Codex 绘图 MCP 服务，并将图片发回聊天",
   "author": {"name": "PargosAks / OpenAI Codex", "url": "https://github.com/PargosAks"},
@@ -13,7 +13,7 @@
     {"type": "python_package", "name": "httpx", "version_spec": ">=0.28,<1"},
     {"type": "python_package", "name": "mcp", "version_spec": ">=1.28.1,<2"}
   ],
-  "capabilities": ["send.text", "send.image"],
+  "capabilities": ["send.text", "send.image", "llm.generate", "chat.get_stream_by_user_id", "chat.get_stream_by_group_id"],
   "i18n": {"default_locale": "zh-CN"}
 }
 

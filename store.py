@@ -195,6 +195,11 @@ class ArtistStore:
         with self.lock:
             return dict(self._space(space_id, scope))
 
+    def configured_spaces(self) -> list[dict]:
+        """Trusted Host administration only, for reconciling removed delegations."""
+        with self.lock:
+            return [dict(row) for row in self.db.execute("SELECT * FROM spaces ORDER BY space_id")]
+
     def grant(self, space_id: str, scope: Scope, delegation: Delegation) -> int:
         if not isinstance(delegation, Delegation):
             raise StoreError("AUTH_REQUIRED", "An explicit delegation record is required")

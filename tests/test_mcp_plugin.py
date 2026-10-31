@@ -219,9 +219,47 @@ async def plugin_instance(tmp_path, url, fail=False):
         }
     )
     sender = Sender(fail)
-    plugin._set_context(SimpleNamespace(send=sender, paths=SimpleNamespace(data_dir=tmp_path)))
+
+    async def raw_capability(method, *, payload, **kwargs):
+        assert method == "cap.call" and payload["capability"] == "send.image"
+        args = payload["args"]
+        return await sender.image(args["image_base64"], args["stream_id"], return_details=args["return_details"])
+
+    plugin._set_context(SimpleNamespace(send=sender, call_host_method=raw_capability,
+                                       paths=SimpleNamespace(data_dir=tmp_path)))
     await plugin.on_load()
     return plugin, sender
+
+
+@pytest.mark.parametrize("receipt", [
+    {"success": False, "sent": False, "error": "synthetic lost acknowledgement"},
+    {"success": False, "sent": False},
+    {"success": True},
+    {"success": True, "sent": "false"},
+    {"success": False, "sent": True},
+])
+async def test_command_delivery_keeps_raw_ambiguous_receipts_locked(tmp_path, receipt):
+    plugin, _ = await plugin_instance(tmp_path, "http://127.0.0.1:9/mcp")
+    calls = []
+
+    async def raw_capability(method, *, payload, **kwargs):
+        calls.append(payload)
+        return receipt
+
+    async def result(*args):
+        return base64.b64encode(PNG).decode()
+
+    plugin.ctx.call_host_method = raw_capability
+    plugin.bridge = SimpleNamespace(call=result)
+    try:
+        with pytest.raises(ValueError):
+            await plugin._deliver(SCOPE, "synthetic-original")
+        assert plugin.journal.db.execute("SELECT state FROM delivery").fetchone()[0] == "send_unknown"
+        with pytest.raises(ValueError):
+            await plugin._deliver(SCOPE, "synthetic-original", manual=True)
+        assert len(calls) == 1
+    finally:
+        await plugin.on_unload()
 
 
 async def test_plugin_command_to_mcp_to_image(mcp_protocol_fixture, tmp_path):

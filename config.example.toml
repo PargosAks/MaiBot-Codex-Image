@@ -1,5 +1,5 @@
 [plugin]
-config_version = "0.7.0"
+config_version = "0.8.0"
 enabled = true
 
 [connection]
@@ -8,4 +8,26 @@ secret = "" # Same secret as the host MCP service; at least 32 characters.
 allowed_users = [] # Add actual platform:user_id, e.g. qq:123456; empty denies everyone.
 poll_seconds = 2
 watch_seconds = 360
+
+[autonomy]
+enabled = false # Opt-in only: enabling can use model/render quotas and share images.
+spaces = [] # Configure explicit continuous delegations through the Host panel.
+tick_seconds = 5
+idle_seconds = 300
+timeout_seconds = 30
+persona = "热爱观察与绘画的小画师"
+plan_task = "utils"
+review_task = "vlm" # Must be a Host task with actual image-input support.
+
+[autonomy.global_limits]
+think = 0
+render = 0
+share = 0
+max_inflight = 0
+max_revisions = 0
+
+# Each spaces entry uses space_id, platform, user_id (delegator), stream_id
+# (existing Host session), group_id (empty for private), continuous=false,
+# consent_ref, and limits with the same five fields as global_limits.
+# See docs/implementation-stage-6.md. All budgets default to zero.
 
