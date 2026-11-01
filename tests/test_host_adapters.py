@@ -551,7 +551,8 @@ async def test_real_plugin_context_send_preserves_raw_boolean_receipt(sender_sta
     _, journal, version = sender_state
     calls = []
 
-    async def rpc(method, plugin_id, payload):
+    async def rpc(method, plugin_id, payload, timeout_ms=None):
+        assert timeout_ms == 240000
         calls.append((method, plugin_id, payload))
         assert delivery_state(journal) == "sending"
         return receipt
@@ -597,7 +598,8 @@ async def test_real_plugin_context_malformed_or_swallowed_error_stays_unknown(se
     _, journal, version = sender_state
     calls = []
 
-    async def rpc(method, plugin_id, payload):
+    async def rpc(method, plugin_id, payload, timeout_ms=None):
+        assert timeout_ms == 240000
         calls.append(payload)
         return receipt
 
@@ -618,7 +620,7 @@ async def test_real_plugin_context_send_exception_certainty(sender_state, denied
     _, journal, version = sender_state
     failure = Denied("private denial") if denied else TimeoutError("private lost reply")
 
-    async def rpc(*args):
+    async def rpc(*args, **kwargs):
         raise failure
 
     ctx = PluginContext("isolated-test", rpc_call=rpc)
@@ -666,7 +668,7 @@ async def test_real_plugin_context_llm_keeps_original_success_type_and_error(rec
 async def test_shared_send_helper_preserves_capability_denial_for_caller():
     failure = Denied("synthetic rejection")
 
-    async def rpc(*args):
+    async def rpc(*args, **kwargs):
         raise failure
 
     ctx = PluginContext("isolated-test", rpc_call=rpc)

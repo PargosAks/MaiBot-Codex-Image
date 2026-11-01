@@ -1,5 +1,5 @@
 [plugin]
-config_version = "0.9.1"
+config_version = "0.9.2"
 enabled = true
 
 [connection]
@@ -8,6 +8,7 @@ secret = "" # Same secret as the host MCP service; at least 32 characters.
 allowed_users = [] # Add actual platform:user_id, e.g. qq:123456; empty denies everyone.
 poll_seconds = 2
 watch_seconds = 360
+send_timeout_seconds = 240.0 # Host image-send RPC wait; >0 and <=600, separate from model timeout.
 
 [autonomy]
 enabled = false # Opt-in only: enabling can use model/render quotas and share images.

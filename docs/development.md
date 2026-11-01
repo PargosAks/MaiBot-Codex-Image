@@ -55,6 +55,8 @@ uv run --locked python scripts/build_bundle.py
 
 ## Host 自主链路
 
+图片发送等待的回归见 `tests/test_send_timeout.py`：通过真实 SDK、公开 Host RPC bridge 的 AST 与临时 SQLite，模拟慢上传、取消和迟到回执。模型等待与发送等待独立；未知操作的发送锁和预算保持不变。`tests/test_snowluma_timeout.py` 是可选公开源码测试：设置 `CODEX_IMAGE_TEST_SNOWLUMA_SOURCE` 指向只含公开源码快照的目录，其中需有 `adapter_transport.py`（Snowluma adapter 1.1.9 的 `transport.py`）及 `host_component_timeout.py`（MaiBot 1.3.15）。测试只提取动作等待/echo 解析函数及超时解析器，替换 websocket、网关传输和上传，不导入插件启动入口，不读取配置、密钥或生产数据库；时间按 100:1 缩放。这不能替代 VPS 部署与 QQ 真实发送验收。
+
 保留已有计划、旧授权与累计额度的维护边界见 [等待恢复](retained-plan-recovery.md)。对应回归为 `tests/test_planned_wait_restore.py`，包括实际 SQLite 状态、正常等待与未知操作拒绝，以及模拟创作、细化、分享和 Host 生命周期。
 
 阶段 6 的 `host_runtime.py` / `host_adapters.py` 对接实际命名 Hook 与 SDK 能力。Host 公共源码定位和严格隔离的验证方法见 [阶段 6](implementation-stage-6.md)。测试入口为 `tests/test_host_lifecycle.py`、`tests/test_host_adapters.py`、`tests/test_host_integration.py`；没有真实模型、绘图或发送。

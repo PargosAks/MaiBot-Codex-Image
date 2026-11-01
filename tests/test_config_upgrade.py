@@ -139,3 +139,18 @@ def test_declared_float_defaults_keep_the_same_numbers():
     for section, key, value in FIELDS:
         assert type(defaults[section][key]) is float
         assert defaults[section][key] == value
+
+
+@pytest.mark.parametrize("configured", [None, 217, 217.5])
+def test_send_timeout_upgrade_preserves_old_config_and_budgets(overlay, configured):
+    old = old_config()
+    old["connection"].pop("send_timeout_seconds")
+    if configured is not None:
+        old["connection"]["send_timeout_seconds"] = configured
+    before = deepcopy(old)
+    target = Config().model_dump()
+    overlay(target, old)
+    expected = deepcopy(old)
+    expected["plugin"]["config_version"] = target["plugin"]["config_version"]
+    expected["connection"]["send_timeout_seconds"] = 240.0 if configured is None else configured
+    assert target == expected and old == before

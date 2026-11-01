@@ -148,6 +148,7 @@ async def test_runtime_wires_configured_timeout_to_artist_and_host_adapter(tmp_p
         autonomy['timeout_seconds'] = timeout
     plugin.set_plugin_config({'plugin': plugin.get_default_config()['plugin'],
                               'connection': {'url': 'http://127.0.0.1:9/mcp', 'secret': 's' * 32,
+                                            'send_timeout_seconds': 217.5,
                                             'allowed_users': [SCOPE.platform + ':' + SCOPE.user_id]},
                               'autonomy': autonomy})
     plugin._set_context(SimpleNamespace(paths=SimpleNamespace(data_dir=tmp_path), call_host_method=host_method))
@@ -158,6 +159,7 @@ async def test_runtime_wires_configured_timeout_to_artist_and_host_adapter(tmp_p
         adapter = artist.thinking.generate
         expected = 30 if timeout is None else timeout
         assert artist.timeout == expected and adapter.timeout_ms == math.ceil(expected * 1000)
+        assert artist.send_timeout_seconds == 217.5 and artist.sender.timeout_seconds == 217.5
         assert adapter.max_tokens is None
     finally:
         await plugin.on_unload()

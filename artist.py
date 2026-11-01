@@ -6,6 +6,7 @@ from typing import Optional, Protocol
 import asyncio
 import hashlib
 import json
+import math
 import re
 import uuid
 
@@ -84,6 +85,7 @@ class Artist:
         persona: str = "热爱观察与绘画的小画师",
         idle_seconds: int = 300,
         timeout_seconds: float = 30,
+        send_timeout_seconds: float = 240.0,
         allow_network_renderer: bool = False,
         allow_host_sender: bool = False,
         reference_inputs: bool = False,
@@ -105,9 +107,13 @@ class Artist:
             raise StoreError("INVALID_ARGUMENT", "Invalid timeout")
         if not 0 < timeout_seconds <= 300:
             raise StoreError("INVALID_ARGUMENT", "timeout_seconds must be positive and at most 300")
+        if (isinstance(send_timeout_seconds, bool) or not isinstance(send_timeout_seconds, (float, int))
+                or not 0 < send_timeout_seconds <= 600 or not math.isfinite(send_timeout_seconds)):
+            raise StoreError("INVALID_ARGUMENT", "send_timeout_seconds must be finite, positive and at most 600")
         self.store, self.space_id, self.scope = store, space_id, scope
         self.thinking, self.renderer, self.sender = thinking, renderer, sender
         self.persona, self.idle_seconds, self.timeout = persona, idle_seconds, timeout_seconds
+        self.send_timeout_seconds = send_timeout_seconds
         self.reference_inputs = reference_inputs
         self.lock = asyncio.Lock()
 
@@ -849,7 +855,11 @@ class Artist:
             return {"state": "share_recorded", "outcome": operation["state"]}
         await self._db("mark_submitting", request_id)
         try:
-            result = await asyncio.wait_for(self.sender.send(scope=self.scope, version=version), self.timeout)
+            # Let the Host RPC wait expire first, leaving time to persist its
+            # uncertain receipt before the Artist's outer cancellation runs.
+            result = await asyncio.wait_for(
+                self.sender.send(scope=self.scope, version=version), self.send_timeout_seconds + 5
+            )
         except BaseException as exc:
             await self._db("mark_unknown", request_id, reason="SEND_UNCONFIRMED")
             if isinstance(exc, asyncio.CancelledError):

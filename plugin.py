@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 class PluginSection(PluginConfigBase):
-    config_version: str = "0.9.1"
+    config_version: str = "0.9.2"
     enabled: bool = True
 
 
@@ -34,6 +34,8 @@ class Connection(PluginConfigBase):
     )
     poll_seconds: float = Field(default=2.0, ge=0.1, le=30)
     watch_seconds: float = Field(default=360.0, ge=1, le=3600)
+    send_timeout_seconds: float = Field(default=240.0, gt=0, le=600, strict=True,
+                                       description="图片发送的 Host RPC 等待秒数；独立于模型超时")
 
 
 class Config(PluginConfigBase):
@@ -184,6 +186,8 @@ class CodexImagePlugin(MaiBotPlugin):
         description="订阅绘图、状态查询和取图",
         pattern=r"^/(?P<action>画图|画图状态|重发画图|画图诊断)(?:\s+(?P<arg>[\s\S]+))?$",
         permission="operator",
+        # Covers the maximum 600s send plus MCP lookup and final text receipt.
+        timeout_ms=720000,
     )
     async def command(self, **kwargs):
         async with self.lifecycle:
@@ -257,8 +261,7 @@ class CodexImagePlugin(MaiBotPlugin):
                 while True:
                     result = await self.bridge.call("status", scope, {"job_id": job})
                     if result["artifacts"]:
-                        await self._deliver(scope, job)
-                        return
+                        break
                     if result["status"] in {"failed", "outcome_unknown"}:
                         await self.ctx.send.text(
                             f"绘图任务 {job}：{result['status']}，不会自动重画。",
@@ -266,6 +269,9 @@ class CodexImagePlugin(MaiBotPlugin):
                         )
                         return
                     await asyncio.sleep(self.config.connection.poll_seconds)
+            # The drawing watch deadline must not cancel an upload that starts
+            # near its end. Sending owns its separate bounded RPC wait.
+            await self._deliver(scope, job)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -285,7 +291,10 @@ class CodexImagePlugin(MaiBotPlugin):
         if not await joined(asyncio.to_thread(self.journal.begin, job, manual)):
             raise ValueError("图片已处理或发送结果未知，请先检查聊天记录。")
         try:
-            result = await send_image_receipt(self.ctx, image, scope["stream_id"])
+            result = await send_image_receipt(
+                self.ctx, image, scope["stream_id"],
+                timeout_seconds=self.config.connection.send_timeout_seconds,
+            )
             state = "sent" if result else "send_failed"
             await joined(asyncio.to_thread(self.journal.finish, job, state))
             if state != "sent":

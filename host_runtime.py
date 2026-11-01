@@ -210,8 +210,10 @@ class HostRuntime:
                 Thinking(HostThinking(plugin.ctx, plan_task=cfg.plan_task, review_task=cfg.review_task,
                                       timeout_seconds=cfg.timeout_seconds)),
                 plugin._artist_renderer(self.store, item.space_id, scope, binding),
-                HostSender(plugin.ctx, plugin.journal, store=self.store, space_id=item.space_id, scope=scope),
+                HostSender(plugin.ctx, plugin.journal, store=self.store, space_id=item.space_id, scope=scope,
+                           timeout_seconds=plugin.config.connection.send_timeout_seconds),
                 persona=cfg.persona, idle_seconds=cfg.idle_seconds, timeout_seconds=cfg.timeout_seconds,
+                send_timeout_seconds=plugin.config.connection.send_timeout_seconds,
                 allow_network_renderer=True, allow_host_sender=True,
                 reference_inputs=item.reference_inputs,
             )

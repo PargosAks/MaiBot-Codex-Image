@@ -177,12 +177,17 @@ class HostThinking:
         return await ReadOnlyRecovery._db(_json_response, result.get("response"))
 
 
-async def send_image_receipt(ctx, image_base64: str, stream_id: str) -> bool:
+async def send_image_receipt(
+    ctx, image_base64: str, stream_id: str, *, timeout_seconds: float = 240.0
+) -> bool:
     """Send to a trusted caller's target and validate the uncoerced Host receipt.
 
     The caller owns persistent intent and failure classification. Capability
     denial, transport exceptions and cancellation propagate without rewriting.
     """
+    if (isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
+            or not 0 < timeout_seconds <= 600 or not math.isfinite(timeout_seconds)):
+        raise StoreError("INVALID_ARGUMENT", "timeout_seconds must be finite, positive and at most 600")
     # SDK send.image coerces sent with bool() and falls back to success. The
     # public raw capability API preserves malformed and contradictory receipts.
     result = await ctx.call_host_method(
@@ -195,6 +200,8 @@ async def send_image_receipt(ctx, image_base64: str, stream_id: str) -> bool:
                 "return_details": True,
             },
         },
+        # Image uploads can outlast the Runner's default 30-second RPC wait.
+        timeout_ms=math.ceil(timeout_seconds * 1000),
     )
     sent = result.get("sent") if isinstance(result, dict) else result
     if (
@@ -216,11 +223,16 @@ async def send_image_receipt(ctx, image_base64: str, stream_id: str) -> bool:
 class HostSender:
     simulation = False
 
-    def __init__(self, ctx, deliveries: Deliveries, *, store: ArtistStore, space_id: str, scope: Scope):
+    def __init__(self, ctx, deliveries: Deliveries, *, store: ArtistStore, space_id: str, scope: Scope,
+                 timeout_seconds: float = 240.0):
         if not isinstance(scope, Scope):
             raise StoreError("INVALID_SCOPE", "A trusted Host scope is required")
+        if (isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
+                or not 0 < timeout_seconds <= 600 or not math.isfinite(timeout_seconds)):
+            raise StoreError("INVALID_ARGUMENT", "timeout_seconds must be finite, positive and at most 600")
         self.ctx, self.store, self.space_id, self.scope = ctx, store, space_id, scope
         self.deliveries = deliveries
+        self.timeout_seconds = timeout_seconds
 
     def _version(self, scope, version):
         if not isinstance(scope, Scope) or scope != self.scope:
@@ -277,7 +289,9 @@ class HostSender:
             # Acquiring a delivery intent may wait behind SQLite. Recheck the
             # latest delegation/budget before calling the Host capability.
             await ReadOnlyRecovery._db(self._version, scope, version)
-            sent = await send_image_receipt(self.ctx, encoded, self.scope.stream_id)
+            sent = await send_image_receipt(
+                self.ctx, encoded, self.scope.stream_id, timeout_seconds=self.timeout_seconds
+            )
             await ReadOnlyRecovery._db(self._finish, claim, "sent" if sent else "send_failed")
             return sent
         except asyncio.CancelledError:
