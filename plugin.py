@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 class PluginSection(PluginConfigBase):
-    config_version: str = "0.9.0"
+    config_version: str = "0.9.1"
     enabled: bool = True
 
 
@@ -32,8 +32,8 @@ class Connection(PluginConfigBase):
     allowed_users: list[str] = Field(
         default_factory=list, description="允许用户，如 qq:123456；空列表拒绝所有人"
     )
-    poll_seconds: float = Field(default=2, ge=0.1, le=30)
-    watch_seconds: float = Field(default=360, ge=1, le=3600)
+    poll_seconds: float = Field(default=2.0, ge=0.1, le=30)
+    watch_seconds: float = Field(default=360.0, ge=1, le=3600)
 
 
 class Config(PluginConfigBase):

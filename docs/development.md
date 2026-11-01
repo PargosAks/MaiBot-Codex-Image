@@ -55,4 +55,6 @@ uv run --locked python scripts/build_bundle.py
 
 ## Host 自主链路
 
+保留已有计划、旧授权与累计额度的维护边界见 [等待恢复](retained-plan-recovery.md)。对应回归为 `tests/test_planned_wait_restore.py`，包括实际 SQLite 状态、正常等待与未知操作拒绝，以及模拟创作、细化、分享和 Host 生命周期。
+
 阶段 6 的 `host_runtime.py` / `host_adapters.py` 对接实际命名 Hook 与 SDK 能力。Host 公共源码定位和严格隔离的验证方法见 [阶段 6](implementation-stage-6.md)。测试入口为 `tests/test_host_lifecycle.py`、`tests/test_host_adapters.py`、`tests/test_host_integration.py`；没有真实模型、绘图或发送。

@@ -907,6 +907,13 @@ class ArtistStore:
             current = datetime.fromisoformat(now)
             state = self._artist_state(space_id)
             if state["next_due"] and current < datetime.fromisoformat(state["next_due"]):
+                # A shorter configured interval must not inherit an old, distant
+                # deadline. Clamp once; subsequent ticks leave the earlier due
+                # time intact. Claims still enforce backoff and Artist enforces
+                # each work's next_check_at independently of this idle timer.
+                due = (current + timedelta(seconds=interval_seconds)).isoformat()
+                if datetime.fromisoformat(state["next_due"]) > datetime.fromisoformat(due):
+                    self.db.execute("UPDATE artist_state SET next_due=? WHERE space_id=?", (due, space_id))
                 return False
             pending = self.db.execute(
                 "SELECT 1 FROM artist_wakes WHERE space_id=? AND kind='idle' AND id>? LIMIT 1",
@@ -918,6 +925,149 @@ class ArtistStore:
                 ((current + timedelta(seconds=interval_seconds)).isoformat(), space_id),
             )
             return added
+
+    def restore_planned_wait(
+        self,
+        space_id: str,
+        scope: Scope,
+        *,
+        expected_auth_version: int,
+        work_id: str,
+        last_wait_request_id: str,
+        event_id: str,
+        reason: str,
+        offline: bool = False,
+    ) -> bool:
+        """Trusted offline repair of one proven model wait, without renewing consent.
+
+        The caller MUST stop Host writers and hold their RuntimeLease throughout
+        this call. Store does not acquire or steal that lease. A fresh explicit
+        grant is still needed before the internal idle event can be consumed.
+        The event's JSON text is the durable audit receipt; it is not chat or a
+        completion claim. Repeating its identical key never resets newer timers.
+        No work, authorization, operation, allowance or usage row is changed.
+        """
+        if offline is not True:
+            raise StoreError("OFFLINE_REQUIRED", "Stop Host writers and hold RuntimeLease before recovery")
+        if type(expected_auth_version) is not int or expected_auth_version < 1:
+            raise StoreError("INVALID_ARGUMENT", "expected_auth_version must be a positive integer")
+        for name, value in (
+            ("work_id", work_id), ("last_wait_request_id", last_wait_request_id),
+            ("event_id", event_id), ("reason", reason),
+        ):
+            nonempty(value, name)
+            if len(value) > (500 if name == "reason" else 200):
+                raise StoreError("INVALID_ARGUMENT", "Recovery reason or identifier is too long")
+        request = {
+            "operation": "restore_planned_wait", "expected_auth_version": expected_auth_version,
+            "work_id": work_id, "last_wait_request_id": last_wait_request_id, "reason": reason,
+        }
+        with self._transaction():
+            space = self._space(space_id, scope)
+            self._expected_authorization(space, expected_auth_version)
+            if space["authorized"]:
+                raise StoreError("RECOVERY_UNSAFE", "Revoke delegation before restoring a planned wait")
+            if self.db.execute(
+                "SELECT 1 FROM artist_claims WHERE space_id=? AND state='active'", (space_id,)
+            ).fetchone() or self.db.execute(
+                """SELECT 1 FROM operations WHERE space_id=?
+                AND state IN ('reserved','submitting','accepted','unknown') LIMIT 1""", (space_id,)
+            ).fetchone() or self.db.execute(
+                """SELECT 1 FROM asset_registrations WHERE space_id=?
+                AND state IN ('reserved','submitting','unknown') LIMIT 1""", (space_id,)
+            ).fetchone():
+                raise StoreError("RECOVERY_UNSAFE", "Active claims or unresolved operations prohibit recovery")
+            work = self.db.execute(
+                "SELECT * FROM artist_works WHERE space_id=? AND work_id=?", (space_id, work_id)
+            ).fetchone()
+            if work is None:
+                raise StoreError("NOT_FOUND", "Planned work not found in this space")
+            if work["status"] != "planned" or work["pending_request"] or work["next_check_at"]:
+                raise StoreError("RECOVERY_UNSAFE", "Only an undeferred plan without a pending request can recover")
+            operation = self._operation(space_id, scope, last_wait_request_id)
+            work_digest = hashlib.sha256(canonical_json(dict(work)).encode("utf-8")).hexdigest()
+            wait_digest = hashlib.sha256(canonical_json(dict(operation)).encode("utf-8")).hexdigest()
+            prior = self.db.execute(
+                "SELECT * FROM artist_wakes WHERE space_id=? AND event_id=?", (space_id, event_id)
+            ).fetchone()
+            if prior:
+                try:
+                    receipt = json.loads(prior["text"])
+                except (TypeError, ValueError):
+                    receipt = None
+                if (
+                    prior["kind"] != "idle" or prior["source_ref"] != last_wait_request_id
+                    or not isinstance(receipt, dict) or receipt.get("request") != request
+                ):
+                    raise StoreError("REQUEST_CONFLICT", "Recovery event already has different content")
+                if receipt.get("work_digest") != work_digest or receipt.get("wait_digest") != wait_digest:
+                    raise StoreError("RECOVERY_UNSAFE", "Recovered work or wait has since changed")
+                return False
+            # A different key must not repeat a repair already recorded for this
+            # wait, even if no worker has consumed the first internal event yet.
+            if self.db.execute(
+                "SELECT 1 FROM artist_wakes WHERE space_id=? AND kind='idle' AND source_ref=?",
+                (space_id, last_wait_request_id),
+            ).fetchone():
+                raise StoreError("REQUEST_CONFLICT", "This wait already has a recovery event")
+            state = self.db.execute("SELECT * FROM artist_state WHERE space_id=?", (space_id,)).fetchone()
+            claim = self.db.execute(
+                "SELECT * FROM artist_claims WHERE space_id=? ORDER BY rowid DESC LIMIT 1", (space_id,)
+            ).fetchone()
+            latest = self.db.execute(
+                "SELECT id FROM operations WHERE space_id=? ORDER BY id DESC LIMIT 1", (space_id,)
+            ).fetchone()
+            grants = self.db.execute(
+                "SELECT version,authorized FROM grants WHERE space_id=? AND version IN (?,?) ORDER BY version",
+                (space_id, expected_auth_version - 1, expected_auth_version),
+            ).fetchall()
+            if (
+                state is None or claim is None or latest is None
+                or claim["state"] != "finished" or claim["through"] != state["acked_through"]
+                or claim["auth_version"] != expected_auth_version - 1
+                or [(row["version"], row["authorized"]) for row in grants]
+                != [(expected_auth_version - 1, 1), (expected_auth_version, 0)]
+                or latest["id"] != operation["id"]
+                or (operation["action"], operation["category"], operation["state"], operation["trigger_ref"],
+                    operation["auth_version"], operation["scope_snapshot"], operation["binding_id"])
+                != ("think", "think", "succeeded", str(claim["through"]), claim["auth_version"],
+                    space["scope"], space["binding_id"])
+            ):
+                raise StoreError("RECOVERY_UNSAFE", "Latest finished claim and old authorization do not prove this wait")
+            now, _ = self._now()
+            try:
+                params = json.loads(operation["params_json"])
+                result = json.loads(operation["evidence"])
+                decision = result["decision"]
+                delay = decision["delay_seconds"]
+                known_work = next(w for w in params["context"]["works"] if w["work_id"] == work_id)
+                backoff = datetime.fromisoformat(state["backoff_until"])
+                started = backoff - timedelta(seconds=delay)
+                proven = (
+                    params["task"] == "plan" and decision["action"] == "wait"
+                    and type(delay) is int and 60 <= delay <= 86400
+                    and known_work["status"] == "planned" and known_work["brief"] == json.loads(work["brief"])
+                    and datetime.fromisoformat(operation["updated_at"]) <= started <= datetime.fromisoformat(now)
+                    and datetime.fromisoformat(now) < backoff
+                )
+            except (KeyError, TypeError, ValueError, StopIteration, OverflowError):
+                proven = False
+            if not proven:
+                raise StoreError("RECOVERY_UNSAFE", "A successful explicit wait for the retained plan is required")
+            receipt = canonical_json({
+                "request": request, "work_digest": work_digest, "wait_digest": wait_digest,
+                "claim_token": claim["token"], "through": claim["through"],
+                "old_auth_version": claim["auth_version"], "operation_id": operation["id"],
+                "previous_next_due": state["next_due"], "previous_backoff_until": state["backoff_until"],
+                "restored_at": now,
+            })
+            if len(receipt) > 4096:
+                raise StoreError("INVALID_ARGUMENT", "Encoded recovery receipt exceeds 4096 characters")
+            self._enqueue_wake(space_id, event_id, "idle", receipt, last_wait_request_id)
+            self.db.execute(
+                "UPDATE artist_state SET next_due=?,backoff_until=NULL WHERE space_id=?", (now, space_id)
+            )
+            return True
 
     def _chat_interrupts_wait(self, space, state) -> bool:
         # Infer only a successful model wait from the existing durable ledger.
@@ -1011,6 +1161,20 @@ class ArtistStore:
                     (space_id, state["acked_through"], active["through"]),
                 )
             ]
+            for event in events:
+                if event["kind"] == "idle" and event["source_ref"] is not None:
+                    try:
+                        audit = json.loads(event["text"])
+                    except (TypeError, ValueError):
+                        continue
+                    if (
+                        isinstance(audit, dict) and isinstance(audit.get("request"), dict)
+                        and audit["request"].get("operation") == "restore_planned_wait"
+                        and audit["request"].get("last_wait_request_id") == event["source_ref"]
+                    ):
+                        # The durable repair receipt is administrative evidence,
+                        # never fresh drawing inspiration supplied to a model.
+                        event["text"] = ""
             return {
                 "token": token,
                 "through": active["through"],
