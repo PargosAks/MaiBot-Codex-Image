@@ -1,36 +1,116 @@
 # MaiBot-Codex-Image
 
-MaiBot 绘图插件，通过独立部署的 MCP 提交任务、查询进度并发送图片。调用链为 **MaiBot 插件 → 独立 MCP → 宿主机官方 Codex CLI**。插件加载、重载和卸载不会启停 MCP。
+**MaiBot 小画师**：从聊天中积累灵感，也能在无人聊天时自主构思，由模型决定画什么、是否细化原图，以及是否分享作品。自主创作不需要发送绘图命令；原有手动命令仍可使用。
 
-插件 **0.9.2**，命令兼容 MCP **0.5.0**，自主创作需要具备 `lookup_v1` / `edit_v1` 的独立 MCP。本仓库仅维护插件，不再提供 MCP 服务源码、安装器或部署工具；原命令协议与发送库格式不变，自主创作默认关闭。本版增加独立的图片发送等待；QQ 慢上传还需配套调整适配器动作和网关等待，见 [排错](docs/troubleshooting.md#qq-慢上传与发送回执超时)。本机所维护 VPS 已完成加载与配置核对，未进行新的真实绘图或发送；具体范围及 0.9.1 的 QQ 收图历史见 [验证记录](docs/validation.md)。已有未知发送记录仍保留且不重发。
+调用链为 **MaiBot 插件 → 宿主机独立 MCP → 宿主机官方 Codex CLI**。插件负责创作规划、评审、授权、预算和发送；独立 MCP 负责绘图任务与图片产物。插件加载、重载和卸载不会启停 MCP，MaiBot 容器无需安装 Codex 或挂载其登录目录。
 
-## 升级前必读
+当前插件版本 **0.9.2**。**发行默认关闭自主创作，持续委托默认关闭，全局和空间预算默认均为零。** 管理员明确配置并启用后，才会持续调用真实模型、消耗绘图额度并向授权会话分享。
 
-**先检查旧 MCP 是否仍从本仓库 `service/` 路径运行，包括启动命令、工作目录及可编辑安装引用。若是，不可原地 `git pull` 或覆盖安装：0.7.0 会删除服务运行入口。** 旧进程暂时存活不代表下次加载或重启安全。
+[安装与升级](docs/quickstart.md) · [配置与迁移](docs/advanced.md) · [排错](docs/troubleshooting.md) · [开发与测试](docs/development.md) · [验证记录](docs/validation.md)
 
-保留旧完整仓库供服务使用，将新版插件部署到独立目录。保持原 Host 插件身份 `pargosaks.maibot-codex-image`、原 `ctx.paths.data_dir`（含 `delivery.sqlite3`）、插件 config、secret 和服务完整 `state`。不要同时运行两个使用同一 `state` 的服务。步骤见 [安装与升级](docs/quickstart.md)。
+## 小画师可以做什么
 
-## 安装与配置
+| 能力 | 行为与边界 |
+| --- | --- |
+| 聊天灵感与无人创作 | 授权会话内委托人的正常消息进入持久灵感队列；定时唤醒复用同一创作流程。模型可以选择等待，不是每条消息、每次唤醒都绘图 |
+| 创作计划 | 结合灵感、人格、空间私有创作档案与系列目标制定计划，冻结本次创作所用的内容和版本 |
+| 原图细化 | 将实际源图交给 MCP 编辑，保留父子版本关联；不以重新生成一张图冒充原图编辑 |
+| 图片评审 | 视觉模型读取实际图片，可对照当前图、父图和旧最佳图，决定接受、细化或保留最佳版本 |
+| 自主分享 | 分享是单独的决策和授权检查，只发送到配置中核验过的会话；绘图完成不等于一定分享 |
+| 参考素材 | 支持经过认可的作品素材；另行授权后，可接收委托人当前消息的图片作为参考，不扫描历史聊天、不使用模型随意提供的图片链接 |
+| 持久化与恢复 | 保留灵感、计划、作品版本、评审、授权、额度与发送记录；未知绘图查询原请求，未知发送禁止重发 |
 
-1. 先有兼容 MCP 0.5.0，由服务维护者独立管理 Codex 安装、手动登录与服务运行。本仓库不提供新的独立 MCP 仓库地址。
-2. 将插件源码或插件 zip 解压内容放入 MaiBot 实际加载的 `plugins/codex_image`，确保 `_manifest.json` 位于该目录根层。已有目录先按升级指南核查。
-3. 在插件面板设置 `connection.url`、`connection.secret`、`connection.allowed_users`，授予用户 `codex_image_command` 命令权限及插件 `send.text` / `send.image` 能力，保存并重载插件。
+典型流程：**聊天或定时唤醒 → 积累灵感 → 决定是否创作 → 冻结计划 → 绘图 → 看图评审 → 可选细化与再评审 → 决定是否分享**。各步骤受授权、预算和恢复状态约束，不保证一次唤醒完成整条流程。
 
-要求 MaiBot 1.3.x、SDK 2.16.x / 2.17.x；声明范围不等于整个范围已实测。运行依赖由 MaiBot 插件依赖机制安装，开发命令见 [development.md](docs/development.md)。
+## 兼容性与安装
+
+| 组件 | 要求 |
+| --- | --- |
+| MaiBot / SDK | 声明支持 MaiBot 1.3.x、SDK 2.16.x / 2.17.x；声明范围不等于每个版本均已实测 |
+| 手动绘图命令 | 兼容 MCP 0.5.0 命令协议 |
+| 自主创作与原图编辑 | 独立 MCP 须具备 `lookup_v1` / `edit_v1` 能力；不能仅根据服务版本号推断支持 |
+| 当前消息参考图 | 还需 MCP 的 `reference_inputs_v1` 能力及独立媒体授权，默认关闭 |
+| 规划与评审模型 | 使用 MaiBot 已配置的模型任务；评审任务必须支持实际图片输入 |
+
+本仓库仅维护插件，不提供 MCP 服务源码、安装器或部署工具，也未提供新的独立 MCP 仓库下载地址。已有独立 MCP 0.6.0 的联调与部署记录见 [验证记录](docs/validation.md)。服务维护者负责 Codex 安装、用户手动登录和服务运行；插件不会自动转用付费图像 API。
+
+1. 准备符合所需能力契约的独立 MCP，并确认 MaiBot 实际运行环境能访问它。
+2. 将插件源码或插件 zip 解压内容放入实际加载的 `plugins/codex_image`，确保 `_manifest.json` 位于目录根层。已有安装先阅读下方升级说明。
+3. 在插件面板配置 MCP 地址、配对密钥和用户白名单，保存并重载插件。运行依赖由 MaiBot 插件依赖机制安装。
+4. 核对 Host 允许插件使用声明的能力：`send.text`、`send.image`、`llm.generate`、`chat.get_stream_by_user_id`、`chat.get_stream_by_group_id`。使用手动命令的用户另需 `codex_image_command` 权限。
+5. 先完成连接检查，再按下方配置持续委托和预算；启用前确认真实会话、模型及发送链路。
+
+### 基础连接配置
+
+完整默认模板见 [config.example.toml](config.example.toml)。已有安装应定点修改，勿用模板覆盖原配置和配对密钥。
 
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
-| `plugin.config_version` | `"0.9.1"` | 配置版本；保留已有配置 |
-| `plugin.enabled` | `true` | 是否启用 |
-| `connection.url` | `"http://127.0.0.1:8765/mcp"` | 从 MaiBot 运行环境可达的 MCP 地址 |
-| `connection.secret` | `""` | 与服务一致，至少 32 字符 |
-| `connection.allowed_users` | `[]` | 真实 `platform:user_id`，英文冒号；空列表拒绝所有用户 |
-| `connection.poll_seconds` | `2` | 查询间隔，0.1–30 秒 |
-| `connection.watch_seconds` | `360` | 自动等待时长，1–3600 秒；超时不取消服务任务 |
+| `plugin.config_version` | `"0.9.2"` | 配置版本，升级时保留已有配置内容 |
+| `plugin.enabled` | `true` | 插件总开关 |
+| `connection.url` | `"http://127.0.0.1:8765/mcp"` | 从 MaiBot 运行环境可达的独立 MCP 地址 |
+| `connection.secret` | `""` | 与服务一致，至少 32 字符，不写入 URL 或日志 |
+| `connection.allowed_users` | `[]` | 真实 `platform:user_id`，使用英文冒号；空列表拒绝所有用户 |
+| `connection.poll_seconds` | `2` | MCP 查询间隔，0.1–30 秒 |
+| `connection.watch_seconds` | `360` | 等待绘图的时长，1–3600 秒；到期不取消服务任务 |
+| `connection.send_timeout_seconds` | `240.0` | 图片发送 RPC 等待，单位秒，大于 0 且不超过 600，独立于模型等待 |
 
-Docker bridge 容器内的 `localhost` / `127.0.0.1` 指向容器自身。连接宿主机 MCP 应使用实际可达的宿主机地址，并核对监听、防火墙与 MCP Host 校验；宿主机可达不代表容器可达。不要将宿主机 Codex 登录、服务密钥文件或 `state` 挂入插件目录。
+Docker bridge 容器内的 `localhost` / `127.0.0.1` 指向容器自身。连接宿主机 MCP 应使用实际可达的宿主机地址，并核对监听、防火墙与 MCP Host 校验；宿主机可达不代表容器可达。不要将宿主机 Codex 登录、服务密钥文件或服务 `state` 挂入插件目录。
 
-## 使用
+## 配置正式自主创作
+
+### 授权会话与模型
+
+白名单仅允许使用插件，**不等于持续创作委托**。在 `autonomy.spaces` 中为每个授权会话配置一个空间：
+
+| 字段 | 配置要求 |
+| --- | --- |
+| `space_id` | 唯一、稳定的空间标识，不复用到其他用户、会话或 MCP |
+| `platform` / `user_id` | 平台及持续委托人，须在 `connection.allowed_users` 中 |
+| `stream_id` | Host 已存在的真实会话 ID，不手算、不由模型指定 |
+| `group_id` | 私聊留空；群聊填写真实群 ID。群聊也只采集该委托人的消息，不自动采集全群 |
+| `continuous` | 明确授权持续创作时设为 `true` |
+| `consent_ref` | 非空的管理员授权依据或记录编号，不填密钥 |
+| `limits` | 配置下面五项空间预算 |
+| `reference_inputs` / `media_consent_ref` | 默认关闭、留空；采集当前消息图片需单独开启并填写媒体授权依据 |
+| `profiles` / `series` | 可选的空间私有创作档案与系列目标，初次使用可留空 |
+
+`autonomy.plan_task` 默认为 `utils`，`autonomy.review_task` 默认为 `vlm`，填写 MaiBot 中实际配置的任务名。视觉评审必须能接收图片，不能用纯文本模型代替。`autonomy.persona` 用于公共人格和画风，不放入密钥或私密运维信息。
+
+### 双层预算
+
+全局 `autonomy.global_limits` 和每个空间的 `limits` **同时生效**。下面是一份单空间、低频运行的配置起点，不是发行默认值，也不是对现有部署的自动修改：
+
+| 字段 | 单空间示例上限 | 计数方式 |
+| --- | --- | --- |
+| `think` | `30` | 每日模型调用次数，包含规划、评审等思考，不是 token 配额 |
+| `render` | `2` | 每日绘图调用总数，新图和原图编辑合并计数 |
+| `share` | `1` | 每日自主分享次数 |
+| `max_inflight` | `1` | 未决操作上限，包含模型、绘图和分享，不仅是正在绘图的任务 |
+| `max_revisions` | `1` | 每幅作品最多细化一次 |
+
+全新且无历史未决操作的单空间安装，可将全局和空间都设为上述值。`render=2` 是总上限，不保证恰好“一次新图加一次细化”；是否细化、是否分享仍由模型评审与策略决定。以上预算约束自主创作流程，不能当作手动 `/画图` 命令或服务账号的总额度限制。
+
+`think/render/share` 按香港自然日统计；失败调用也可能计入消费，未知操作继续占用额度及未决名额，**跨日不会自动释放未知占用**。已有安装先核对累计记录和全局占用，不照抄上限、不清库退款；多空间还需单独规划全局总预算。
+
+### 唤醒、等待与启停
+
+| 配置 | 默认值 | 运行说明 |
+| --- | --- | --- |
+| `autonomy.tick_seconds` | `5.0` | 调度检查间隔，不是每 5 秒调用一次模型 |
+| `autonomy.idle_seconds` | `300` | 定时唤醒间隔；低频运行可设为 `3600` 秒 |
+| `autonomy.timeout_seconds` | `30.0` | 模型及其他操作等待；较慢视觉模型可按实际延迟调高，最大 `300.0` 秒 |
+| `autonomy.enabled` | `false` | 授权、预算和链路核对完毕后，明确开启为 `true` |
+
+启动后首次定时唤醒可能立即发生；`idle_seconds=3600` 不代表必定先等一小时，也不是“最后一条聊天后静默满一小时才画”。模型可以延期或不创作，预算不足或存在未决结果时会受到限制。
+
+保存并重载后核对实际加载配置、会话绑定和状态记录。开启会持续消耗真实模型与绘图额度并允许自主分享。暂停时将 `autonomy.enabled=false` 后保存并重载；这会停止自主流程，但不会撤销已经提交给外部服务的任务，也不会删除历史作品、累计消费或未知发送记录。重新开启仍需有效委托和可用预算。
+
+QQ 图片上传存在多层等待，仅调高模型或插件超时不足以解决适配器提前超时。已部署实例采用动作 **210 秒 → 网关 230 秒 → 插件 RPC 240 秒 → 自主分享外层 245 秒**；适配器需单独配套修改，不是本插件自动设置。适配器升级后应复核，具体步骤和验证边界见 [QQ 慢上传排错](docs/troubleshooting.md#qq-慢上传与发送回执超时)。
+
+完整 Host 配置契约见 [阶段 6](docs/implementation-stage-6.md)，参考图授权见 [I5](docs/implementation-i5.md)。
+
+## 手动命令与故障恢复
 
 | 命令 | 功能 |
 | --- | --- |
@@ -39,28 +119,31 @@ Docker bridge 容器内的 `localhost` / `127.0.0.1` 指向容器自身。连接
 | `/重发画图 任务编号` | 按发送记录规则发送已有图片，不重新生成 |
 | `/画图诊断` | 检查 MCP 连接，不生成图片；不证明绘图登录或聊天收图成功 |
 
-命令入口保留原有行为；自主创作可根据聊天或无人时段自行规划，并迭代已完成的原图，默认关闭。超时或结果未知时先查原任务；`sending/send_unknown` 自动和手动均禁止重发，不要清库绕过。
+- 绘图等待超时：先查询原任务，超时不等于任务失败，不重复提交替代图。
+- 图片已生成但未收到：分别核对 MCP 产物、Host 发送回执和聊天端实际收图。
+- `sending/send_unknown`：自动和手动均禁止重发；即使用户已收到，也不自动改写未知记录。已有 `sent/send_failed` 仅按手动路径及归属规则重发原图。
+- 已有计划卡住：按 [保留原计划恢复](docs/retained-plan-recovery.md) 核查，不通过清库、删除锁、换空间或改服务地址绕过未知结果。
 
-## 小画师开发阶段
+## 升级与数据保留
 
-后续迭代见 [小画师自主创作迭代计划](docs/artist-iteration-plan.md)：拆分实际图片对照评审、创作档案、参考素材、MCP 进度诊断和多参考绘图。具体实现与验证以各阶段记录为准，保持默认关闭。
+**若旧 MCP 仍从本仓库的 `service/` 路径运行，包括启动命令、工作目录或可编辑安装引用，不可原地更新覆盖：自 0.7.0 起仓库已移除该服务入口。** 旧进程暂时存活不代表下次重启安全。先保留旧完整目录给服务，再独立部署新版插件，详见 [安装与升级](docs/quickstart.md)。
 
-I1 增加当前图、父图及旧最佳图的实际图片对照、冻结评审快照和自主分享认可检查；旧单图评审保留恢复路径。实现契约及迁移见 [I1 对照评审](docs/implementation-i1.md)，实际验证范围见 [验证记录](docs/validation.md)。
+保持 Host 插件身份 `pargosaks.maibot-codex-image`、原 `ctx.paths.data_dir`（含创作账本与 `delivery.sqlite3`）、插件配置、配对密钥及服务完整 `state`。同一服务状态目录只运行一个实例；不要恢复旧数据库覆盖升级后新增记录。
 
-I2 增加空间私有的版本化创作档案与系列目标。计划冻结选定档案，生成、编辑和评审使用同一份快照；配置和边界见 [I2 创作档案](docs/implementation-i2.md)。
+插件与服务分别管理版本。仅插件变动且协议兼容时可重载插件；服务源码、依赖或配置变化按独立服务维护处理。已有空间绑定归属和 MCP 端点，改地址不能把未知任务迁移到新服务；先核查原任务并制定迁移步骤。
 
-I3 增加经过认可的作品素材目录，素材选择与分享分开，见 [I3 素材与上下文](docs/implementation-i3.md)。I5 在单独的媒体授权下接收委托人当前消息图片，通过独立 MCP 的 `reference_inputs_v1` 登记和输入实际参考图；默认关闭，不读取历史聊天或模型提供的图片链接，见 [I5 接口与兼容](docs/implementation-i5.md)。
+旧服务与部署资料仅供历史维护：[固定提交 e50a7b6 的完整仓库](https://github.com/PargosAks/MaiBot-Codex-Image/tree/e50a7b6f0e090d6a5053ac00d4f0b14e92aee272)，不是当前版本的安装入口。
 
-阶段 6 将已有状态机接入 Host 的真实聊天 Hook、定时唤醒、模型图片评审和发送接口。`autonomy.enabled=false`、空间持续委托默认关闭、全局及空间预算默认零；启用还需核验已有 Host 会话与白名单。模型独立决定画什么、是否细化、是否分享。验证使用模拟绘图、脚本评审和发送，不代表真实效果验收。配置、生命周期和边界见 [阶段 6](docs/implementation-stage-6.md)。
+## 设计与验证文档
 
-[环境核查](docs/artist-stage-0.md) · [阶段 1 实现与验证](docs/implementation-stage-1.md)。开发阶段不扩大已声明的 SDK 兼容范围。
+| 内容 | 文档 |
+| --- | --- |
+| 自主创作设计与迭代 | [设计](docs/artist-design.md)、[迭代计划](docs/artist-iteration-plan.md) |
+| 环境、状态存储与授权预算 | [阶段 0](docs/artist-stage-0.md)、[阶段 1](docs/implementation-stage-1.md) |
+| 统一唤醒与创作流程 | [阶段 2](docs/implementation-stage-2.md)、[阶段 5](docs/implementation-stage-5.md) |
+| MCP 只读恢复与原图编辑 | [阶段 3](docs/implementation-stage-3.md)、[阶段 4](docs/implementation-stage-4.md) |
+| Host 聊天、模型、定时与发送接入 | [阶段 6](docs/implementation-stage-6.md) |
+| 图片对照、创作档案与素材 | [I1](docs/implementation-i1.md)、[I2](docs/implementation-i2.md)、[I3](docs/implementation-i3.md)、[I5](docs/implementation-i5.md) |
+| 开发、回归与验收证据 | [开发与测试](docs/development.md)、[验证记录](docs/validation.md) |
 
-[阶段 2 运行方式与验证](docs/implementation-stage-2.md)。阶段 3 已增加 Bridge 能力探测、错误码透传和原请求查询恢复，独立 MCP 源码增加 `lookup_v1`，尚未部署或自动启用；旧服务缺少能力声明时不会盲猜支持。详见 [阶段 3](docs/implementation-stage-3.md)。
-
-阶段 4 增加显式原图编辑组件、源图校验、跨 submit/edit 幂等和不可变父子版本关联。独立 MCP 的 `edit_v1` 使用实际图片输入；已用模拟 Codex 验证，尚未验证真实账号编辑效果。详见 [阶段 4](docs/implementation-stage-4.md)。
-
-阶段 5 复用同一创作状态机串联新图、原图编辑、按图片字节评审、最佳版本选择和独立分享决策；丢回执或重启只恢复原操作，未知发送不重发。验证使用模拟绘图、评审和发送，以及隔离的真实本机 MCP 传输，不代表真实模型效果或聊天收图通过。运行与恢复入口见 [阶段 5](docs/implementation-stage-5.md)。
-
-[安装与升级](docs/quickstart.md) · [配置与迁移](docs/advanced.md) · [排错](docs/troubleshooting.md) · [开发](docs/development.md) · [验证](docs/validation.md)
-
-旧服务与部署资料仅供原部署维护参考：[固定提交 e50a7b6 的完整仓库](https://github.com/PargosAks/MaiBot-Codex-Image/tree/e50a7b6f0e090d6a5053ac00d4f0b14e92aee272)。历史说明不是 0.7.0 安装入口。
+阶段文档中的“未部署”“仅模拟”描述各阶段当时的验证范围，后续真实验收以注明日期、版本和环境的验证记录为准。已有本地聊天收图、无人收图、单独原图编辑，以及 VPS QQ 收图的用户确认；单独编辑验收不等于真实模型自主选择细化的完整链路验收。0.9.2 慢上传修复已有模拟测试和 VPS 加载、配置核对，尚不能据此宣称修复后的真实慢上传回执闭环通过。
