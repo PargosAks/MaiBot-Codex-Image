@@ -6,19 +6,25 @@ import hashlib
 import logging
 import re
 
-from maibot_sdk import Command, HookHandler, Field, MaiBotPlugin, PluginConfigBase
+from maibot_sdk import API, Command, HookHandler, Field, MaiBotPlugin, PluginConfigBase
 from maibot_sdk.types import HookMode
 
 from .bridge import Bridge
 from .delivery import Deliveries
 from .host_runtime import Autonomy, HostRuntime, joined
+from .policy import Scope
 from .rendering import MCPRenderer
+from .studio import Studio
+from .studio_chat import (
+    StudioChat, StudioChatBinding, StudioChatPolicy, is_studio_status_message,
+    snapshot_from_summary, studio_chat_before_replyer_request, studio_chat_before_request,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class PluginSection(PluginConfigBase):
-    config_version: str = "0.9.2"
+    config_version: str = "0.10.0"
     enabled: bool = True
 
 
@@ -76,6 +82,20 @@ def trusted_identity(kwargs: dict) -> tuple[dict, str]:
 
 class CodexImagePlugin(MaiBotPlugin):
     config_model = Config
+    studio_chat_before_request = studio_chat_before_request
+    studio_chat_before_replyer_request = studio_chat_before_replyer_request
+
+    @classmethod
+    def build_config_schema(cls, **metadata):
+        schema = super().build_config_schema(**metadata)
+        # Keep legacy catalog entries readable for migration, out of the settings form.
+        autonomy_fields = schema["sections"]["autonomy"]["fields"]
+        # An existing persona still guides the artist; it is not a catalog editor.
+        autonomy_fields["persona"]["hidden"] = True
+        fields = autonomy_fields["spaces"]["item_fields"]
+        for legacy in ("profiles", "series"):
+            fields.pop(legacy, None)
+        return schema
 
     def __init__(self):
         super().__init__()
@@ -84,6 +104,7 @@ class CodexImagePlugin(MaiBotPlugin):
         self.startup_error = ""
         self.lifecycle = asyncio.Lock()
         self.watchers: dict[str, asyncio.Task] = {}
+        self.studio_chat = None
         self.artist_runtime = None
 
     async def on_load(self):
@@ -107,6 +128,7 @@ class CodexImagePlugin(MaiBotPlugin):
             await joined(self._open_journal())
             self.artist_runtime = HostRuntime(self)
             await self.artist_runtime.start()
+            self.studio_chat = StudioChat(self.ctx, policy=self._studio_chat_policy, read=self._studio_chat_read)
             if connection_error:
                 raise ValueError(connection_error)
         except ValueError as exc:
@@ -128,6 +150,9 @@ class CodexImagePlugin(MaiBotPlugin):
         )
 
     def _stop_artist_workers(self):
+        if self.studio_chat is not None:
+            self.studio_chat.clear_queries()
+            self.studio_chat = None
         # A command may hold lifecycle while awaiting MCP. Config is already
         # replaced by SDK: stop autonomous dispatch before waiting for that lock.
         if self.artist_runtime is not None:
@@ -160,6 +185,41 @@ class CodexImagePlugin(MaiBotPlugin):
             await self._unload()
             await self._load()
 
+    def _studio_chat_policy(self):
+        cfg = self.config
+        return StudioChatPolicy(
+            enabled=bool(self.studio_chat and cfg.plugin.enabled and cfg.autonomy.enabled),
+            allowed_users=tuple(cfg.connection.allowed_users),
+            bindings=tuple(StudioChatBinding(
+                item.space_id, Scope(item.platform, item.stream_id, item.user_id), item.group_id,
+                item.continuous, item.consent_ref,
+            ) for item in cfg.autonomy.spaces if item.space_id),
+        )
+
+    async def _studio_chat_read(self, space_id, scope):
+        # The planner only sees its own verified binding. It cannot select an
+        # administrative projection or supply scope fields in tool arguments.
+        async with self.lifecycle:
+            view = Studio(Path(self.ctx.paths.data_dir), scopes={space_id: scope})
+            summary = await asyncio.to_thread(view.summary, space_id)
+            return snapshot_from_summary(space_id, scope, summary)
+
+    @API("studio_spaces", version="1", public=False)
+    async def studio_spaces(self, offset: int = 0, limit: int = 20):
+        return await asyncio.to_thread(Studio.for_plugin(self).spaces, offset, limit)
+
+    @API("studio_summary", version="1", public=False)
+    async def studio_summary(self, space_id: str):
+        return await asyncio.to_thread(Studio.for_plugin(self).summary, space_id)
+
+    @API("studio_records", version="1", public=False)
+    async def studio_records(self, space_id: str, section: str, offset: int = 0, limit: int = 20, work_id: str = ""):
+        return await asyncio.to_thread(Studio.for_plugin(self).records, space_id, section, offset, limit, work_id)
+
+    @API("studio_image", version="1", public=False)
+    async def studio_image(self, space_id: str, version_id: str, thumbnail: bool = True, offset: int = 0):
+        return await asyncio.to_thread(Studio.for_plugin(self).image, space_id, version_id, thumbnail, offset)
+
     def _artist_renderer(self, store, space_id, scope, binding_id):
         return MCPRenderer(store, space_id, scope, self.bridge, binding_id=binding_id)
 
@@ -170,15 +230,24 @@ class CodexImagePlugin(MaiBotPlugin):
         mode=HookMode.OBSERVE,
     )
     async def artist_chat(self, **kwargs):
-        async with self.lifecycle:
-            if not self.config.plugin.enabled or not self.config.autonomy.enabled or self.artist_runtime is None:
+        try:
+            if not self.config.plugin.enabled or not self.config.autonomy.enabled:
                 return None
-            try:
-                scope, message_id = trusted_identity(kwargs)
-                await self.artist_runtime.on_chat(scope, message_id, kwargs.get("message"))
-            except ValueError as exc:
-                # Rejected context must not interrupt MaiBot's normal chat flow.
-                logger.warning("Artist ignored Host message: %s", getattr(exc, "code", "IDENTITY_INVALID"))
+            scope, message_id = trusted_identity(kwargs)
+            message = kwargs.get("message")
+            is_query = is_studio_status_message(message)
+            # Invalidate older reads on receipt, before an in-flight read can
+            # hold lifecycle and delay this event. No I/O or await in this step.
+            if self.studio_chat is not None:
+                self.studio_chat.note_ingress(Scope(**scope), message_id, is_query=is_query)
+            if is_query:
+                return None
+            async with self.lifecycle:
+                if self.config.plugin.enabled and self.config.autonomy.enabled and self.artist_runtime is not None:
+                    await self.artist_runtime.on_chat(scope, message_id, message)
+        except ValueError as exc:
+            # Rejected context must not interrupt MaiBot's normal chat flow.
+            logger.warning("Artist ignored Host message: %s", getattr(exc, "code", "IDENTITY_INVALID"))
         return None
 
     @Command(

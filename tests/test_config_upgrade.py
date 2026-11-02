@@ -80,6 +80,23 @@ def overlay(request):
     return namespace["_overlay_plugin_config_fields"]
 
 
+def test_studio_catalog_is_importable_but_not_an_operator_form():
+    from image_plugin_under_test import CodexImagePlugin
+    from test_profiles_flow import PROFILES, SERIES
+
+    plugin = CodexImagePlugin()
+    plugin.set_plugin_config({"plugin": {"config_version": "0.9.2"},
+                              "autonomy": {"spaces": [{"space_id": "legacy-space",
+                                                        "profiles": PROFILES, "series": SERIES}]}})
+    legacy = plugin.config.autonomy.spaces[0]
+    assert legacy.profiles == PROFILES and legacy.series == SERIES
+    autonomy_fields = plugin.get_webui_config_schema()["sections"]["autonomy"]["fields"]
+    assert autonomy_fields["persona"]["hidden"] is True
+    fields = autonomy_fields["spaces"]["item_fields"]
+    assert {"profiles", "series"}.isdisjoint(fields)
+    assert {"stream_id", "user_id", "continuous", "consent_ref", "limits"} <= fields.keys()
+
+
 def old_config(integer=False):
     config = Config().model_dump()
     config["plugin"]["config_version"] = "0.9.0"

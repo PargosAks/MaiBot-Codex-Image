@@ -1,0 +1,135 @@
+<style>
+  *{box-sizing:border-box}body{margin:0;font:14px/1.6 system-ui,sans-serif;color:var(--foreground,#202633);background:var(--background,#f6f7fb)}
+  main{max-width:1200px;margin:auto;padding:24px}h1{margin:0;font-size:26px}h2{font-size:17px;margin:0 0 12px}p{margin:8px 0}.muted{opacity:.7}
+  .toolbar,.tabs,.pager{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:16px 0}button,select{font:inherit;color:inherit;background:var(--card,#fff);border:1px solid #858fa455;border-radius:8px;padding:8px 12px;max-width:100%}button{cursor:pointer}button:disabled{opacity:.45;cursor:default}button[aria-selected=true]{background:#5367df;color:#fff}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}.card{background:var(--card,#fff);border:1px solid #858fa433;border-radius:12px;padding:16px;margin:12px 0;overflow-wrap:anywhere}dl{display:grid;grid-template-columns:minmax(80px,120px) 1fr;gap:6px 12px;margin:10px 0}dt{opacity:.7}dd{margin:0;white-space:pre-wrap}.error{color:#d64a4a}img{display:block;max-width:100%;max-height:70vh;object-fit:contain;margin:12px auto;border-radius:8px}.thumb{max-width:320px;max-height:240px;margin:8px 0}.badge{display:inline-block;border-radius:5px;padding:2px 8px;background:#8882;margin:2px}dialog{color:inherit;background:var(--card,#fff);border:1px solid #858fa455;border-radius:12px;max-width:90vw;max-height:90vh}dialog::backdrop{background:#0008}@media(max-width:600px){main{padding:14px}}
+</style>
+<main>
+  <h1>小画师</h1>
+  <p class="muted">只读查看创作、评审与发送状态。查询不会生成图片或发送作品；未知结果保留原记录。</p>
+  <div class="toolbar"><label>空间 <select id="spaces" aria-label="绘画空间"></select></label><button id="refresh">刷新</button><span id="spaceNotice" class="muted"></span></div>
+  <p id="error" class="error" role="alert"></p>
+  <div id="summary" class="grid"></div>
+  <nav id="tabs" class="tabs" aria-label="创作资料"></nav>
+  <p id="filter" class="muted"></p>
+  <div id="records" aria-live="polite"></div>
+  <div class="pager"><button id="prev">上一页</button><span id="page"></span><button id="next">下一页</button></div>
+  <dialog id="imageDialog"><button id="closeImage">关闭原图</button><div id="original"></div></dialog>
+</main>
+<script>
+(() => {
+  'use strict';
+  const $ = id => document.getElementById(id);
+  const sections = {works:'作品',tasks:'任务 / 发送',versions:'版本 / 原图',reviews:'评审',profiles:'创作档案',series:'系列',assets:'参考档案'};
+  let space='', section='works', offset=0, work='', busy=false, more=false, nextOffset=null, generation=0, originalURL='';
+  let history=[];
+  let spaceValidated=false, viewReady=false;
+  const LIMIT=12;
+  const statusNames={planned:'已规划',deferred:'暂缓',creating:'绘制中',review_pending:'等待评审',finished:'已完成',abandoned:'已停止',reserved:'已预留',submitting:'提交中',accepted:'已受理',unknown:'结果未知',succeeded:'成功',failed:'失败',rejected:'已拒绝',cancelled:'已取消',sent:'已发送',sending:'发送中，尚未确认',send_unknown:'发送结果未知，不可重发',send_failed:'发送失败',queued:'等待发送',not_shared:'尚无分享记录',accept:'通过',revise:'需要修订',keep:'保留已有版本',defer:'暂缓评审',reject:'未通过',pending:'等待评审',not_generated:'尚无成图',think:'思考',render:'绘图',share:'分享',submit:'生成',edit:'编辑',reviewed_work:'已评审作品',authorized_chat:'已授权聊天图片'};
+  statusNames.discard='弃稿';
+  const state=value=>statusNames[value]||'未知状态';
+  const roleNames={character:'角色',style:'风格',composition:'构图',palette:'配色'};
+  const originNames={configured:'配置导入',legacy:'历史档案',autonomous:'自主积累'};
+  const role=value=>roleNames[value]||'未知用途';
+  const origin=value=>originNames[value]||'未记录来源';
+  function node(tag,text,cls) { const el=document.createElement(tag); if(text!==undefined)el.textContent=String(text);if(cls)el.className=cls;return el; }
+  function display(value){if(value===null||value===undefined)return'未记录';if(typeof value==='boolean')return value?'是':'否';if(Array.isArray(value))return value.map(display).join('；');if(typeof value==='object')return Object.entries(value).slice(0,12).map(([k,v])=>k+'：'+display(v)).join('；');return String(value);}
+  function fields(card,values){const list=node('dl');for(const [label,value] of values){list.append(node('dt',label),node('dd',display(value)));}card.append(list);}
+  function workFields(card,item){fields(card,[['题材',item.subject||'未记录题材'],['创作状态',state(item.status)],['已有成图',item.generated?'已生成':'尚无成图'],['版本数',item.version_count],['评审',state(item.review_state)],['分享',state(item.share_state)]]);}
+  function button(text,fn){const el=node('button',text);el.onclick=()=>run(fn);return el;}
+  function clearImage(){$('original').replaceChildren();$('imageDialog').close();if(originalURL){URL.revokeObjectURL(originalURL);originalURL='';}}
+  $('closeImage').onclick=clearImage;
+  $('imageDialog').addEventListener('close',()=>{ $('original').replaceChildren();if(originalURL){URL.revokeObjectURL(originalURL);originalURL='';}});
+  function controls(){ $('prev').disabled=busy||!viewReady||!spaceValidated||history.length===0; $('next').disabled=busy||!viewReady||!spaceValidated||!more||nextOffset===null||nextOffset>10000; $('spaces').disabled=busy; $('refresh').disabled=busy;for(const b of $('tabs').children)b.disabled=busy||!viewReady; }
+  async function run(fn,revalidate=true){
+    if(busy)return;busy=true;$('error').textContent='';controls();
+    try{
+      if(revalidate&&!spaceValidated){const previous=space;await loadSpaces(space);if(!space)return;if(previous!==space){await loadWorkspace();return;}}
+      await fn();
+    }catch(error){spaceValidated=false;$('error').textContent=error.message||'只读查询失败';}
+    finally{busy=false;controls();}
+  }
+  function clearPage(){++generation;more=false;nextOffset=null;$('records').replaceChildren();$('page').textContent='';$('filter').replaceChildren();}
+  function resetCursor(){offset=0;history=[];work='';}
+  async function loadSpaces(preferred){
+    spaceValidated=false;
+    const result=await maibot.query('spaces',{offset:0,limit:32});
+    const selected=result.items.some(item=>item.space_id===preferred)?preferred:(result.items[0]?.space_id||'');
+    if(selected!==space){resetCursor();clearPage();$('summary').replaceChildren();viewReady=false;clearImage();}
+    space=selected;$('spaces').replaceChildren();
+    for(const item of result.items){const option=node('option',item.space_id);option.value=item.space_id;$('spaces').append(option);}
+    $('spaces').value=space;spaceValidated=true;
+    $('spaceNotice').textContent=space?'仅展示当前配置可读的空间':'当前没有可读的配置空间';
+  }
+  function showSummary(s){
+    const grid=$('summary');grid.replaceChildren();
+    const auth=node('section',undefined,'card');auth.append(node('h2','授权与等待'),node('p',s.authorization.authorized?'持续委托有效':'持续委托未生效'));
+    auth.append(node('p',s.authorization.enabled===false?'自主创作未启用':'读取授权版本：'+(s.authorization.version??'尚无状态')));
+    for(const reason of s.waiting)auth.append(node('p',reason.text));
+    if(!s.waiting.length)auth.append(node('p','未发现本空间等待条件；不代表已获准执行。'));
+    grid.append(auth);
+    const budget=node('section',undefined,'card');budget.append(node('h2','当前空间预算'),node('p',s.day+' · Asia/Hong_Kong'));
+    for(const [key,title] of Object.entries({think:'思考',render:'绘图',share:'分享'})){const b=s.budget[key];budget.append(node('p',title+'：'+(b?`本空间剩余 ${b.space_remaining??'未知'} / ${b.limit??'未知'}，占用 ${b.held}，已耗 ${b.consumed}；当前预算${b.available_now?'可用':'受限'}`:'尚无账本')));}
+    budget.append(node('p','未知结果跨日继续占用。共享上限仅显示是否受限，不披露其他空间用量。预算可用不代表获准执行。','muted'));grid.append(budget);
+    const counts=node('section',undefined,'card');counts.append(node('h2','创作概况'));for(const [key,title] of Object.entries({works:'作品',versions:'版本',reviews:'评审'}))counts.append(node('p',title+'：'+(s.counts[key]??0)));grid.append(counts);
+    const current=node('section',undefined,'card');current.append(node('h2','当前作品'));if(s.current_work)workFields(current,s.current_work);else current.append(node('p','当前没有进行中的作品'));grid.append(current);
+    for(const item of s.recent_works){const card=node('section',undefined,'card');card.append(node('h2','近期作品 · '+(item.subject||'未记录题材')));workFields(card,item);grid.append(card);}
+    const coverage=node('p',s.coverage,'muted');grid.append(coverage);
+  }
+  async function original(version){
+    const chunks=[];let at=0, first;
+    do {
+      const result=await maibot.query('image',{space_id:space,version_id:version,thumbnail:false,offset:at});
+      if(!first)first=result;
+      if(result.offset!==at||result.sha256!==first.sha256||result.total_bytes!==first.total_bytes||result.total_bytes>8388608)throw new Error('原图分块不一致');
+      const bytes=Uint8Array.from(atob(result.chunk_base64),c=>c.charCodeAt(0));chunks.push(bytes);
+      if(result.next_offset!==null&&result.next_offset!==at+bytes.length)throw new Error('原图分块顺序无效');
+      at=result.next_offset;
+    }while(at!==null);
+    clearImage();originalURL=URL.createObjectURL(new Blob(chunks,{type:first.mime}));
+    $('original').replaceChildren(node('p','原图 · '+first.width+' × '+first.height));const image=node('img');image.alt='已保存的作品原图';image.src=originalURL;$('original').append(image);$('imageDialog').showModal();
+  }
+  async function loadRecords(){
+    clearPage();const token=generation;
+    if(!space)return;
+    const result=await maibot.query('records',{space_id:space,section,offset,limit:LIMIT,work_id:work});
+    if(token!==generation)return;more=result.has_more;nextOffset=result.next_offset;
+    if(offset===0)history=[];
+    $('filter').replaceChildren();if(work){$('filter').append(node('span','当前作品：'+work),button('查看全部',async()=>{work='';offset=0;await loadRecords();}));}
+    if(!result.items.length)$('records').append(node('p',result.available?'暂无记录':'历史账本尚无此类记录','muted'));
+    for(const item of result.items){
+      const card=node('article',undefined,'card');card.append(node('h2',item.subject||item.data?.title||item.title||sections[section]));
+      if(item.state)card.append(node('span',state(item.state),'badge'));
+      if(item.state==='unknown'&&item.category==='share')card.append(node('p','发送结果未知：需核实原发送，不可重发。'));
+      if(item.work_id&&section==='works')card.append(button('查看版本与原图',async()=>{work=item.work_id;section='versions';offset=0;selectTabs();await loadRecords();}),button('查看评审',async()=>{work=item.work_id;section='reviews';offset=0;selectTabs();await loadRecords();}));
+      if(section==='works'){workFields(card,item);fields(card,[['创作意图',item.brief?.intent],['氛围',item.brief?.mood],['完成标准',item.brief?.completion_criteria],['冻结档案',item.brief?.creative?.profile_id],['冻结系列',item.brief?.creative?.series_id]]);}
+      if(section==='tasks')fields(card,[['任务类型',state(item.action)],['结果',state(item.state)],['任务编号',item.job_id],['作品编号',item.work_id],['请求编号',item.request_id],['预算日期',item.budget_day],['创建时间',item.created_at],['更新时间',item.updated_at]]);
+      if(section==='versions')fields(card,[['版本编号',item.version_id],['作品编号',item.work_id],['绘图任务',item.job_id],['父版本',item.parent_id],['图像格式',item.mime],['图像指纹',item.sha256],['创建时间',item.created_at]]);
+      if(section==='reviews'){const r=item.review||{};fields(card,[['评审结果',state(r.decision)],['理由',r.reason],['优点',r.strengths],['待改进',r.issues],['对照改善',r.comparison?.improvements],['对照退步',r.comparison?.regressions],['保留内容',r.comparison?.preserved],['版本编号',item.version_id],['评审时间',item.created_at]]);}
+      if(section==='profiles'){const d=item.data||{};fields(card,[['档案编号',item.profile_id],['修订版本',item.revision],['启用状态',item.active?'启用':'停用'],['档案标题',d.title],['偏好配色',d.palette],['表现方式',d.technique],['稳定属性',d.stable],['可变属性',d.variable],['来源说明',d.source],['来源类型',origin(item.provenance?.origin)],['来源依据',item.provenance?.source_ref]]);}
+      if(section==='series')fields(card,[['系列编号',item.series_id],['系列标题',item.title],['目标',item.goal],['档案编号',item.profile_id],['档案版本',item.profile_revision],['启用状态',item.active?'启用':'停用'],['结束状态',item.closed?'已结束':'未结束'],['来源类型',origin(item.provenance?.origin)],['来源依据',item.provenance?.source_ref]]);
+      if(section==='assets')fields(card,[['素材编号',item.asset_id],['摘要',item.summary],['用途',Array.isArray(item.roles)?item.roles.map(role):'未记录用途'],['标签',item.tags],['来源',state(item.source_kind)],['来源版本',item.source_version_id],['启用状态',item.active?'启用':'停用'],['图像格式',item.mime]]);
+      $('records').append(card);
+      if(section==='versions'){
+        const image=node('img');image.alt='已保存作品的缩略图';image.className='thumb';card.prepend(image);
+        try{const result=await maibot.query('image',{space_id:space,version_id:item.version_id,thumbnail:true});if(token!==generation)return;image.src=result.data_url;}catch(error){image.remove();card.append(node('p','缩略图不可用：'+error.message,'muted'));}
+        card.append(button('打开原图',()=>original(item.version_id)));
+      }
+    }
+    $('page').textContent=`从第 ${offset+1} 条开始 · 本页 ${result.items.length} 条`;
+  }
+  function selectTabs(){for(const el of $('tabs').children)el.setAttribute('aria-selected',String(el.dataset.section===section));}
+  for(const [key,label] of Object.entries(sections)){const el=button(label,async()=>{section=key;offset=0;work='';selectTabs();await loadRecords();});el.dataset.section=key;$('tabs').append(el);}selectTabs();
+  async function loadWorkspace(){viewReady=false;clearImage();clearPage();$('summary').replaceChildren();if(!space)return;const s=await maibot.query('summary',{space_id:space});showSummary(s);viewReady=true;await loadRecords();}
+  async function refresh(preferred=space){
+    viewReady=false;clearImage();clearPage();$('summary').replaceChildren();
+    if(preferred!==space){resetCursor();space=preferred;}
+    await loadSpaces(preferred);await loadWorkspace();
+  }
+  $('spaces').onchange=()=>{const selected=$('spaces').value;run(()=>refresh(selected),false);};
+  $('refresh').onclick=()=>run(refresh,false);
+  $('prev').onclick=()=>run(async()=>{offset=history.pop()??0;await loadRecords();});
+  $('next').onclick=()=>run(async()=>{history.push(offset);offset=nextOffset;await loadRecords();});
+  maibot.ready.then(()=>run(refresh,false)).catch(error=>{$('error').textContent=error.message;});
+})();
+</script>

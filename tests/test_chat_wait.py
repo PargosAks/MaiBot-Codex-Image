@@ -93,7 +93,7 @@ def test_old_wait_and_pending_chat_recover_after_reopen_and_new_grant(ledger):
         assert next_batch is not None and next_batch["auth_version"] > batch["auth_version"]
         assert next_batch["events"][0]["source_ref"] == "original-message"
         assert reopened.audit_operations("s", SCOPE) == before
-        assert reopened.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 6
+        assert reopened.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     finally:
         reopened.close()
 

@@ -12,7 +12,7 @@ import uuid
 
 from .bridge import BridgeError
 from .policy import Scope, StoreError, canonical_json
-from .profiles import render_prompt
+from .profiles import CATALOG_ACTIONS, render_prompt
 from .assets import reference_prompt
 from .store import ArtistStore
 from .thinking import Thinking
@@ -248,8 +248,8 @@ class Artist:
                 for work in visible
             ],
         }
-        profiles = await self._db("list_profiles")
-        series = await self._db("list_series")
+        catalog = await self._db("creative_catalog")
+        profiles, series = catalog["profiles"], catalog["series"]
         if profiles:
             context["profiles"] = profiles
         if series:
@@ -433,9 +433,9 @@ class Artist:
                                     response, _ = await self._think("inspire", context, cycle)
                                     await self._remember(response, cycle)
                                 return polled
-                response, _ = await self._think("plan", context, cycle)
+                response, thought_request = await self._think("plan", context, cycle)
                 await self._remember(response, cycle)
-                result = await self._decide(response["decision"], cycle)
+                result = await self._decide(response["decision"], cycle, thought_request=thought_request)
                 pause_after = result.pop("wake_after", 0)
                 return result
             except asyncio.CancelledError:
@@ -456,8 +456,15 @@ class Artist:
                     retry_after=300 if retry else pause_after,
                 )
 
-    async def _decide(self, decision: dict, cycle: dict) -> dict:
+    async def _decide(self, decision: dict, cycle: dict, *, thought_request=None) -> dict:
         action = decision["action"]
+        if action in CATALOG_ACTIONS:
+            if thought_request is None:
+                raise StoreError("INVALID_DECISION", "Catalogue writes require a persisted planning operation")
+            entry = await self._db("apply_catalog_decision", request_id=thought_request,
+                                   expected_auth_version=cycle["auth_version"])
+            return {"state": {"create_profile": "profile_created", "revise_profile": "profile_revised",
+                              "create_series": "series_created"}[action], "entry": entry}
         if action == "close_series":
             await self._db("close_series", decision["series_id"], expected_auth_version=cycle["auth_version"])
             return {"state": "series_closed", "series_id": decision["series_id"]}

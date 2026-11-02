@@ -7,7 +7,7 @@ import hashlib
 import re
 
 from .policy import StoreError, canonical_json
-from .profiles import validate_catalog, validate_choice
+from .profiles import CATALOG_ACTIONS, validate_catalog, validate_catalog_decision, validate_choice
 from .assets import validate_references
 
 
@@ -30,8 +30,16 @@ PLAN = (
     "已有计划再次唤醒时，应决定 continue/wait/defer/abandon，不因定时到达就必画，也不覆盖已有意图。"
     "有 profiles 时，create 可另含 creative={profile_id,profile_revision,series_id,changes,reason}；"
     "series_id 可为 null，changes 只能使用所选档案 variable 的键。档案 stable 属性必须保留；"
-    "必须遵守公共人格，冲突时等待，不改写人格或档案。同一系列不可重建同目标规避修订上限。"
+    "必须遵守公共人格，冲突时等待，不改写人格、不覆盖档案原版本。同一系列不可重建同目标规避修订上限。"
     "结束系列可返回 action=close_series、已有 series_id 和 reason，不生成图片。"
+    "档案可选，空目录也可直接 create 或 wait，不必先建档。"
+    "可独立 create_profile={action,reason,data}；data 必含 title、palette、technique、stable、variable、source，"
+    "stable/variable 为不重叠的描述字典；source 只是创作来源描述，不能伪造授权或看图证据。"
+    "修订用 {action:revise_profile,reason,profile_id,base_revision,data}，base_revision 必须为可见最新版本，"
+    "data 是完整新版本，旧版本和作品快照不修改。建立系列用 "
+    "{action:create_series,reason,title,goal,profile_id,profile_revision}，绑定可见版本。"
+    "这三种动作只维护目录，不同时建作品、绘图或分享；ID 和版本由主线生成。"
+    "同目标系列（含已结束）不可重建；目录与历史有上限，满时可等待或直接创作。"
     "素材目录 assets 先提供摘要；需要详情可 inspect_assets，含 asset_ids（最多3个已有ID）、reason。"
     "create 可另含 references=[{asset_id,role,reason}]（最多3项），只能用已提供素材和其允许角色；"
     "素材选择只是建议；是否真正输入图片由可信配置与协议能力决定，不能自行声称已传图。"
@@ -190,7 +198,7 @@ def _context(context: dict) -> dict:
         if {"review_contract", "review_inputs"}.intersection(context):
             _review_metadata(context)
         if {"profiles", "series"}.intersection(context):
-            validate_catalog(context.get("profiles", []), context.get("series", []))
+            validate_catalog(context.get("profiles", []), context.get("series", []), allow_revisions=True)
         for name, limit in (("assets", 8), ("asset_details", 3)):
             rows = context.get(name, [])
             _require(type(rows) is list and len(rows) <= limit)
@@ -267,6 +275,12 @@ class Thinking:
         decision = answer["decision"]
         _require(type(decision) is dict)
         action = decision.get("action")
+        if type(action) is str and action in CATALOG_ACTIONS:
+            try:
+                validate_catalog_decision(decision, frozen.get("profiles", []), frozen.get("series", []))
+            except StoreError as exc:
+                raise StoreError("INVALID_DECISION", "Invalid autonomous catalogue suggestion") from exc
+            return answer
         _require(type(action) is str and action in {
             "wait", "create", "continue", "share", "defer", "abandon", "close_series", "archive", "inspect_assets",
         })

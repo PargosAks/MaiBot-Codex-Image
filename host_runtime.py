@@ -202,7 +202,7 @@ class HostRuntime:
             await self.db("configure_reference_policy", item.space_id, scope,
                           enabled=item.reference_inputs, consent_ref=item.media_consent_ref,
                           expected_auth_version=current["auth_version"])
-            await self.db("configure_creative", item.space_id, scope, profiles=item.profiles,
+            await self.db("import_creative", item.space_id, scope, profiles=item.profiles,
                           series=item.series, expected_auth_version=current["auth_version"])
             from .host_adapters import HostThinking, HostSender
             artist = Artist(

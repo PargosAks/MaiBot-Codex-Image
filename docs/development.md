@@ -1,8 +1,24 @@
 # 开发与测试
 
+## 0.10.0 小画师工作区
+
+工作区与聊天摘要仅查询已有账本；档案写入由 Artist 处理。分别运行 `tests/test_studio*.py`、`tests/test_autonomous_catalog*.py`，再用 `tests/test_artist_studio_e2e.py` 验证从建档到原图、细化、评审、分享以及只读查询的联动。用临时数据和模拟外部效果，勿指向运行实例的数据目录。
+
+公开源码契约测试使用以下可选环境变量：
+
+| 变量 | 对象 |
+| --- | --- |
+| `CODEX_IMAGE_TEST_HOST_REPO` | 含固定提交 `062d45cf` 的公开 MaiBot Git 仓库 |
+| `CODEX_IMAGE_TEST_HOST_SOURCE`、`CODEX_IMAGE_TEST_STUDIO_HOST_SOURCE` | 对应 Host 的公开 `src` 目录 |
+| `CODEX_IMAGE_TEST_SDK_SOURCE` | 包含公开 SDK 2.17 的 site-packages；插件开发环境为 SDK 2.16 |
+| `CODEX_IMAGE_TEST_DASHBOARD_SOURCE` | 含 `src/` 的 Dashboard 源码目录，页面桥接测试使用 Node |
+| `CODEX_IMAGE_TEST_SERVICE_SOURCE`、`CODEX_IMAGE_TEST_SNOWLUMA_SOURCE` | 独立 MCP 的 `src` 目录及公开适配器源码快照 |
+
+这些检查只加载指定的公开代码。它们不需要访问 VPS 或使用真实聊天、登录态与订阅。
+
 ## 范围
 
-本仓库仅维护插件 **0.9.0**，基础命令兼容独立 MCP **0.5.0**。`plugin.py` 处理命令、Host 可信身份、配置回调及发送，`bridge.py` 处理 MCP 客户端与签名，`delivery.py` 在 Host 数据目录保存发送记录。后续能力按 [迭代计划](artist-iteration-plan.md) 分阶段扩展，不修改 MaiBot 本体。
+本仓库维护小画师插件，基础命令兼容独立 MCP **0.5.0**。`plugin.py` 处理命令、Host 可信身份、配置回调及发送，`bridge.py` 处理 MCP 客户端与签名，`delivery.py` 在 Host 数据目录保存发送记录。后续能力按 [迭代计划](artist-iteration-plan.md) 分阶段扩展，不修改 MaiBot 本体。
 
 小画师阶段 0/1 新增 `store.py` / `policy.py` 离线底座；阶段 6 由受控 Host runtime 加载，不导入旧发送库或迁移服务数据。架构见 [设计](artist-design.md)，实际 API、隔离测试与未接入边界见 [阶段 1](implementation-stage-1.md)，环境版本见 [阶段 0](artist-stage-0.md)。后续异步运行接入 SQLite 时必须通过工作线程调用，不能阻塞 MaiBot 事件循环。
 

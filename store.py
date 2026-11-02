@@ -39,15 +39,17 @@ from .policy import (
 )
 from .profiles import (
     CHOICE_FIELDS,
+    MAX_PROFILE_VERSIONS,
     normalize_objective,
     render_prompt,
     validate_catalog,
+    validate_catalog_decision,
     validate_choice,
     validate_creative,
 )
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 PREACCEPT_REJECTIONS = frozenset(
     {
         "INVALID_ARGUMENTS",
@@ -210,6 +212,26 @@ _SCHEMA_6 = (
 )
 
 
+_SCHEMA_7 = (
+    """CREATE TABLE creative_imports (
+        space_id TEXT PRIMARY KEY REFERENCES spaces, source_digest TEXT NOT NULL,
+        source_snapshot TEXT NOT NULL, auth_version INTEGER NOT NULL, created_at TEXT NOT NULL)""",
+    """CREATE TABLE creative_sources (
+        space_id TEXT NOT NULL REFERENCES spaces, kind TEXT NOT NULL, entity_id TEXT NOT NULL,
+        revision INTEGER NOT NULL, origin TEXT NOT NULL, source_ref TEXT, auth_version INTEGER,
+        snapshot TEXT NOT NULL, PRIMARY KEY(space_id,kind,entity_id,revision))""",
+    """INSERT INTO creative_sources SELECT space_id,'profile',profile_id,revision,
+        'legacy',NULL,NULL,data FROM profile_versions""",
+    """INSERT INTO creative_sources SELECT space_id,'series',series_id,1,
+        'legacy',NULL,NULL,json_object('series_id',series_id,'title',title,'goal',goal,
+        'profile_id',profile_id,'profile_revision',profile_revision) FROM series""",
+    """CREATE TABLE creative_decisions (
+        space_id TEXT NOT NULL REFERENCES spaces, request_id TEXT NOT NULL,
+        operation_id INTEGER NOT NULL REFERENCES operations,
+        decision TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(space_id,request_id))""",
+)
+
+
 class ArtistStore:
     def __init__(self, path: Path, *, clock: Optional[Callable[[], datetime]] = None):
         self.path = Path(path)
@@ -228,7 +250,7 @@ class ArtistStore:
                         raise StoreError("SCHEMA_UNSUPPORTED", "Unversioned nonempty database")
                     for statement in _SCHEMA:
                         self.db.execute(statement)
-                elif version not in {1, 2, 3, 4, 5, SCHEMA_VERSION}:
+                elif version not in {1, 2, 3, 4, 5, 6, SCHEMA_VERSION}:
                     raise StoreError("SCHEMA_UNSUPPORTED", "Artist database schema is not supported")
                 if version in {0, 1}:
                     for statement in _SCHEMA_2:
@@ -244,6 +266,9 @@ class ArtistStore:
                         self.db.execute(statement)
                 if version in {0, 1, 2, 3, 4, 5}:
                     for statement in _SCHEMA_6:
+                        self.db.execute(statement)
+                if version in {0, 1, 2, 3, 4, 5, 6}:
+                    for statement in _SCHEMA_7:
                         self.db.execute(statement)
                     self.db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         except BaseException:
@@ -1340,47 +1365,96 @@ class ArtistStore:
             space = self._space(space_id, scope)
             self._expected_authorization(space, expected_auth_version)
             self._authorized(space)
-            self.db.execute("UPDATE profile_versions SET active=0 WHERE space_id=?", (space_id,))
-            self.db.execute("UPDATE series SET active=0 WHERE space_id=?", (space_id,))
-            for profile in profiles:
-                identity = (space_id, profile["profile_id"], profile["revision"])
-                data = canonical_json(profile["data"])
-                old = self.db.execute(
-                    "SELECT data FROM profile_versions WHERE space_id=? AND profile_id=? AND revision=?",
-                    identity,
-                ).fetchone()
-                if old is not None and old["data"] != data:
-                    raise StoreError("REQUEST_CONFLICT", "Profile revision data is immutable")
-                self.db.execute(
-                    """INSERT INTO profile_versions(space_id,profile_id,revision,data,active) VALUES(?,?,?,?,1)
-                    ON CONFLICT(space_id,profile_id,revision) DO UPDATE SET active=1""", (*identity, data),
-                )
-            for item in series:
-                old = self.db.execute(
-                    "SELECT title,goal,profile_id,profile_revision FROM series WHERE space_id=? AND series_id=?",
-                    (space_id, item["series_id"]),
-                ).fetchone()
-                if old is not None and (old["title"], old["goal"], old["profile_id"], old["profile_revision"]) != (
-                    item["title"], item["goal"], item["profile_id"], item["profile_revision"],
-                ):
-                    raise StoreError("REQUEST_CONFLICT", "Series title, goal and profile bindings are immutable")
-                self.db.execute(
-                    """INSERT INTO series(space_id,series_id,title,goal,profile_id,profile_revision,active)
-                    VALUES(?,?,?,?,?,?,1) ON CONFLICT(space_id,series_id) DO UPDATE SET active=1""",
-                    (space_id, item["series_id"], item["title"], item["goal"],
-                     item["profile_id"], item["profile_revision"]),
-                )
+            self._configure_creative(space_id, profiles, series, space["auth_version"])
+            validate_catalog(self.list_profiles(space_id, scope), self.list_series(space_id, scope), allow_revisions=True)
             return {"profiles": self.list_profiles(space_id, scope), "series": self.list_series(space_id, scope)}
+
+    def _configure_creative(self, space_id, profiles, series, auth_version):
+        # Explicit legacy sync only owns legacy/configured data. Model-created
+        # identities and the revisions pinned by their series survive it.
+        self.db.execute("""UPDATE profile_versions SET active=0 WHERE space_id=? AND NOT EXISTS (
+            SELECT 1 FROM creative_sources c WHERE c.space_id=profile_versions.space_id
+            AND c.kind='profile' AND c.entity_id=profile_versions.profile_id AND c.origin='autonomous')""", (space_id,))
+        self.db.execute("""UPDATE series SET active=0 WHERE space_id=? AND NOT EXISTS (
+            SELECT 1 FROM creative_sources c WHERE c.space_id=series.space_id
+            AND c.kind='series' AND c.entity_id=series.series_id AND c.origin='autonomous')""", (space_id,))
+        for profile in profiles:
+            identity = (space_id, profile["profile_id"], profile["revision"])
+            data = canonical_json(profile["data"])
+            old = self.db.execute(
+                "SELECT data FROM profile_versions WHERE space_id=? AND profile_id=? AND revision=?",
+                identity,
+            ).fetchone()
+            if old is not None and old["data"] != data:
+                raise StoreError("REQUEST_CONFLICT", "Profile revision data is immutable")
+            self.db.execute(
+                """INSERT INTO profile_versions(space_id,profile_id,revision,data,active) VALUES(?,?,?,?,1)
+                ON CONFLICT(space_id,profile_id,revision) DO UPDATE SET active=1""", (*identity, data),
+            )
+            self.db.execute("INSERT OR IGNORE INTO creative_sources VALUES(?,?,?,?,?,?,?,?)",
+                            (space_id, "profile", profile["profile_id"], profile["revision"],
+                             "configured", "host-config", auth_version, canonical_json(profile)))
+        for item in series:
+            old = self.db.execute(
+                "SELECT title,goal,profile_id,profile_revision FROM series WHERE space_id=? AND series_id=?",
+                (space_id, item["series_id"]),
+            ).fetchone()
+            if old is not None and (old["title"], old["goal"], old["profile_id"], old["profile_revision"]) != (
+                item["title"], item["goal"], item["profile_id"], item["profile_revision"],
+            ):
+                raise StoreError("REQUEST_CONFLICT", "Series title, goal and profile bindings are immutable")
+            self.db.execute(
+                """INSERT INTO series(space_id,series_id,title,goal,profile_id,profile_revision,active)
+                VALUES(?,?,?,?,?,?,1) ON CONFLICT(space_id,series_id) DO UPDATE SET active=1""",
+                (space_id, item["series_id"], item["title"], item["goal"],
+                 item["profile_id"], item["profile_revision"]),
+            )
+            self.db.execute("INSERT OR IGNORE INTO creative_sources VALUES(?,?,?,?,?,?,?,?)",
+                            (space_id, "series", item["series_id"], 1, "configured", "host-config",
+                             auth_version, canonical_json(item)))
+
+    def import_creative(self, space_id, scope, *, profiles, series, expected_auth_version):
+        """Host reload imports old configuration once; it never synchronizes ownership."""
+        with self._transaction():
+            space = self._space(space_id, scope)
+            self._expected_authorization(space, expected_auth_version)
+            self._authorized(space)
+            if self.db.execute("SELECT 1 FROM creative_imports WHERE space_id=?", (space_id,)).fetchone():
+                return False
+            # Existing schema-4/6 catalogues already represent an import, including
+            # disabled entries and closed series. Do not revive them on upgrade.
+            existing = self.db.execute("SELECT 1 FROM creative_sources WHERE space_id=? LIMIT 1", (space_id,)).fetchone()
+            if not existing:
+                validate_catalog(profiles, series)
+                profiles, series = json.loads(canonical_json([profiles, series]))
+                self._configure_creative(space_id, profiles, series, space["auth_version"])
+            snapshot = canonical_json({
+                "mode": "preserved_existing" if existing else "imported_config",
+                "profiles": [dict(row) for row in self.db.execute("SELECT * FROM profile_versions WHERE space_id=? ORDER BY profile_id,revision", (space_id,))],
+                "series": [dict(row) for row in self.db.execute("SELECT * FROM series WHERE space_id=? ORDER BY series_id", (space_id,))],
+            })
+            self.db.execute("INSERT INTO creative_imports VALUES(?,?,?,?,?)", (
+                space_id, hashlib.sha256(snapshot.encode()).hexdigest(), snapshot,
+                space["auth_version"], self._now()[0],
+            ))
+            return True
 
     def list_profiles(self, space_id, scope) -> list[dict]:
         with self.lock:
             self._authorized(self._space(space_id, scope))
             return [
                 self._decode(row, "data") for row in self.db.execute(
-                    "SELECT profile_id,revision,data FROM profile_versions WHERE space_id=? AND active=1 "
-                    "ORDER BY profile_id,revision", (space_id,),
+                    """SELECT profile_id,revision,data FROM profile_versions p WHERE space_id=? AND
+                    (active=1 OR EXISTS (SELECT 1 FROM series s WHERE s.space_id=p.space_id
+                    AND s.profile_id=p.profile_id AND s.profile_revision=p.revision AND s.active=1 AND s.closed=0))
+                    ORDER BY profile_id,revision""", (space_id,),
                 )
             ]
+
+    def creative_catalog(self, space_id, scope) -> dict:
+        """Freeze both visible collections together, including across connections."""
+        with self._transaction():
+            return {"profiles": self.list_profiles(space_id, scope), "series": self.list_series(space_id, scope)}
 
     def list_series(self, space_id, scope) -> list[dict]:
         with self.lock:
@@ -1390,10 +1464,75 @@ class ArtistStore:
                     """SELECT s.series_id,s.title,s.goal,s.profile_id,s.profile_revision FROM series AS s
                     JOIN profile_versions AS p ON p.space_id=s.space_id AND p.profile_id=s.profile_id
                     AND p.revision=s.profile_revision
-                    WHERE s.space_id=? AND s.active=1 AND s.closed=0 AND p.active=1 ORDER BY s.series_id""",
+                    WHERE s.space_id=? AND s.active=1 AND s.closed=0 ORDER BY s.series_id""",
                     (space_id,),
                 )
             ]
+
+    def apply_catalog_decision(self, space_id, scope, *, request_id, expected_auth_version):
+        """Apply only a paid, successful plan's frozen evidence, atomically and once."""
+        with self._transaction():
+            space = self._space(space_id, scope)
+            self._expected_authorization(space, expected_auth_version)
+            self._authorized(space)
+            op = self._operation(space_id, scope, request_id)
+            if (op["action"], op["category"], op["state"], op["auth_version"], op["binding_id"], op["scope_snapshot"]) != (
+                "think", "think", "succeeded", space["auth_version"], space["binding_id"], space["scope"],
+            ):
+                raise StoreError("AUTH_CHANGED", "Catalogue advice requires a successful current authorized thought")
+            params, answer = json.loads(op["params_json"]), json.loads(op["evidence"])
+            if params.get("task") != "plan":
+                raise StoreError("INVALID_DECISION", "Only planning may change the creative catalogue")
+            context, decision = params["context"], answer["decision"]
+            payload = canonical_json(decision)
+            prior = self.db.execute("SELECT * FROM creative_decisions WHERE space_id=? AND request_id=?",
+                                    (space_id, request_id)).fetchone()
+            if prior:
+                if prior["decision"] != payload or prior["operation_id"] != op["id"]:
+                    raise StoreError("REQUEST_CONFLICT", "Catalogue receipt no longer matches its thought")
+                return json.loads(prior["result"])
+            validate_catalog_decision(decision, context.get("profiles", []), context.get("series", []))
+            validate_catalog_decision(decision, self.list_profiles(space_id, scope), self.list_series(space_id, scope))
+            action = decision["action"]
+            generated = hashlib.sha256(canonical_json([space_id, request_id]).encode()).hexdigest()[:40]
+            source = {"decision": decision, "context": context}
+            if action in {"create_profile", "revise_profile"}:
+                identifier, revision = "profile:" + generated, 1
+                if action == "revise_profile":
+                    identifier = decision["profile_id"]
+                    latest = self.db.execute("SELECT max(revision),count(*) FROM profile_versions WHERE space_id=? AND profile_id=?",
+                                             (space_id, identifier)).fetchone()
+                    if latest[0] != decision["base_revision"]:
+                        raise StoreError("REQUEST_CONFLICT", "Profile has changed since planning")
+                    if latest[1] >= MAX_PROFILE_VERSIONS:
+                        raise StoreError("CATALOG_LIMIT", "Profile history limit reached")
+                    revision = latest[0] + 1
+                    self.db.execute("UPDATE profile_versions SET active=0 WHERE space_id=? AND profile_id=?",
+                                    (space_id, identifier))
+                result = {"profile_id": identifier, "revision": revision, "data": decision["data"]}
+                self.db.execute("INSERT INTO profile_versions VALUES(?,?,?,?,1)",
+                                (space_id, identifier, revision, canonical_json(decision["data"])))
+                kind = "profile"
+            else:
+                identifier, revision, kind = "series:" + generated, 1, "series"
+                goal = normalize_objective("series", decision["goal"])
+                if any(normalize_objective("series", row[0]) == goal for row in self.db.execute(
+                    "SELECT goal FROM series WHERE space_id=?", (space_id,),
+                )):
+                    raise StoreError("REQUEST_CONFLICT", "This series goal already exists, including closed history")
+                result = {key: decision[key] for key in ("title", "goal", "profile_id", "profile_revision")}
+                result["series_id"] = identifier
+                self.db.execute("INSERT INTO series VALUES(?,?,?,?,?,?,1,0)", (
+                    space_id, identifier, result["title"], result["goal"], result["profile_id"], result["profile_revision"],
+                ))
+            self.db.execute("INSERT INTO creative_sources VALUES(?,?,?,?,?,?,?,?)", (
+                space_id, kind, identifier, revision, "autonomous", request_id,
+                space["auth_version"], canonical_json(source),
+            ))
+            validate_catalog(self.list_profiles(space_id, scope), self.list_series(space_id, scope), allow_revisions=True)
+            self.db.execute("INSERT INTO creative_decisions VALUES(?,?,?,?,?)",
+                            (space_id, request_id, op["id"], payload, canonical_json(result)))
+            return result
 
     def close_series(self, space_id, scope, series_id, expected_auth_version):
         nonempty(series_id, "series_id")
@@ -1411,7 +1550,8 @@ class ArtistStore:
     def _freeze_creative(self, space_id, scope, creative):
         profiles, series = self.list_profiles(space_id, scope), self.list_series(space_id, scope)
         selected = validate_choice(creative, profiles, series)
-        profile = next(item for item in profiles if item["profile_id"] == selected["profile_id"])
+        profile = next(item for item in profiles if (item["profile_id"], item["revision"]) ==
+                       (selected["profile_id"], selected["profile_revision"]))
         item = next((item for item in series if item["series_id"] == selected["series_id"]), None)
         return {**selected, "profile": profile["data"], "series": item}
 

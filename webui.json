@@ -1,0 +1,39 @@
+{
+  "schema_version": 2,
+  "required_capabilities": ["custom_pages"],
+  "workspace_title": "小画师",
+  "pages": [{
+    "id": "studio",
+    "title": "小画师",
+    "description": "只读创作摘要、预算、版本原图、评审及档案；不生成、不发送。",
+    "placement": "workspace",
+    "icon": "chart",
+    "mode": "custom",
+    "entry": "studio.html",
+    "layout": "document",
+    "queries": {
+      "spaces": {"api": "studio_spaces", "version": "1", "parameters": {
+        "offset": {"type": "integer", "minimum": 0, "maximum": 10000},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 50}
+      }},
+      "summary": {"api": "studio_summary", "version": "1", "parameters": {
+        "space_id": {"type": "string", "required": true, "max_length": 200}
+      }},
+      "records": {"api": "studio_records", "version": "1", "parameters": {
+        "space_id": {"type": "string", "required": true, "max_length": 200},
+        "section": {"type": "string", "required": true, "choices": ["works", "tasks", "versions", "reviews", "profiles", "series", "assets"]},
+        "offset": {"type": "integer", "minimum": 0, "maximum": 10000},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+        "work_id": {"type": "string", "max_length": 200}
+      }},
+      "image": {"api": "studio_image", "version": "1", "parameters": {
+        "space_id": {"type": "string", "required": true, "max_length": 200},
+        "version_id": {"type": "string", "required": true, "max_length": 200},
+        "thumbnail": {"type": "boolean"},
+        "offset": {"type": "integer", "minimum": 0, "maximum": 8388607}
+      }}
+    },
+    "actions": {},
+    "uploads": {}
+  }]
+}

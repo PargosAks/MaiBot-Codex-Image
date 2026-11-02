@@ -442,7 +442,7 @@ def test_schema_5_rebuild_preserves_every_old_row_selection_and_foreign_key(tmp_
     for _ in range(2):
         db = ArtistStore(path)
         try:
-            assert db.db.execute("PRAGMA user_version").fetchone()[0] == 6
+            assert db.db.execute("PRAGMA user_version").fetchone()[0] == store_module.SCHEMA_VERSION
             for table, rows in before.items():
                 assert [tuple(row) for row in db.db.execute(f"SELECT * FROM {table}")] == rows
             assert db.db.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -470,7 +470,7 @@ def test_schema_6_rebuild_failure_restores_original_parent_child_tables_and_vers
 
 
 @pytest.mark.parametrize("version", [1, 2, 3, 4])
-def test_older_schemas_upgrade_directly_to_6_without_changing_existing_rows(tmp_path, version):
+def test_older_schemas_upgrade_without_changing_existing_rows(tmp_path, version):
     path = tmp_path / "old.sqlite3"
     db = sqlite3.connect(path)
     for statements in (store_module._SCHEMA, store_module._SCHEMA_2, store_module._SCHEMA_3,
@@ -485,7 +485,7 @@ def test_older_schemas_upgrade_directly_to_6_without_changing_existing_rows(tmp_
     db.close()
     upgraded = ArtistStore(path)
     try:
-        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == store_module.SCHEMA_VERSION
         assert upgraded.db.execute("PRAGMA foreign_key_check").fetchall() == []
         for table, rows in before.items():
             assert [tuple(row) for row in upgraded.db.execute(f"SELECT * FROM {table}")] == rows

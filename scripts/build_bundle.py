@@ -8,12 +8,12 @@ ROOT = Path(__file__).resolve().parents[1]
 VERSION = json.loads((ROOT / "_manifest.json").read_text(encoding="utf-8"))["version"]
 PLUGIN_FILES = (
     "plugin.py", "bridge.py", "delivery.py", "policy.py", "store.py", "artist.py", "thinking.py", "recovery.py", "editing.py", "rendering.py",
-    "host_runtime.py", "host_adapters.py",
+    "host_runtime.py", "host_adapters.py", "studio.py", "studio_chat.py", "webui.json", "studio.html",
     "profiles.py", "assets.py", "references.py", "host_media.py",
     "_manifest.json", "config.example.toml",
     "requirements.txt", "README.md", "LICENSE", "CHANGELOG.md",
     "docs/quickstart.md", "docs/advanced.md", "docs/troubleshooting.md",
-    "docs/development.md", "docs/validation.md",
+    "docs/development.md", "docs/validation.md", "docs/studio.md", "docs/retained-plan-recovery.md",
     "docs/artist-design.md", "docs/artist-stage-0.md", "docs/implementation-stage-1.md",
     "docs/implementation-stage-2.md",
     "docs/implementation-stage-3.md",

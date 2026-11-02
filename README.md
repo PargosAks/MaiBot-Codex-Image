@@ -4,7 +4,7 @@
 
 调用链为 **MaiBot 插件 → 宿主机独立 MCP → 宿主机官方 Codex CLI**。插件负责创作规划、评审、授权、预算和发送；独立 MCP 负责绘图任务与图片产物。插件加载、重载和卸载不会启停 MCP，MaiBot 容器无需安装 Codex 或挂载其登录目录。
 
-当前插件版本 **0.9.2**。**发行默认关闭自主创作，持续委托默认关闭，全局和空间预算默认均为零。** 管理员明确配置并启用后，才会持续调用真实模型、消耗绘图额度并向授权会话分享。
+当前插件版本 **0.10.0**。**发行默认关闭自主创作，持续委托默认关闭，全局和空间预算默认均为零。** 启用后，小画师在原有额度内自行规划、建档、绘图并决定是否分享。在 Dashboard 的[小画师工作区](docs/studio.md)查看计划、作品预览、评审与分享结果，无需把聊天内容整理成配置。
 
 [安装与升级](docs/quickstart.md) · [配置与迁移](docs/advanced.md) · [排错](docs/troubleshooting.md) · [开发与测试](docs/development.md) · [验证记录](docs/validation.md)
 
@@ -46,7 +46,7 @@
 
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
-| `plugin.config_version` | `"0.9.2"` | 配置版本，升级时保留已有配置内容 |
+| `plugin.config_version` | `"0.10.0"` | 配置版本，升级时保留已有配置内容 |
 | `plugin.enabled` | `true` | 插件总开关 |
 | `connection.url` | `"http://127.0.0.1:8765/mcp"` | 从 MaiBot 运行环境可达的独立 MCP 地址 |
 | `connection.secret` | `""` | 与服务一致，至少 32 字符，不写入 URL 或日志 |
@@ -56,6 +56,8 @@
 | `connection.send_timeout_seconds` | `240.0` | 图片发送 RPC 等待，单位秒，大于 0 且不超过 600，独立于模型等待 |
 
 Docker bridge 容器内的 `localhost` / `127.0.0.1` 指向容器自身。连接宿主机 MCP 应使用实际可达的宿主机地址，并核对监听、防火墙与 MCP Host 校验；宿主机可达不代表容器可达。不要将宿主机 Codex 登录、服务密钥文件或服务 `state` 挂入插件目录。
+
+在支持 WebUI v2 的 Dashboard 中，打开顶部 **小画师** 可按空间查看已有计划、图片版本、评审和发送结果。已授权私聊中可以问「现在在画什么？」；旧版不提供这个工作区。安装 0.10.0 前请阅读[账本升级与验收说明](docs/studio.md)。
 
 ## 配置正式自主创作
 
@@ -73,9 +75,9 @@ Docker bridge 容器内的 `localhost` / `127.0.0.1` 指向容器自身。连接
 | `consent_ref` | 非空的管理员授权依据或记录编号，不填密钥 |
 | `limits` | 配置下面五项空间预算 |
 | `reference_inputs` / `media_consent_ref` | 默认关闭、留空；采集当前消息图片需单独开启并填写媒体授权依据 |
-| `profiles` / `series` | 可选的空间私有创作档案与系列目标，初次使用可留空 |
 
-`autonomy.plan_task` 默认为 `utils`，`autonomy.review_task` 默认为 `vlm`，填写 MaiBot 中实际配置的任务名。视觉评审必须能接收图片，不能用纯文本模型代替。`autonomy.persona` 用于公共人格和画风，不放入密钥或私密运维信息。
+
+`autonomy.plan_task` 默认为 `utils`，`autonomy.review_task` 默认为 `vlm`，填写 MaiBot 中实际配置的任务名。视觉评审必须能接收图片。已有 `autonomy.persona` 仍用作公共人格基线；角色、画风档案与系列由小画师保存在账本中。
 
 ### 双层预算
 
