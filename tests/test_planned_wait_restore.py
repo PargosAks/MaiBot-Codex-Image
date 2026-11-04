@@ -378,7 +378,7 @@ async def test_host_lifecycle_stop_offline_lease_regrant_real_worker_tick_and_re
                                connection=SimpleNamespace(url=URL, send_timeout_seconds=240.0,
                                                           allowed_users=[f"{SCOPE.platform}:{SCOPE.user_id}"])),
         ctx=ctx, bridge=object(), journal=Deliveries(tmp_path / "delivery.sqlite3"),
-        _artist_renderer=lambda *args: renderer,
+        _artist_renderer=lambda *args: renderer, group_thought_runtime=None,
     )
 
     async def open_store(runtime, path):

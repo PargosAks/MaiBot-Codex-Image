@@ -24,9 +24,15 @@ PLAN = (
     "decision 必含 action、非空 reason：wait 可有60到86400的整数 delay_seconds；"
     "create 必含 brief={intent,subject,mood,prompt,completion_criteria}（均非空字符串，prompt最多4000字符）"
     "与 inspiration_keys（仅 inspirations 已有key，可空）；continue/share/defer/abandon 必含已有work_id，"
+    "origin=group_thought 的灵感是你从本群话题形成的创作念头，不是成员委托、原话或消息统计。"
+    "可不采用、等待或与其他本空间灵感合成主题；采用时必须选择对应 inspiration_keys，"
+    "再自行决定画什么，不把记下念头视为必须绘图或分享，也不把同一念头复制为新 ideas 来绕过采用记录。"
     "create 仅在没有 planned/deferred/creating/review_pending 活动作品时允许。"
     "continue/defer 仅用于 planned/deferred 作品；defer 还必含60到86400的整数 delay_seconds。"
     "share 仅用于 finished 且 best_version 非空的作品；abandon 仅用于上述活动作品。"
+    "sharing 是当前可信分享许可；allowed=false 时只收藏，不提出 share。"
+    "collect_only 仍可自主规划、创作、评审和收藏；original_group 仅允许分享到当前原群，"
+    "不表示必须分享，评审接受后也可以等待或保留作品。分享不允许指定或改变目标。"
     "已有计划再次唤醒时，应决定 continue/wait/defer/abandon，不因定时到达就必画，也不覆盖已有意图。"
     "有 profiles 时，create 可另含 creative={profile_id,profile_revision,series_id,changes,reason}；"
     "series_id 可为 null，changes 只能使用所选档案 variable 的键。档案 stable 属性必须保留；"
@@ -182,7 +188,7 @@ def _context(context: dict) -> dict:
     try:
         _object(context, set(), set(FIELDS) | {"persona", "current_work", "current_version",
                                              "review_contract", "review_inputs", "profiles", "series",
-                                             "assets", "asset_details"})
+                                             "assets", "asset_details", "sharing"})
         canonical_json(context)
         _safe(context)
         for name in FIELDS:
@@ -195,6 +201,12 @@ def _context(context: dict) -> dict:
                 _row(context[name], collection)
         if "persona" in context:
             _require(type(context["persona"]) is str)
+        if "sharing" in context:
+            permission = context["sharing"]
+            _object(permission, {"mode", "allowed"})
+            _require(permission["mode"] in {"collect_only", "original_group", "private"})
+            _require(type(permission["allowed"]) is bool)
+            _require(permission["mode"] != "collect_only" or permission["allowed"] is False)
         if {"review_contract", "review_inputs"}.intersection(context):
             _review_metadata(context)
         if {"profiles", "series"}.intersection(context):

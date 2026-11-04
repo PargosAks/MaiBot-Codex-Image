@@ -1,5 +1,5 @@
 [plugin]
-config_version = "0.10.0"
+config_version = "0.11.0"
 enabled = true
 
 [connection]
@@ -30,6 +30,15 @@ max_revisions = 0
 # Each spaces entry uses space_id, platform, user_id (delegator), stream_id
 # (existing Host session), group_id (empty for private), continuous=false,
 # consent_ref, and limits with the same five fields as global_limits.
+# group_inspiration=false: opt in per group to MaiBot's planner-authored visual
+# thoughts. No transcript/contributor counts or direct model/render/send call.
+# Authorized chat/idle planning may adopt them using the existing budgets;
+# disabling this flag hides unadopted thoughts but preserves existing plans.
+# group_share_mode="collect_only" is the independent default for every group:
+# creation/review may continue, but autonomous images stay in the workspace.
+# "original_group" permits (never forces) autonomous sharing to the verified group.
+# This field does not alter private chats, budgets, or explicit command permissions.
+# The Host may continue normal planner rounds after a tool call.
 # See docs/implementation-stage-6.md. All budgets default to zero.
 # Profiles and series belong to the artist ledger. Existing configuration entries
 # are legacy imports; new installations do not need to configure a catalog.

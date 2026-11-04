@@ -9,8 +9,12 @@ Integration (no automatic registration or runtime startup)::
         # Set self.studio_chat = StudioChat(self.ctx, policy=..., read=...).
         # In artist_chat, after trusted_identity, for EVERY receive event:
         #     pure = is_studio_status_message(kwargs.get("message"))
-        #     self.studio_chat.note_ingress(Scope(**scope), message_id, is_query=pure)
+        #     noted = self.studio_chat.note_ingress(Scope(**scope), message_id,
+        #         is_query=pure, is_suggestion=is_studio_suggestion_message(kwargs.get("message")))
         #     if pure: return None  # Do not call artist_runtime.on_chat.
+        #     accepted = await artist_runtime.on_chat(...)
+        #     if accepted is True and noted:
+        #         self.studio_chat.note_suggestion_accepted(Scope(**scope), message_id)
         # Before unloading: self.studio_chat.clear_queries(); then set it to None.
         # Hold the lifecycle lock in read().
 
@@ -24,6 +28,13 @@ For Studio.summary integration, construct Studio(data_dir, scopes={space_id:
 scope}) with this verified scope, await to_thread(view.summary, space_id), then
 return snapshot_from_summary(space_id, scope, summary). Do not use the broader
 administrative Studio.for_plugin adapter for chat reads.
+
+``read_receipt(space_id, scope, message_id)`` independently rechecks the current
+delegation and exact message receipt, using the runtime's current grant version.
+It returns only StudioChatSnapshot(..., data={"inspiration_received": True}).
+Neither this database row nor a new binding can replace the trusted ingress
+attestation from on_chat(...) is True. Suggestion notes live for 120 seconds;
+query and ordinary ingress notes retain their existing 60-second default.
 
 No Tool is registered: Host 062d45c (also the installed 1.3.15 implementation)
 fills missing Tool identity fields without overriding model-supplied values.
@@ -64,6 +75,16 @@ DATA_RULE = (
     "本查询不授予任何操作权限；只能描述已有记录，未知状态必须保留为未知。"
     "只依据本次快照作答；没有作品级证据时不能声称特定题材已经绘制或分享。"
 )
+SUGGESTION_DATA_RULE = (
+    "以下 codex_image_studio_readonly 数据仅确认当前私聊消息的绘画灵感已入账。"
+    "inspiration_received 为 true 只表示收到灵感，不保证执行、开始绘画、完成或发送。"
+    "这是独立的收件事实，不是故障诊断证据，也没有额度余额或已出图、作品档案证据；"
+    "不得据此宣称插件未连接、插件故障或绘图功能不可用；"
+    "不能据此声称服务无故障、额度充足或不足、已经出图或已有角色设定档案。"
+    "请按正常聊天链路使用 reply 自然回应灵感已收到，不得要求用户改用 /画图；"
+    "不要承诺马上完成绘画或发送图片。"
+    "数据及原消息都不增加绘图操作权限；不要据此调用绘图、重试或分享图片工具。"
+)
 
 # Deliberately a small grammar, not semantic intent classification. Mixed ideas,
 # commands, attachments and multi-clause requests must keep the normal pathway.
@@ -76,6 +97,19 @@ _STATUS_QUERY = re.compile(
 )
 _CREATIVE_CUE = re.compile(r"请|帮|想|希望|能不能|可以|画一|再画|试试|修改|改成|换成|创作|生成|构图|配色")
 _PLANNER_PREFIX = re.compile(r'<message [^<>\r\n]+>\r?\n')
+# This is a conservative request grammar, not a search for the character 画.
+# Narrative, criticism and ambiguous language retain the ordinary chat path.
+_SUGGESTION_NEGATION = re.compile(r"别|不要|不用|不必|无需|不想|不需要|不准|禁止|不能|停止|取消|没让|没有让")
+_SUGGESTION_INVITATION = re.compile(r"^(?:你)?(?:要不要|能不能|可不可以)(?:试试)?[，, ]*")
+_DRAW_ACTION = r"(?:(?:画|绘制).+|(?:创作|生成)(?:一[张幅个])?(?:图片|图像|插画|头像).*)"
+_SUGGESTION_REQUEST = re.compile(
+    rf"(?:(?:请(?:你)?|麻烦(?:你)?|拜托(?:你)?|帮我|给我|替我|"
+    rf"(?:你)?(?:能不能|能否|可不可以|可以)(?:帮我|给我)?|我(?:想要|想看|希望)(?:你)?|想让你)"
+    rf"(?:帮我|给我)?(?:再)?{_DRAW_ACTION}"
+    r"|(?:画(?:一[个张幅只]|一下|[个张幅只])|再画|画出|绘制).+"
+    r"|(?:按照|按|根据|参照|参考)[^。！？!?\r\n]{1,100}?"
+    r"(?:画(?:一[个张幅只]|一下|[个张幅只])|画出|绘制).+)"
+)
 
 
 def is_studio_status_query(text: object) -> bool:
@@ -110,6 +144,31 @@ def is_studio_status_message(message: object) -> bool:
     return is_studio_status_query(message.get("processed_plain_text"))
 
 
+def is_studio_suggestion_message(message: object) -> bool:
+    """Recognize known explicit drawing requests, never authorize their receipt.
+
+    False negatives are intentional. In particular, mentioning a drawing,
+    evaluating one, and saying that the speaker drew one are not requests.
+    """
+    if type(message) is not dict or any(message.get(flag) for flag in ("is_command", "is_notify")):
+        return False
+    raw = message.get("raw_message")
+    if raw is not None and (type(raw) is not list or any(
+            type(part) is not dict or part.get("type") != "text" for part in raw)):
+        return False
+    text = message.get("processed_plain_text")
+    if type(text) is not str or not 0 < len(text) <= 512:
+        return False
+    text = text.strip()
+    # Only remove a known positive question at the beginning. A subsequent
+    # negative instruction (能不能不要画猫) remains negative.
+    text = _SUGGESTION_INVITATION.sub("", text, count=1)
+    if (not text or text[0] in "/!！#" or "/" in text or "\n" in text or "\r" in text
+            or _SUGGESTION_NEGATION.search(text) or is_studio_status_query(text)):
+        return False
+    return _SUGGESTION_REQUEST.fullmatch(text) is not None
+
+
 def _display_message_id(message_id: str) -> str:
     # Fixed public Host message_id_alias contract, tested against its real code.
     if len(message_id) <= 12:
@@ -118,7 +177,7 @@ def _display_message_id(message_id: str) -> str:
     return "m" + base64.b32encode(digest).decode("ascii").lower()[:6]
 
 
-def _status_items(items: list, scope: Scope, message_id: str) -> bool:
+def _status_items(items: list, scope: Scope, message_id: str, *, is_suggestion: bool = False) -> bool:
     """Select the latest REAL IM item, not the last user-role prompt item.
 
     Fixed Host emits its time/reminders/reference prompts as unprefixed user
@@ -160,6 +219,8 @@ def _status_items(items: list, scope: Scope, message_id: str) -> bool:
                 or re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]", attrs["time"]) is None):
             return False
         text = text[prefix.end():]
+        if is_suggestion:
+            return is_studio_suggestion_message({"processed_plain_text": text})
         return is_studio_status_query(text)
     return False
 
@@ -195,6 +256,12 @@ class StudioChatReader(Protocol):
         ...
 
 
+class StudioReceiptReader(Protocol):
+    async def __call__(self, space_id: str, scope: Scope, message_id: str) -> StudioChatSnapshot:
+        """Read the exact message's receipt and current authority without writes."""
+        ...
+
+
 @dataclass(frozen=True)
 class _QueryNote:
     binding: StudioChatBinding
@@ -202,6 +269,13 @@ class _QueryNote:
     consumed: bool = False
     planner_consumed: bool = False
     is_query: bool = True
+
+
+@dataclass(frozen=True)
+class _SuggestionNote(_QueryNote):
+    accepted: bool = False
+    busy: bool = False
+    auth_version: int = 0
 
 
 def snapshot_from_summary(space_id: str, scope: Scope, summary: Dict) -> StudioChatSnapshot:
@@ -273,7 +347,9 @@ class StudioChat:
     """
 
     def __init__(self, ctx, *, policy: Callable[[], StudioChatPolicy], read: StudioChatReader,
+                 read_receipt: Optional[StudioReceiptReader] = None,
                  timeout_seconds: float = 2.0, query_ttl_seconds: float = 60.0,
+                 suggestion_ttl_seconds: float = 120.0,
                  query_clock: Callable[[], float] = monotonic):
         if (type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds)
                 or not 0 < timeout_seconds <= 4):
@@ -281,9 +357,14 @@ class StudioChat:
         if (type(query_ttl_seconds) not in (int, float) or not math.isfinite(query_ttl_seconds)
                 or not 0 < query_ttl_seconds <= 120):
             raise ValueError("Studio query note TTL must be finite, positive and at most 120 seconds")
+        if (type(suggestion_ttl_seconds) not in (int, float) or not math.isfinite(suggestion_ttl_seconds)
+                or not 0 < suggestion_ttl_seconds <= 120):
+            raise ValueError("Studio suggestion TTL must be finite, positive and at most 120 seconds")
         self.ctx, self.policy, self.read = ctx, policy, read
+        self.read_receipt = read_receipt
         self.timeout_seconds = timeout_seconds
         self.query_ttl_seconds, self._query_clock = query_ttl_seconds, query_clock
+        self.suggestion_ttl_seconds = suggestion_ttl_seconds
         self._queries: Dict[Tuple[Scope, str], _QueryNote] = {}
 
     def clear_queries(self) -> None:
@@ -292,9 +373,12 @@ class StudioChat:
 
     def _purge_queries(self) -> float:
         now = self._query_clock()
+        policy = self.policy() if any(type(note) is _SuggestionNote for note in self._queries.values()) else None
         for key, note in list(self._queries.items()):
             if note.deadline <= now:
                 del self._queries[key]
+            elif type(note) is _SuggestionNote and self._binding(policy, key[0].stream_id) != note.binding:
+                self._invalidate_suggestion(key)
         return now
 
     def note_query(self, scope: Scope, message_id: str) -> bool:
@@ -307,7 +391,8 @@ class StudioChat:
         """
         return self.note_ingress(scope, message_id, is_query=True)
 
-    def note_ingress(self, scope: Scope, message_id: str, *, is_query: bool) -> bool:
+    def note_ingress(self, scope: Scope, message_id: str, *, is_query: bool,
+                     is_suggestion: bool = False) -> bool:
         """Observe EVERY trusted receive event, including nonqueries, without text.
 
         A subsequent unrelated event supersedes old queries even if that event
@@ -315,15 +400,21 @@ class StudioChat:
         reorder events or rearm consumed notes. Call only after trusted_identity.
         """
         if (type(scope) is not Scope or not _text(message_id) or len(message_id) > 512
-                or type(is_query) is not bool):
+                or type(is_query) is not bool or type(is_suggestion) is not bool
+                or (is_query and is_suggestion)):
             return False
         try:
             now = self._purge_queries()
             binding = self._binding(self.policy(), scope.stream_id)
-            if binding is None or binding.scope != scope:
-                return False
             key = (scope, message_id)
             if key in self._queries:
+                return False
+            # A shorter-lived new event must never let an older 120s suggestion
+            # reappear after its own 60s tombstone expires. Keep the old ID inert.
+            for old_key in list(self._queries):
+                if old_key[0] == scope:
+                    self._invalidate_suggestion(old_key)
+            if binding is None or binding.scope != scope:
                 return False
             if len(self._queries) >= MAX_QUERY_NOTES:
                 # An unrecordable newer event must not leave an old query active.
@@ -334,11 +425,63 @@ class StudioChat:
                     if key[0] == scope else value for key, value in self._queries.items()
                 }
                 return False
-            self._queries[key] = _QueryNote(binding, now + self.query_ttl_seconds, is_query=is_query)
+            if is_suggestion:
+                self._queries[key] = _SuggestionNote(binding, now + self.suggestion_ttl_seconds, is_query=False)
+            else:
+                self._queries[key] = _QueryNote(binding, now + self.query_ttl_seconds, is_query=is_query)
             return True
         except Exception:
             logger.warning("Studio chat query note skipped: STUDIO_QUERY_UNAVAILABLE")
             return False
+
+    def note_suggestion_accepted(self, scope: Scope, message_id: str) -> bool:
+        """Called ONLY by ingress after runtime.on_chat(...) is exactly True.
+
+        A persisted receipt alone cannot create this ephemeral attestation. No
+        binding, reload, duplicate or late completion can retroactively arm it.
+        """
+        if type(scope) is not Scope or not _text(message_id) or len(message_id) > 512:
+            return False
+        key = (scope, message_id)
+        try:
+            self._purge_queries()
+            note = self._queries.get(key)
+            binding = self._binding(self.policy(), scope.stream_id)
+            if (type(note) is not _SuggestionNote or note.accepted or note.consumed
+                    or note.planner_consumed or note.binding != binding
+                    or self._latest_note(scope) != (key, note)):
+                self._invalidate_suggestion(key)
+                return False
+            self._queries[key] = replace(note, accepted=True)
+            return True
+        except Exception:
+            self._invalidate_suggestion(key)
+            logger.warning("Studio suggestion note skipped: STUDIO_QUERY_UNAVAILABLE")
+            return False
+
+    def _invalidate_suggestion(self, key: Optional[Tuple[Scope, str]]) -> None:
+        note = self._queries.get(key)
+        if type(note) is _SuggestionNote:
+            self._queries[key] = replace(note, accepted=False, consumed=True, planner_consumed=True, busy=False)
+
+    def _suggestion_ready(self, key: Tuple[Scope, str], note: _QueryNote) -> bool:
+        if type(note) is not _SuggestionNote:
+            return note.is_query
+        if note.busy:
+            # Both contenders fail closed; neither can publish a stale claim.
+            self._invalidate_suggestion(key)
+            return False
+        if note.accepted and self.read_receipt is None:
+            self._invalidate_suggestion(key)
+            return False
+        return note.accepted
+
+    def _complete_read(self, key: Tuple[Scope, str], claimed: _QueryNote, auth_version: int) -> None:
+        if (self._queries.get(key) is not claimed or self._query_clock() >= claimed.deadline
+                or self._latest_note(key[0]) != (key, claimed)):
+            raise StoreError("STUDIO_QUERY_EXPIRED", "Note expired, was cleared or superseded during the read")
+        if type(claimed) is _SuggestionNote:
+            self._queries[key] = replace(claimed, busy=False, auth_version=auth_version)
 
     def _latest_note(self, scope: Scope):
         return next(((key, value) for key, value in reversed(self._queries.items()) if key[0] == scope), None)
@@ -380,11 +523,17 @@ class StudioChat:
                 or stream.get("chat_type", "private") != "private"):
             raise StoreError("HOST_STREAM_MISMATCH", "Host stream is not the configured owner's private chat")
 
-    async def _read_data(self, policy: StudioChatPolicy, binding: StudioChatBinding) -> str:
+    async def _read_data(self, policy: StudioChatPolicy, binding: StudioChatBinding, *,
+                         message_id: Optional[str] = None, auth_version: int = 0) -> Tuple[str, int]:
         # Both planner and replyer independently obtain fresh verified facts.
         async with asyncio.timeout(self.timeout_seconds):
             await self._verify_private_stream(binding.scope)
-            snapshot = await self.read(binding.space_id, binding.scope)
+            if message_id is None:
+                snapshot = await self.read(binding.space_id, binding.scope)
+            else:
+                if self.read_receipt is None:
+                    raise StoreError("STUDIO_VIEW_INVALID", "No receipt reader configured")
+                snapshot = await self.read_receipt(binding.space_id, binding.scope, message_id)
         if (type(snapshot) is not StudioChatSnapshot or snapshot.space_id != binding.space_id
                 or type(snapshot.scope) is not Scope or snapshot.scope != binding.scope
                 or snapshot.authorized is not True or type(snapshot.auth_version) is not int
@@ -392,13 +541,20 @@ class StudioChat:
             raise StoreError("STUDIO_AUTH_REQUIRED", "Current scoped delegation is required")
         if self.policy() != policy:
             raise StoreError("STUDIO_AUTH_CHANGED", "Studio policy changed during the read")
-        return _bounded_json(snapshot.data)
+        if message_id is not None:
+            if (auth_version and snapshot.auth_version != auth_version):
+                raise StoreError("STUDIO_AUTH_CHANGED", "Receipt delegation version changed")
+            if (type(snapshot.data) is not dict or set(snapshot.data) != {"inspiration_received"}
+                    or snapshot.data["inspiration_received"] is not True):
+                raise StoreError("STUDIO_VIEW_INVALID", "Receipt is not an exact positive acknowledgement")
+            return _bounded_json({"inspiration_received": True}), snapshot.auth_version
+        return _bounded_json(snapshot.data), snapshot.auth_version
 
     async def before_replyer_request(self, **kwargs) -> Optional[Dict]:
         """Match Host target ID + actual private session, never reply_tool_args.
 
         No text matching here: replyer items contain its own generated prompt.
-        The receive-side note is the proof that the real target was a pure query.
+        The receive-side note proves a pure query or a newly accepted suggestion.
         Preserve every original item/question and model option; append only data.
         """
         session_id, message_id = kwargs.get("session_id"), kwargs.get("reply_message_id")
@@ -406,6 +562,7 @@ class StudioChat:
                 or type(kwargs.get("item_schema_version")) is not int
                 or kwargs["item_schema_version"] != 1 or type(kwargs.get("items")) is not list):
             return None
+        key = None
         try:
             self._purge_queries()
             policy = self.policy()
@@ -414,24 +571,27 @@ class StudioChat:
                 return None
             key = (binding.scope, message_id)
             note = self._queries.get(key)
-            if (note is None or note.consumed or not note.is_query or note.binding != binding
+            if (note is None or not self._suggestion_ready(key, note) or note.consumed or note.binding != binding
                     or self._latest_note(binding.scope) != (key, note)):
                 return None
             # Claim before awaiting: concurrent/replayed model requests cannot
             # reuse this receive event, even if lookup/read fails or is cancelled.
-            claimed = replace(note, consumed=True)
+            suggestion = type(note) is _SuggestionNote
+            claimed = replace(note, consumed=True, **({"busy": True} if suggestion else {}))
             self._queries[key] = claimed
-            data = await self._read_data(policy, binding)
-            if (self._queries.get(key) is not claimed or self._query_clock() >= claimed.deadline
-                    or self._latest_note(binding.scope) != (key, claimed)):
-                raise StoreError("STUDIO_QUERY_EXPIRED", "Query note expired or was cleared during the read")
+            data, version = await self._read_data(policy, binding, message_id=message_id if suggestion else None,
+                                                   auth_version=note.auth_version if suggestion else 0)
+            self._complete_read(key, claimed, version)
         except asyncio.CancelledError:
+            self._invalidate_suggestion(key)
             raise
         except Exception as exc:
+            self._invalidate_suggestion(key)
             code = exc.code if type(exc) is StoreError else "STUDIO_QUERY_UNAVAILABLE"
             logger.warning("Studio replyer query skipped: %s", code)
             return None
-        items = [*kwargs["items"], _item("SystemMessageItem", DATA_RULE), _item("UserMessageItem", data)]
+        rule = SUGGESTION_DATA_RULE if suggestion else DATA_RULE
+        items = [*kwargs["items"], _item("SystemMessageItem", rule), _item("UserMessageItem", data)]
         return {"action": "continue", "modified_kwargs": {**kwargs, "items": items}}
 
     async def before_request(self, **kwargs) -> Optional[Dict]:
@@ -440,6 +600,7 @@ class StudioChat:
         if (not _text(session_id) or type(kwargs.get("item_schema_version")) is not int
                 or kwargs["item_schema_version"] != 1 or type(kwargs.get("items")) is not list):
             return None
+        key = None
         try:
             self._purge_queries()
             policy = self.policy()
@@ -450,27 +611,30 @@ class StudioChat:
             if latest is None:
                 return None
             key, note = latest
-            if (not note.is_query or note.consumed or note.planner_consumed or note.binding != binding
-                    or not _status_items(kwargs["items"], binding.scope, key[1])):
+            suggestion = type(note) is _SuggestionNote
+            if (not self._suggestion_ready(key, note) or note.consumed or note.planner_consumed or note.binding != binding
+                    or not _status_items(kwargs["items"], binding.scope, key[1], is_suggestion=suggestion)):
                 return None
             # Host's shortened IDs can collide. Never resolve an ambiguous alias.
             if sum(_display_message_id(candidate[1]) == _display_message_id(key[1])
                    for candidate in self._queries if candidate[0] == binding.scope) != 1:
                 return None
-            claimed = replace(note, planner_consumed=True)
+            claimed = replace(note, planner_consumed=True, **({"busy": True} if suggestion else {}))
             self._queries[key] = claimed
-            data = await self._read_data(policy, binding)
-            if (self._queries.get(key) is not claimed or self._query_clock() >= claimed.deadline
-                    or self._latest_note(binding.scope) != (key, claimed)):
-                raise StoreError("STUDIO_QUERY_EXPIRED", "Query was cleared, expired or superseded during the read")
+            data, version = await self._read_data(policy, binding, message_id=key[1] if suggestion else None,
+                                                   auth_version=note.auth_version if suggestion else 0)
+            self._complete_read(key, claimed, version)
         except asyncio.CancelledError:
+            self._invalidate_suggestion(key)
             raise
         except Exception as exc:
+            self._invalidate_suggestion(key)
             # Do not log state, callback exception text, identifiers or credentials.
             code = exc.code if type(exc) is StoreError else "STUDIO_QUERY_UNAVAILABLE"
             logger.warning("Studio chat query skipped: %s", code)
             return None
-        items = [*kwargs["items"], _item("SystemMessageItem", DATA_RULE), _item("UserMessageItem", data)]
+        rule = SUGGESTION_DATA_RULE if suggestion else DATA_RULE
+        items = [*kwargs["items"], _item("SystemMessageItem", rule), _item("UserMessageItem", data)]
         return {"action": "continue", "modified_kwargs": {**kwargs, "items": items,
                                                          "built_message_count": len(items)}}
 

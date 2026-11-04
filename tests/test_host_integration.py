@@ -310,6 +310,7 @@ class Harness:
                 "autonomy": {"enabled": enabled, "tick_seconds": .1, "idle_seconds": 300,
                              "global_limits": limits, "spaces": [{"space_id": "studio", "platform": PLATFORM,
                              "user_id": OWNER, "stream_id": STREAM, "group_id": "synthetic-group" if group else "",
+                             **({"group_share_mode": "original_group"} if group else {}),
                              "continuous": True, "consent_ref": "synthetic-explicit-consent", "limits": limits,
                              "reference_inputs": media, "media_consent_ref": media_consent if media else ""}]}}
 

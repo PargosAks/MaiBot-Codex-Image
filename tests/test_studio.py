@@ -12,7 +12,7 @@ import pytest
 
 from image_plugin_under_test import CodexImagePlugin
 from image_plugin_under_test.policy import Delegation, Limits, Scope, StoreError
-from image_plugin_under_test.store import ArtistStore, _SCHEMA
+from image_plugin_under_test.store import ArtistStore, SCHEMA_VERSION, _SCHEMA
 from image_plugin_under_test.studio import Studio
 from protocol_fixture import PNG
 
@@ -76,7 +76,7 @@ def test_all_reads_do_not_change_bytes_or_dispatch(data, monkeypatch):
     original = view.image("a", "v-a", False)
     assert base64.b64decode(original["chunk_base64"]) == PNG
     assert snapshot(root) == before
-    assert db.db.execute("PRAGMA user_version").fetchone()[0] == 7
+    assert db.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
 
 
 @pytest.mark.parametrize("call", [
@@ -192,7 +192,7 @@ def test_old_schema_read_never_migrates(tmp_path):
     assert snapshot(tmp_path) == before
 
 
-@pytest.mark.parametrize("version", [0, 8, 999])
+@pytest.mark.parametrize("version", [0, 10, 999])
 def test_unknown_schema_explicit_rejection(tmp_path, version):
     db = sqlite3.connect(tmp_path / "artist.sqlite3")
     db.execute(f"PRAGMA user_version={version}")
@@ -416,7 +416,7 @@ async def test_studio_r1_03_real_review_contract_is_visible_in_summary_and_recor
     assert view.records("a", "reviews")["items"][0]["review"]["decision"] == decision
 
 
-@pytest.mark.parametrize("version", range(1, 8))
+@pytest.mark.parametrize("version", range(1, SCHEMA_VERSION + 1))
 def test_each_supported_schema_read_does_not_migrate(tmp_path, version):
     from image_plugin_under_test import store as module
 

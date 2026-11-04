@@ -5,7 +5,7 @@
   "pages": [{
     "id": "studio",
     "title": "小画师",
-    "description": "只读创作摘要、预算、版本原图、评审及档案；不生成、不发送。",
+    "description": "只读创作摘要、预算、版本原图、评审、档案及 MaiBot 群聊构思；群灵感簿为实验数据，不作为生产收信；不生成、不发送。",
     "placement": "workspace",
     "icon": "chart",
     "mode": "custom",
@@ -21,7 +21,7 @@
       }},
       "records": {"api": "studio_records", "version": "1", "parameters": {
         "space_id": {"type": "string", "required": true, "max_length": 200},
-        "section": {"type": "string", "required": true, "choices": ["works", "tasks", "versions", "reviews", "profiles", "series", "assets"]},
+        "section": {"type": "string", "required": true, "choices": ["works", "tasks", "versions", "reviews", "profiles", "series", "assets", "group_thoughts", "group_inspirations"]},
         "offset": {"type": "integer", "minimum": 0, "maximum": 10000},
         "limit": {"type": "integer", "minimum": 1, "maximum": 50},
         "work_id": {"type": "string", "max_length": 200}

@@ -7,6 +7,7 @@ import logging
 import os
 import re
 from pathlib import Path
+from typing import Literal
 
 from maibot_sdk import Field, PluginConfigBase
 
@@ -37,6 +38,14 @@ class ArtistSpace(PluginConfigBase):
     user_id: str = Field(default="", description="持续委托人，必须在 connection.allowed_users 内")
     stream_id: str = Field(default="", description="Host 已有聊天流 ID；不得由模型指定")
     group_id: str = Field(default="", description="空值为委托人的私聊；群聊填写真实群 ID")
+    # SDK edits replace the config model. Prevent a false→true in-place edit
+    # from hiding a consent boundary while an exact receipt query is in flight.
+    group_inspiration: bool = Field(default=False, strict=True, frozen=True,
+                                    description="允许 MaiBot 从本群话题自主记下视觉念头；不采集成员原话，不直接绘图或发送")
+    group_share_mode: Literal["collect_only", "original_group"] = Field(
+        default="collect_only", frozen=True,
+        description="群作品自主分享权限：collect_only 仅收藏；original_group 允许 MaiBot 自主决定分享到原群。私聊不使用此项",
+    )
     continuous: bool = Field(default=False, strict=True, description="明确授权持续自主创作，白名单本身不代表委托")
     consent_ref: str = Field(default="", description="管理员录入的持续委托依据；不要填密钥")
     reference_inputs: bool = Field(default=False, strict=True, description="单独允许采集当前消息图片作为参考素材")
@@ -113,6 +122,10 @@ class HostRuntime:
         self.store = None
         self.lease = None
         self.artists = {}
+        # Snapshot of opt-in groups only after exact Host binding/consent checks.
+        # Not a subscription. The current Host cannot attest final group ingress.
+        self.verified_notebook_groups = {}
+        self.grant_versions = {}
         self.tasks = {}
         self.signals = {}
         self.errors = {}
@@ -204,21 +217,32 @@ class HostRuntime:
                           expected_auth_version=current["auth_version"])
             await self.db("import_creative", item.space_id, scope, profiles=item.profiles,
                           series=item.series, expected_auth_version=current["auth_version"])
-            from .host_adapters import HostThinking, HostSender
+            await self.db("configure_share_policy", item.space_id, scope, group_id=item.group_id,
+                          mode=item.group_share_mode if item.group_id else "private",
+                          expected_auth_version=current["auth_version"])
+            await self.db("sync_group_thoughts", item.space_id, scope,
+                          group_id=item.group_id if item.group_inspiration else "",
+                          thoughts=[], enabled=bool(item.group_id and item.group_inspiration),
+                          expected_auth_version=current["auth_version"])
+            from .host_adapters import HostThinking, HostSender, SHARE_TARGET_TIMEOUT_SECONDS
             artist = Artist(
                 self.store, item.space_id, scope,
                 Thinking(HostThinking(plugin.ctx, plan_task=cfg.plan_task, review_task=cfg.review_task,
                                       timeout_seconds=cfg.timeout_seconds)),
                 plugin._artist_renderer(self.store, item.space_id, scope, binding),
                 HostSender(plugin.ctx, plugin.journal, store=self.store, space_id=item.space_id, scope=scope,
-                           timeout_seconds=plugin.config.connection.send_timeout_seconds),
+                           timeout_seconds=plugin.config.connection.send_timeout_seconds, group_id=item.group_id),
                 persona=cfg.persona, idle_seconds=cfg.idle_seconds, timeout_seconds=cfg.timeout_seconds,
                 send_timeout_seconds=plugin.config.connection.send_timeout_seconds,
+                share_preflight_seconds=SHARE_TARGET_TIMEOUT_SECONDS if item.group_id else 0.0,
                 allow_network_renderer=True, allow_host_sender=True,
                 reference_inputs=item.reference_inputs,
             )
             await artist.recover(offline=True)
             self.artists[item.space_id] = artist
+            self.grant_versions[item.space_id] = current["auth_version"]
+            if item.group_inspiration and item.group_id:
+                self.verified_notebook_groups[item.space_id] = (item.group_id, scope, item.consent_ref)
             self.media_policies[item.space_id] = (item.reference_inputs, item.media_consent_ref)
             self.signals[item.space_id] = asyncio.Event()
         for space_id in self.artists:
@@ -234,6 +258,11 @@ class HostRuntime:
         while not self.stopping:
             signal.clear()
             try:
+                thoughts = self.plugin.group_thought_runtime
+                if thoughts is not None:
+                    await thoughts.sync(space_id)
+                if self.stopping:
+                    break
                 await artist.tick()
                 self.errors.pop(space_id, None)
             except Exception as exc:

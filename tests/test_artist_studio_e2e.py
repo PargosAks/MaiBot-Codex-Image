@@ -442,7 +442,12 @@ async def assert_public_reads(h):
     expected = assert_projection(h)
     spaces = await h.api("studio_spaces", offset=0, limit=20)
     assert spaces["items"] == [{"space_id": SPACE, "authorized": True, "state_exists": True}]
-    assert await h.api("studio_summary", space_id=SPACE) == expected
+    # Sharing permission is an administrative projection, not private context
+    # automatically disclosed to the chat planner/replyer.
+    assert "sharing" not in expected
+    assert await h.api("studio_summary", space_id=SPACE) == {
+        **expected, "sharing": {"mode": "private", "allowed": True},
+    }
     for section in ("works", "tasks", "versions", "reviews", "profiles", "series", "assets"):
         result = await h.api("studio_records", space_id=SPACE, section=section, offset=0, limit=50, work_id="")
         view = Studio(h.data_paths.data_dir, scopes={SPACE: SCOPE}, clock=h.clock)

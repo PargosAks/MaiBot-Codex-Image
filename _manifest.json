@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "id": "pargosaks.maibot-codex-image",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "name": "Codex 订阅绘图",
   "description": "MaiBot 小画师：在授权会话中自主规划、绘图、评审与分享，在独立工作区查看作品和档案。绘图由独立 MCP 提供。",
   "author": {"name": "PargosAks / OpenAI Codex", "url": "https://github.com/PargosAks"},

@@ -21,6 +21,7 @@ from .thinking import _context, _review_images
 
 _IMAGE_LIMIT = 8 * 1024 * 1024
 _JSON_LIMIT = 32768
+SHARE_TARGET_TIMEOUT_SECONDS = 30.0
 
 
 def _image(data, mime):
@@ -224,15 +225,18 @@ class HostSender:
     simulation = False
 
     def __init__(self, ctx, deliveries: Deliveries, *, store: ArtistStore, space_id: str, scope: Scope,
-                 timeout_seconds: float = 240.0):
+                 timeout_seconds: float = 240.0, group_id: str = ""):
         if not isinstance(scope, Scope):
             raise StoreError("INVALID_SCOPE", "A trusted Host scope is required")
         if (isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
                 or not 0 < timeout_seconds <= 600 or not math.isfinite(timeout_seconds)):
             raise StoreError("INVALID_ARGUMENT", "timeout_seconds must be finite, positive and at most 600")
+        if not isinstance(group_id, str) or len(group_id) > 200 or group_id != group_id.strip():
+            raise StoreError("INVALID_ARGUMENT", "A trusted bounded group identifier is required")
         self.ctx, self.store, self.space_id, self.scope = ctx, store, space_id, scope
         self.deliveries = deliveries
         self.timeout_seconds = timeout_seconds
+        self.group_id = group_id
 
     def _version(self, scope, version):
         if not isinstance(scope, Scope) or scope != self.scope:
@@ -247,6 +251,7 @@ class HostSender:
             raise StoreError("ARTIFACT_INVALID", "Stored image digest mismatch")
         request_id = stable_id("share", stored["work_id"], stored["version_id"])
         operation = self.store.validate_submitting(self.space_id, scope, request_id)
+        self.store.check_share_target(self.space_id, scope, group_id=self.group_id)
         if (
             operation["action"] != "share"
             or operation["work_id"] != stored["work_id"]
@@ -280,15 +285,35 @@ class HostSender:
                     (state, claim["job_id"]),
                 )
 
+    async def _verify_group(self):
+        if not self.group_id:
+            return
+        response = await self.ctx.call_host_method(
+            "cap.call", payload={"capability": "chat.get_stream_by_group_id",
+                                  "args": {"group_id": self.group_id, "platform": self.scope.platform}},
+            timeout_ms=int(SHARE_TARGET_TIMEOUT_SECONDS * 1000),
+        )
+        stream = response.get("stream") if isinstance(response, dict) and response.get("success") is True else None
+        if not isinstance(stream, dict) or (
+            stream.get("platform") != self.scope.platform or stream.get("group_id") != self.group_id
+            or stream.get("stream_id") != self.scope.stream_id
+            or stream.get("session_id", self.scope.stream_id) != self.scope.stream_id
+            or stream.get("is_group_session") is not True
+        ):
+            raise StoreError("SHARE_TARGET_MISMATCH", "Original group no longer matches the trusted Host stream")
+
     async def send(self, *, scope: Scope, version: dict) -> bool:
         claim = {"job_id": None}
+        dispatch_started = False
         try:
             encoded = await ReadOnlyRecovery._db(self._prepare, scope, version, claim)
             if type(encoded) is bool:
                 return encoded
+            await self._verify_group()
             # Acquiring a delivery intent may wait behind SQLite. Recheck the
             # latest delegation/budget before calling the Host capability.
             await ReadOnlyRecovery._db(self._version, scope, version)
+            dispatch_started = True
             sent = await send_image_receipt(
                 self.ctx, encoded, self.scope.stream_id, timeout_seconds=self.timeout_seconds
             )
@@ -299,6 +324,16 @@ class HostSender:
             raise
         except Exception as exc:
             denied = getattr(exc, "code", None) == "E_CAPABILITY_DENIED"
+            # We own this new intent, but send.image has not begun. A failed
+            # read-only lookup or a changed grant/budget is known not to send;
+            # do not permanently lock it as an uncertain upload. Never apply
+            # this inference to another call's pre-existing delivery intent.
+            denied |= not dispatch_started and claim["job_id"] is not None
+            # A locally proven preflight refusal cannot have sent an image.
+            # Once dispatch starts, preserve uncertainty exactly as before.
+            denied |= not dispatch_started and isinstance(exc, StoreError) and exc.code in {
+                "SHARE_NOT_ALLOWED", "SHARE_POLICY_CHANGED", "SHARE_TARGET_MISMATCH",
+            }
             await ReadOnlyRecovery._db(self._finish, claim, "send_failed" if denied else "send_unknown")
             if denied:
                 return False

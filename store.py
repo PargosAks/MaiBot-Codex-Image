@@ -49,7 +49,7 @@ from .profiles import (
 )
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 9
 PREACCEPT_REJECTIONS = frozenset(
     {
         "INVALID_ARGUMENTS",
@@ -232,6 +232,36 @@ _SCHEMA_7 = (
 )
 
 
+_SCHEMA_8 = (
+    """CREATE TABLE group_thought_policy (
+        space_id TEXT PRIMARY KEY REFERENCES spaces, scope_snapshot TEXT NOT NULL,
+        platform TEXT NOT NULL, stream_id TEXT NOT NULL, group_id TEXT NOT NULL,
+        enabled INTEGER NOT NULL CHECK(enabled IN (0,1)), auth_version INTEGER NOT NULL,
+        UNIQUE(platform,stream_id), UNIQUE(platform,group_id))""",
+    """CREATE TABLE group_thought_links (
+        space_id TEXT NOT NULL REFERENCES group_thought_policy, note_id TEXT NOT NULL,
+        inspiration_key TEXT NOT NULL, summary TEXT NOT NULL, group_id TEXT NOT NULL,
+        adopted_by TEXT, adopted_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        PRIMARY KEY(space_id,note_id), UNIQUE(note_id), UNIQUE(space_id,inspiration_key),
+        FOREIGN KEY(space_id,adopted_by) REFERENCES artist_works(space_id,work_id),
+        CHECK((adopted_by IS NULL AND adopted_at IS NULL)
+            OR (adopted_by IS NOT NULL AND adopted_at IS NOT NULL)))""",
+)
+
+
+_SCHEMA_9 = (
+    """CREATE TABLE group_share_policy (
+        space_id TEXT PRIMARY KEY REFERENCES spaces, scope_snapshot TEXT NOT NULL,
+        platform TEXT NOT NULL, stream_id TEXT NOT NULL, group_id TEXT NOT NULL,
+        mode TEXT NOT NULL CHECK(mode IN ('collect_only','original_group')),
+        auth_version INTEGER NOT NULL, policy_version INTEGER NOT NULL CHECK(policy_version>0),
+        UNIQUE(platform,stream_id), UNIQUE(platform,group_id))""",
+    """CREATE TABLE share_policy_claims (
+        operation_id INTEGER PRIMARY KEY REFERENCES operations,
+        policy_version INTEGER NOT NULL CHECK(policy_version>0))""",
+)
+
+
 class ArtistStore:
     def __init__(self, path: Path, *, clock: Optional[Callable[[], datetime]] = None):
         self.path = Path(path)
@@ -250,7 +280,7 @@ class ArtistStore:
                         raise StoreError("SCHEMA_UNSUPPORTED", "Unversioned nonempty database")
                     for statement in _SCHEMA:
                         self.db.execute(statement)
-                elif version not in {1, 2, 3, 4, 5, 6, SCHEMA_VERSION}:
+                elif version not in {1, 2, 3, 4, 5, 6, 7, 8, SCHEMA_VERSION}:
                     raise StoreError("SCHEMA_UNSUPPORTED", "Artist database schema is not supported")
                 if version in {0, 1}:
                     for statement in _SCHEMA_2:
@@ -269,6 +299,12 @@ class ArtistStore:
                         self.db.execute(statement)
                 if version in {0, 1, 2, 3, 4, 5, 6}:
                     for statement in _SCHEMA_7:
+                        self.db.execute(statement)
+                if version in {0, 1, 2, 3, 4, 5, 6, 7}:
+                    for statement in _SCHEMA_8:
+                        self.db.execute(statement)
+                if version in {0, 1, 2, 3, 4, 5, 6, 7, 8}:
+                    for statement in _SCHEMA_9:
                         self.db.execute(statement)
                     self.db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         except BaseException:
@@ -498,6 +534,116 @@ class ArtistStore:
                 },
             }
 
+    @staticmethod
+    def _share_group_id(group_id):
+        if (not isinstance(group_id, str) or len(group_id) > 200
+                or group_id != group_id.strip() or any(ord(char) < 32 for char in group_id)):
+            raise StoreError("INVALID_ARGUMENT", "Invalid trusted group identifier")
+
+    def _check_group_binding(self, space_id, scope, group_id):
+        # Both collection and sharing freeze the same Host-verified target.
+        # Check both registries so configuring them in either order is safe.
+        for table in ("group_thought_policy", "group_share_policy"):
+            own = self.db.execute(f"SELECT * FROM {table} WHERE space_id=?", (space_id,)).fetchone()
+            if own is not None and (own["scope_snapshot"], own["group_id"]) != (scope.snapshot(), group_id):
+                raise StoreError("OWNER_CONFLICT", "Group scope and target are immutable")
+            collision = self.db.execute(
+                f"SELECT 1 FROM {table} WHERE space_id!=? AND platform=? AND (stream_id=? OR group_id=?)",
+                (space_id, scope.platform, scope.stream_id, group_id),
+            ).fetchone()
+            if collision is not None:
+                raise StoreError("OWNER_CONFLICT", "Group target already belongs to another space")
+
+    def configure_share_policy(
+        self, space_id, scope, *, group_id, mode, expected_auth_version
+    ) -> Dict[str, Any]:
+        """Persist trusted collection/share permission; never accept a model target.
+
+        Reapplying the same configuration keeps the epoch. Revoking and granting
+        it again advances the epoch, so an old reservation cannot revive.
+        """
+        self._share_group_id(group_id)
+        if (not isinstance(mode, str) or mode not in {"collect_only", "original_group", "private"}
+                or type(expected_auth_version) is not int or expected_auth_version < 0):
+            raise StoreError("INVALID_ARGUMENT", "Invalid share mode or authorization version")
+        if bool(group_id) != (mode != "private"):
+            raise StoreError("INVALID_ARGUMENT", "Only private mode has an empty group target")
+        with self._transaction():
+            space = self._space(space_id, scope)
+            self._expected_authorization(space, expected_auth_version)
+            self._check_group_binding(space_id, scope, group_id)
+            if mode == "private":
+                return {"mode": "private", "allowed": bool(space["authorized"])}
+            old = self.db.execute(
+                "SELECT * FROM group_share_policy WHERE space_id=?", (space_id,)
+            ).fetchone()
+            version = 1 if old is None else old["policy_version"] + int(
+                (old["mode"], old["auth_version"]) != (mode, space["auth_version"])
+            )
+            self.db.execute(
+                """INSERT INTO group_share_policy VALUES(?,?,?,?,?,?,?,?)
+                ON CONFLICT(space_id) DO UPDATE SET mode=excluded.mode,
+                auth_version=excluded.auth_version,policy_version=excluded.policy_version""",
+                (space_id, scope.snapshot(), scope.platform, scope.stream_id, group_id,
+                 mode, space["auth_version"], version),
+            )
+            return self._sharing_policy(space_id, space)[0]
+
+    def _sharing_policy(self, space_id, space):
+        policy = self.db.execute(
+            "SELECT * FROM group_share_policy WHERE space_id=?", (space_id,)
+        ).fetchone()
+        if policy is not None:
+            return ({"mode": policy["mode"], "allowed": bool(
+                policy["mode"] == "original_group" and space["authorized"]
+                and policy["auth_version"] == space["auth_version"]
+            )}, policy)
+        known_group = self.db.execute(
+            "SELECT 1 FROM group_thought_policy WHERE space_id=?", (space_id,)
+        ).fetchone()
+        # Schema-8 groups never acquire sharing permission merely by upgrading.
+        if known_group is not None:
+            return {"mode": "collect_only", "allowed": False}, None
+        return {"mode": "private", "allowed": bool(space["authorized"])}, None
+
+    def sharing_policy(self, space_id, scope) -> Dict[str, Any]:
+        """Read-only, identity-free permission summary for planning and Studio."""
+        with self._transaction():
+            return self._sharing_policy(space_id, self._space(space_id, scope))[0]
+
+    def _require_share_policy(self, space_id, space, operation=None):
+        summary, policy = self._sharing_policy(space_id, space)
+        if operation is not None:
+            claim = self.db.execute(
+                "SELECT policy_version FROM share_policy_claims WHERE operation_id=?", (operation["id"],)
+            ).fetchone()
+            # An old group reservation without an epoch is evidence, never a
+            # fresh dispatch permit. Its state and budget hold remain intact.
+            if (summary["mode"] != "private" or claim is not None) and (
+                policy is None or claim is None or claim["policy_version"] != policy["policy_version"]
+            ):
+                raise StoreError("SHARE_POLICY_CHANGED", "Sharing permission changed since reservation")
+        if not summary["allowed"]:
+            code = ("SHARE_POLICY_CHANGED" if policy is not None
+                    and policy["auth_version"] != space["auth_version"] else "SHARE_NOT_ALLOWED")
+            raise StoreError(code, "Sharing is not currently authorized")
+        return policy
+
+    def check_share_target(self, space_id, scope, *, group_id) -> bool:
+        """Validate a sender's Host-verified target against immutable storage."""
+        self._share_group_id(group_id)
+        with self._transaction():
+            space = self._space(space_id, scope)
+            targets = self.db.execute(
+                """SELECT group_id FROM group_share_policy WHERE space_id=?
+                UNION SELECT group_id FROM group_thought_policy WHERE space_id=?""", (space_id, space_id)
+            ).fetchall()
+            if ((not targets and group_id) or any(row["group_id"] != group_id for row in targets)):
+                raise StoreError("SHARE_TARGET_MISMATCH", "Sender target does not match the bound group")
+            self._authorized(space)
+            self._require_share_policy(space_id, space)
+            return True
+
     def _check_budget(self, space_id, category, day, *, adding, work_id=None, edit=False):
         for key, space_filter in (("*", None), (space_id, space_id)):
             row = self.db.execute("SELECT * FROM limits WHERE scope_key=?", (key,)).fetchone()
@@ -571,7 +717,9 @@ class ArtistStore:
                 ).fetchone()
                 if work is None:
                     raise StoreError("NOT_FOUND", "Work not found in this space")
+            share_policy = None
             if action == "share":
+                share_policy = self._require_share_policy(space_id, space)
                 self._check_share(space_id, scope, params.get("job_id"))
             self._check_budget(
                 space_id, ACTIONS[action], day, adding=1, work_id=work_id, edit=action == "edit"
@@ -608,7 +756,12 @@ class ArtistStore:
                     now,
                 ),
             )
-            return self._snapshot(self._operation(space_id, scope, request_id))
+            operation = self._operation(space_id, scope, request_id)
+            if share_policy is not None:
+                self.db.execute(
+                    "INSERT INTO share_policy_claims VALUES(?,?)", (operation["id"], share_policy["policy_version"])
+                )
+            return self._snapshot(operation)
 
     def mark_submitting(self, space_id: str, scope: Scope, request_id: str):
         with self._transaction():
@@ -620,6 +773,8 @@ class ArtistStore:
                 raise StoreError("INVALID_STATE", "Only a reserved operation can start once")
             if row["auth_version"] != space["auth_version"]:
                 raise StoreError("AUTH_CHANGED", "Authorization changed since reservation")
+            if row["action"] == "share":
+                self._require_share_policy(space_id, space, row)
             self._check_budget(
                 space_id, row["category"], day, adding=0, work_id=row["work_id"], edit=row["action"] == "edit"
             )
@@ -646,6 +801,8 @@ class ArtistStore:
                 raise StoreError("AUTH_CHANGED", "Authorization changed since reservation")
             if row["budget_day"] != day:
                 raise StoreError("BUDGET_DAY_CHANGED", "Dispatch cannot cross its recorded budget day")
+            if row["action"] == "share":
+                self._require_share_policy(space_id, space, row)
             self._check_budget(
                 space_id, row["category"], day, adding=0, work_id=row["work_id"], edit=row["action"] == "edit"
             )
@@ -789,7 +946,9 @@ class ArtistStore:
 
     def check_share(self, space_id: str, scope: Scope, job_id: str) -> bool:
         with self.lock:
-            self._authorized(self._space(space_id, scope))
+            space = self._space(space_id, scope)
+            self._authorized(space)
+            self._require_share_policy(space_id, space)
             self._check_share(space_id, scope, job_id)
             return True
 
@@ -1285,6 +1444,8 @@ class ArtistStore:
     ):
         nonempty(key, "key")
         nonempty(summary, "summary")
+        if key.startswith("group-thought:"):
+            raise StoreError("INVALID_ARGUMENT", "Group thought keys are reserved for the trusted synchronizer")
         refs = self._string_list(source_refs, "source_refs")
         if origin not in {"chat", "idle", "completion"} or (origin == "chat" and not refs):
             raise StoreError("INVALID_ARGUMENT", "Chat inspirations require verified source references")
@@ -1323,17 +1484,131 @@ class ArtistStore:
                 "source_refs",
             )
 
+    def sync_group_thoughts(
+        self, space_id, scope, *, group_id, thoughts, enabled, expected_auth_version
+    ) -> bool:
+        """Import trusted notebook snapshots; never call with model-authored identity.
+
+        A note is offered at most once, independently of the ordinary inspiration
+        cache. Its adoption and the resulting work are committed together.
+        """
+        if (
+            not isinstance(group_id, str) or len(group_id) > 200 or group_id != group_id.strip()
+            or any(ord(char) < 32 for char in group_id)
+            or type(enabled) is not bool
+            or type(expected_auth_version) is not int or expected_auth_version < 0
+            or not isinstance(thoughts, list) or len(thoughts) > 128
+        ):
+            raise StoreError("INVALID_ARGUMENT", "Invalid bounded group thought snapshot or authorization")
+        notes = {}
+        for thought in thoughts:
+            if not isinstance(thought, dict) or set(thought) != {"note_id", "summary"}:
+                raise StoreError("INVALID_ARGUMENT", "Thoughts contain only note_id and summary")
+            note_id, summary = thought["note_id"], thought["summary"]
+            if (
+                not isinstance(note_id, str) or len(note_id) != 67 or not note_id.startswith("gh_")
+                or any(char not in "0123456789abcdef" for char in note_id[3:])
+                or not isinstance(summary, str) or not summary.strip() or summary != summary.strip()
+                or len(summary) > 512 or any(ord(char) < 32 for char in summary)
+            ):
+                raise StoreError("INVALID_ARGUMENT", "Invalid thought identifier or summary")
+            if note_id in notes and notes[note_id] != summary:
+                raise StoreError("REQUEST_CONFLICT", "A thought snapshot cannot change its summary")
+            notes[note_id] = summary
+        with self._transaction():
+            space = self._space(space_id, scope)
+            self._expected_authorization(space, expected_auth_version)
+            self._authorized(space)
+            if not group_id:
+                if enabled or thoughts:
+                    raise StoreError("INVALID_ARGUMENT", "Private spaces cannot import group thoughts")
+                self.db.execute(
+                    "UPDATE group_thought_policy SET enabled=0,auth_version=? WHERE space_id=?",
+                    (space["auth_version"], space_id),
+                )
+                return False
+            self._check_group_binding(space_id, scope, group_id)
+            policy = self.db.execute(
+                "SELECT * FROM group_thought_policy WHERE space_id=?", (space_id,)
+            ).fetchone()
+            if policy is not None and (policy["scope_snapshot"], policy["group_id"]) != (scope.snapshot(), group_id):
+                raise StoreError("OWNER_CONFLICT", "Group thought scope and group are immutable")
+            collision = self.db.execute(
+                """SELECT 1 FROM group_thought_policy WHERE space_id!=? AND platform=?
+                    AND (stream_id=? OR group_id=?)""",
+                (space_id, scope.platform, scope.stream_id, group_id),
+            ).fetchone()
+            if collision is not None:
+                raise StoreError("OWNER_CONFLICT", "Group thought binding already belongs to another space")
+            self.db.execute(
+                """INSERT INTO group_thought_policy VALUES(?,?,?,?,?,?,?)
+                    ON CONFLICT(space_id) DO UPDATE SET enabled=excluded.enabled,
+                    auth_version=excluded.auth_version""",
+                (space_id, scope.snapshot(), scope.platform, scope.stream_id, group_id,
+                 int(enabled), space["auth_version"]),
+            )
+            existing = {row["note_id"]: row for row in self.db.execute(
+                "SELECT * FROM group_thought_links WHERE space_id=?", (space_id,)
+            )}
+            if len(existing.keys() | notes.keys()) > 128:
+                raise StoreError("INVALID_ARGUMENT", "Group thought capacity is 128 persistent notes")
+            now, _ = self._now()
+            added = False
+            for note_id, summary in notes.items():
+                collision = self.db.execute(
+                    "SELECT 1 FROM inspirations WHERE space_id=? AND key=?",
+                    (space_id, "group-thought:" + note_id),
+                ).fetchone()
+                if collision is not None:
+                    raise StoreError("REQUEST_CONFLICT", "Reserved thought key exists in ordinary inspirations")
+                owner = self.db.execute(
+                    "SELECT space_id FROM group_thought_links WHERE note_id=?", (note_id,)
+                ).fetchone()
+                if owner is not None and owner["space_id"] != space_id:
+                    raise StoreError("OWNER_CONFLICT", "Thought already belongs to another space")
+                if note_id in existing:
+                    if existing[note_id]["summary"] != summary or existing[note_id]["group_id"] != group_id:
+                        raise StoreError("REQUEST_CONFLICT", "Thought snapshots are immutable")
+                    continue
+                self.db.execute(
+                    """INSERT INTO group_thought_links(space_id,note_id,inspiration_key,summary,
+                        group_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?)""",
+                    (space_id, note_id, "group-thought:" + note_id, summary, group_id, now, now),
+                )
+                if enabled:
+                    self._enqueue_wake(space_id, "thought:" + note_id, "completion", "", None)
+                added = True
+            return added
+
+    def _available_group_thoughts(self, space_id):
+        return self.db.execute(
+            """SELECT link.* FROM group_thought_links link
+                JOIN group_thought_policy policy ON policy.space_id=link.space_id
+                JOIN spaces ON spaces.space_id=link.space_id
+                WHERE link.space_id=? AND link.adopted_by IS NULL AND policy.enabled=1
+                    AND spaces.authorized=1 AND policy.auth_version=spaces.auth_version
+                    AND policy.scope_snapshot=spaces.scope AND link.group_id=policy.group_id
+                ORDER BY link.updated_at,link.inspiration_key""", (space_id,)
+        ).fetchall()
+
     def list_inspirations(self, space_id, scope):
         with self.lock:
             self._authorized(self._space(space_id, scope))
             now, _ = self._now()
-            return [
+            ideas = [
                 self._decode(row, "source_refs")
                 for row in self.db.execute(
                     "SELECT * FROM inspirations WHERE space_id=? AND expires_at>? ORDER BY updated_at,key",
                     (space_id, now),
                 )
             ]
+            ideas.extend(
+                {"space_id": space_id, "key": row["inspiration_key"], "summary": row["summary"],
+                 "source_refs": [row["note_id"]], "origin": "group_thought", "expires_at": None,
+                 "consumed_by": None, "updated_at": row["updated_at"]}
+                for row in self._available_group_thoughts(space_id)
+            )
+            return sorted(ideas, key=lambda idea: (idea["updated_at"], idea["key"]))
 
     def _artist_work(self, space_id, scope, work_id):
         self._space(space_id, scope)
@@ -2034,7 +2309,12 @@ class ArtistStore:
                 brief["references"] = frozen_refs
             payload = canonical_json(brief)
             reference_prompt(render_prompt(brief["prompt"], snapshot), frozen_refs)
+            group_ideas = {row["inspiration_key"]: row for row in self._available_group_thoughts(space_id)}
             for key in keys:
+                if key.startswith("group-thought:"):
+                    if key not in group_ideas:
+                        raise StoreError("NOT_FOUND", "Group thought unavailable in this space")
+                    continue
                 idea = self.db.execute(
                     "SELECT * FROM inspirations WHERE space_id=? AND key=? AND expires_at>?",
                     (space_id, key, now),
@@ -2053,10 +2333,17 @@ class ArtistStore:
                     (space_id, snapshot["series_id"], work_id, objective),
                 )
             for key in keys:
-                self.db.execute(
-                    "UPDATE inspirations SET consumed_by=? WHERE space_id=? AND key=?",
-                    (work_id, space_id, key),
-                )
+                if key in group_ideas:
+                    self.db.execute(
+                        """UPDATE group_thought_links SET adopted_by=?,adopted_at=?,updated_at=?
+                            WHERE space_id=? AND inspiration_key=?""",
+                        (work_id, now, now, space_id, key),
+                    )
+                else:
+                    self.db.execute(
+                        "UPDATE inspirations SET consumed_by=? WHERE space_id=? AND key=?",
+                        (work_id, space_id, key),
+                    )
             return self._artist_work(space_id, scope, work_id)
 
     def get_artist_work(self, space_id, scope, work_id):

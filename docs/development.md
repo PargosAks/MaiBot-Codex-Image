@@ -67,6 +67,8 @@ uv run --locked python scripts/build_bundle.py
 
 同步核对 manifest、配置示例、插件配置版本、README 和本轮构建行为。实际检查范围和结果记入 [validation.md](validation.md)；上述 Ruff 命令只检查所选错误规则，不代表全部风格规则通过。
 
+群灵感与独立分享权限的[编号验收记录](group-inspiration-validation.md)配有[脱敏JSON摘要](validation/group-inspiration-20261104.json)。摘要保留测试计数、跳过原因及已测源码指纹；私有日志、配置、数据库、图片和原始JUnit留在维护环境，不随提交上传。文档整理后的包与历史部署包分别注明文件数和适用范围，不以新包摘要替换旧部署证据。
+
 测试、独立审查、目标环境部署、真实绘图、聊天收图与用户验收分别绑定版本和环境。旧版测试数字及绘图证据不证明当前工作树；历史源码与部署资料见 [固定提交](https://github.com/PargosAks/MaiBot-Codex-Image/tree/e50a7b6f0e090d6a5053ac00d4f0b14e92aee272)。
 
 ## Host 自主链路
@@ -76,3 +78,13 @@ uv run --locked python scripts/build_bundle.py
 保留已有计划、旧授权与累计额度的维护边界见 [等待恢复](retained-plan-recovery.md)。对应回归为 `tests/test_planned_wait_restore.py`，包括实际 SQLite 状态、正常等待与未知操作拒绝，以及模拟创作、细化、分享和 Host 生命周期。
 
 阶段 6 的 `host_runtime.py` / `host_adapters.py` 对接实际命名 Hook 与 SDK 能力。Host 公共源码定位和严格隔离的验证方法见 [阶段 6](implementation-stage-6.md)。测试入口为 `tests/test_host_lifecycle.py`、`tests/test_host_adapters.py`、`tests/test_host_integration.py`；没有真实模型、绘图或发送。
+
+## 群灵感簿的隔离验证
+
+在插件开发环境运行 `python -m pytest -q tests -k test_group_`（见上方 Host 源码环境变量）。群消息、实验凭据与模型输出都在测试中构造；测试使用临时 SQLite，不读取运行实例的聊天或绘图数据。不要为测试启用生产自主创作。过滤实验与当前念头接口见[群灵感簿设计](group-inspiration.md)。
+
+新的纯插件念头路径使用 `test_group_thought_host.py` 执行固定 Host 的两个规划 Hook、SDK Runner 与 Context Item 序列化，并与真实 SQLite 和只读工作区联通。`test_group_thought_runtime.py` 覆盖直接调用不写入、重放、跨群、撤权及取消等待；`test_group_thoughts.py` 验证独立存储与频控。模型输出均为脚本构造，不能据此声称真实模型会主动选择记灵感。旧 `group_ingress/group_collection` 仍只有合成凭据入口，不能用于绕开过滤。
+
+第二阶段用 `test_group_thought_adoption_store.py` 验证 schema 8 迁移、来源隔离、采用与立项的事务一致性及授权版本；`test_group_thought_sync.py` 验证源记录已提交但未导入时的重载恢复、开关屏蔽和关停等待。`test_group_thought_adoption_flow.py` 将真实 Host Hook/SDK 与脚本模型、静态 PNG、模拟发送串联，覆盖聊天和无人时段的等待／采用、原图细化、预算上限及 `send_unknown` 不重放。只读采用关联和页面文本由 `test_group_thought_studio.py` 验证，不能代替浏览器或 QQ 用户验收。
+
+第三阶段用 `test_group_share_policy_store.py` 覆盖 schema 9、独立分享许可、预留权限版本及历史额度保护；`test_group_share_flow.py` 在实际插件生命周期和 Host/SDK 夹具中验证“仅收藏仍可创作”“模型忽视提示也不能越权发送”“允许原群分享仍可等待”，以及最终群绑定检查、权限撤销、未知发送恢复和私聊兼容。`test_group_share_boundary.py` 包含配置、模型上下文边界及 100:1 缩时的群核验等待测试，确保不挤占原上传等待窗口；实时分享策略不写入冻结的视觉评审快照。`test_group_share_studio.py` 验证管理员只读许可展示及跨群隔离，聊天摘要不自动获取群管理策略。

@@ -15,12 +15,18 @@ Integration contract (private WebUI APIs, never model tools):
 Each wrapper returns await asyncio.to_thread(Studio.for_plugin(self).METHOD, ...).
 The Host WebUI gateway authenticates administrators and invokes private APIs as
 the owning plugin. Do not make these APIs public or expose for_plugin to tools.
+The group_thoughts and experimental group_inspirations records sections require
+for_plugin's configured group binding and matching persisted ledger and database
+ownership. They are administrative projections, never chat/model summaries.
 Chat integration uses Studio(data_dir, scopes={space_id: verified_scope}), then
 await asyncio.to_thread(view.summary, space_id), followed by
 snapshot_from_summary(space_id, verified_scope, summary) from studio_chat.py.
 Hold the plugin lifecycle lock around this scoped read. Never use for_plugin's
 administrative scope list in chat. The adapter verifies Host identity/consent and
 adds only bounded text data to planner/replyer context; this module never sends.
+For a Host-verified incoming-message acknowledgement, inspiration_receipt reads
+only its exact wake key and returns the same minimal authorization envelope.
+It is not a WebUI API and proves receipt only, never model processing or artwork.
 All methods are synchronous: keep filesystem work off Host loops.
 Bundle integration must include studio.py, webui.json and studio.html explicitly.
 """
@@ -114,7 +120,8 @@ class Studio:
 
     def __init__(self, data_dir: Path, *, scopes: Mapping[str, Scope],
                  clock: Optional[Callable[[], datetime]] = None,
-                 enabled: Optional[bool] = None, blocked: Optional[Mapping[str, bool]] = None):
+                 enabled: Optional[bool] = None, blocked: Optional[Mapping[str, bool]] = None,
+                 group_bindings: Optional[Mapping[str, str]] = None):
         if not isinstance(scopes, Mapping) or len(scopes) > 32:
             raise StoreError("INVALID_SCOPE", "A finite trusted read allowlist is required")
         self.scopes = dict(scopes)
@@ -122,6 +129,16 @@ class Studio:
             _identifier(space_id)
             if not isinstance(scope, Scope):
                 raise StoreError("INVALID_SCOPE", "Only trusted-adapter Scope values are accepted")
+        # Administrative group reads require an explicit configured binding.
+        # Chat adapters pass scopes only and cannot acquire this read authority.
+        if group_bindings is not None and not isinstance(group_bindings, Mapping):
+            raise StoreError("INVALID_SCOPE", "Trusted group bindings must be a mapping")
+        self.administrative = group_bindings is not None
+        self.group_bindings = dict(group_bindings or {})
+        for space_id, group_id in self.group_bindings.items():
+            if space_id not in self.scopes:
+                raise StoreError("INVALID_SCOPE", "Group binding requires a configured read scope")
+            _identifier(group_id)
         self.root = Path(data_dir).resolve()
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.enabled = enabled
@@ -130,7 +147,7 @@ class Studio:
     @classmethod
     def for_plugin(cls, plugin):
         """Administrative adapter, for private authenticated WebUI wrappers only."""
-        scopes = {}
+        scopes, group_bindings = {}, {}
         for item in plugin.config.autonomy.spaces:
             # Blank defaults have no read authority. Duplicate IDs fail closed.
             if not item.space_id.strip():
@@ -138,10 +155,13 @@ class Studio:
             if item.space_id in scopes:
                 raise StoreError("INVALID_SCOPE", "Duplicate configured space")
             scopes[item.space_id] = Scope(item.platform, item.stream_id, item.user_id)
+            if item.group_id.strip():
+                group_bindings[item.space_id] = item.group_id
         runtime = plugin.artist_runtime
         blocked = {key: bool(value) for key, value in runtime.errors.items()} if runtime else {}
         return cls(Path(plugin.ctx.paths.data_dir), scopes=scopes,
-                   enabled=plugin.config.plugin.enabled and plugin.config.autonomy.enabled, blocked=blocked)
+                   enabled=plugin.config.plugin.enabled and plugin.config.autonomy.enabled, blocked=blocked,
+                   group_bindings=group_bindings)
 
     def _scope(self, space_id):
         _identifier(space_id)
@@ -175,8 +195,8 @@ class Studio:
             deadline = time.monotonic() + 2
             db.set_progress_handler(lambda: 1 if time.monotonic() > deadline else 0, 1000)
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version not in range(1, 8):
-                raise StoreError("SCHEMA_UNSUPPORTED", "Read-only Studio supports ledger schemas 1..7")
+            if version not in range(1, 10):
+                raise StoreError("SCHEMA_UNSUPPORTED", "Read-only Studio supports ledger schemas 1..9")
             db.execute("BEGIN")
             yield db
         except sqlite3.Error as exc:
@@ -215,6 +235,47 @@ class Studio:
             return {"items": items[offset:offset + limit], "offset": offset, "limit": limit,
                     "has_more": len(items) > offset + limit}
 
+    def inspiration_receipt(self, space_id: str, message_id: str, *, expected_auth_version: int) -> dict:
+        """Confirm one exact Host message was enqueued, without reading its text.
+
+        Call only on a Studio restricted to the verified chat Scope. Unlike the
+        historical summary, this receipt requires active continuous delegation.
+        The plugin guarantees a newly committed Host ingress before requesting
+        this receipt and supplies its runtime's authorization version. Schemas
+        1..7 do not bind wakes to an authorization epoch: this read verifies the
+        expected current grant, not message freshness. Reauthorization permits
+        new ingress; stale runtime versions fail closed. Never infer an epoch
+        from wake IDs, claims, message IDs or grant times.
+        Repeated reads confirm the same receipt, not a fresh ingestion event.
+        """
+        self._scope(space_id)
+        if not isinstance(message_id, str) or not message_id.strip() or len(message_id) > 195:
+            raise StoreError("INVALID_ARGUMENT", "Host message_id must fit the exact bounded chat wake key")
+        if type(expected_auth_version) is not int or expected_auth_version < 1:
+            raise StoreError("INVALID_ARGUMENT", "Expected authorization version must be a positive integer")
+        with self._open() as db:
+            space = self._space(db, space_id)
+            if space is None:
+                raise StoreError("NOT_FOUND", "Message receipt not available for this reader")
+            version = space["auth_version"]
+            if self.enabled is False or space["authorized"] != 1 or type(version) is not int or version < 1:
+                raise StoreError("AUTH_REQUIRED", "Continuous delegation is not active")
+            if version != expected_auth_version:
+                raise StoreError("AUTH_CHANGED", "Message receipt authorization version changed")
+            grant = db.execute("SELECT authorized FROM grants WHERE space_id=? AND version=?",
+                               (space_id, version)).fetchone()
+            if grant is None or grant["authorized"] != 1:
+                raise StoreError("AUTH_REQUIRED", "Continuous delegation has no matching active grant")
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='artist_wakes' LIMIT 1").fetchone() is None:
+                raise StoreError("NOT_FOUND", "Message receipt not available for this reader")
+            receipt = db.execute("""SELECT 1 FROM artist_wakes
+                WHERE space_id=? AND event_id=? AND kind='chat' AND source_ref=? LIMIT 1""",
+                                 (space_id, "chat:" + message_id, message_id)).fetchone()
+            if receipt is None:
+                raise StoreError("NOT_FOUND", "Message receipt not available for this reader")
+            return {"space_id": space_id, "read_only": True,
+                    "authorization": {"authorized": True, "version": version}, "inspiration_received": True}
+
     def summary(self, space_id: str) -> dict:
         self._scope(space_id)
         now = self.clock()
@@ -230,6 +291,10 @@ class Studio:
             reasons.append("AUTONOMY_DISABLED")
         with self._open() as db:
             space = self._space(db, space_id)
+            # Only the administrative view knows which scopes are groups.
+            # Chat summaries never acquire group-policy read authority.
+            if self.administrative:
+                result["sharing"] = self._sharing(db, space_id, space)
             if space is None:
                 reasons.append("STATE_NOT_CREATED")
             else:
@@ -319,6 +384,37 @@ class Studio:
         result["waiting"] = [{"code": code, "text": WAIT_TEXT[code]} for code in dict.fromkeys(reasons)]
         return result
 
+    def _sharing(self, db, space_id, space):
+        group_id = self.group_bindings.get(space_id)
+        denied = {"mode": "collect_only", "allowed": False}
+        if group_id is None:
+            if space is not None:
+                # Removing a configured group binding cannot turn its saved
+                # policy into permission for an apparently private space.
+                tables = self._tables(db)
+                for table in ("group_share_policy", "group_thought_policy"):
+                    if table in tables and db.execute(
+                            f"SELECT 1 FROM {table} WHERE space_id=? AND group_id!='' LIMIT 1",
+                            (space_id,)).fetchone():
+                        return denied
+            return {"mode": "private", "allowed": bool(space and space["authorized"])}
+        if space is None or db.execute("PRAGMA user_version").fetchone()[0] < 9 or (
+                "group_share_policy" not in self._tables(db)):
+            return denied
+        scope = self.scopes[space_id]
+        policy = db.execute("SELECT * FROM group_share_policy WHERE space_id=?", (space_id,)).fetchone()
+        # A configured group is denied until its own complete binding and
+        # current grant have a persisted policy. Legacy groups never inherit
+        # the permissive private-chat behavior just because the table is absent.
+        if policy is None or (policy["scope_snapshot"], policy["platform"], policy["stream_id"],
+                              policy["group_id"], policy["auth_version"]) != (
+                scope.snapshot(), scope.platform, scope.stream_id, group_id, space["auth_version"]):
+            return denied
+        if policy["mode"] not in {"collect_only", "original_group"}:
+            return denied
+        return {"mode": policy["mode"],
+                "allowed": bool(space["authorized"] and policy["mode"] == "original_group")}
+
     @staticmethod
     def _future(value, now):
         if not isinstance(value, str):
@@ -385,6 +481,14 @@ class Studio:
     def records(self, space_id: str, section: str, offset: int = 0, limit: int = 20, work_id: str = "") -> dict:
         self._scope(space_id)
         _page(offset, limit)
+        if section == "group_thoughts":
+            if work_id:
+                raise StoreError("INVALID_ARGUMENT", "Group thoughts have no work filter")
+            return self._group_thoughts(space_id, offset, limit)
+        if section == "group_inspirations":
+            if work_id:
+                raise StoreError("INVALID_ARGUMENT", "Group inspirations have no work filter")
+            return self._group_inspirations(space_id, offset, limit)
         if section not in SECTIONS:
             raise StoreError("INVALID_ARGUMENT", "Unknown Studio section")
         if work_id:
@@ -435,6 +539,139 @@ class Studio:
             more = len(rows) > len(items) and offset + len(items) <= MAX_OFFSET
             return {"items": items, "offset": offset, "limit": limit,
                     "has_more": more, "next_offset": offset + len(items) if more else None, "available": True}
+
+    def _group_thoughts(self, space_id: str, offset: int, limit: int) -> dict:
+        """Read MaiBot's own themes, with ledger and configured group ownership.
+
+        Adoption belongs to ledger v8 and means a plan was created, not that
+        rendering succeeded. Do not import writers, read request tokens or
+        expose record_count as a member/message count. Opening this
+        view must never create/migrate either database or wake the artist.
+        """
+        empty = {"items": [], "offset": offset, "limit": limit, "has_more": False,
+                 "next_offset": None, "available": False}
+        with self._open() as db:
+            space = self._space(db, space_id)
+            group_id = self.group_bindings.get(space_id)
+            if space is None or group_id is None:
+                return empty
+            path = self._path("group_thoughts.sqlite3")
+            if not path.exists():
+                return empty
+            # The writer owns a DELETE-journal DB. Even mode=ro can create WAL
+            # sidecars, so reject that storage format before SQLite attaches it.
+            if any(Path(str(path) + suffix).exists() for suffix in ("-wal", "-shm")):
+                raise StoreError("UNSAFE_STATE_PATH", "Unexpected thoughts WAL sidecars")
+            try:
+                with path.open("rb") as source:
+                    header = source.read(20)
+            except OSError as exc:
+                raise StoreError("STATE_READ_FAILED", "Read-only thoughts header query failed") from exc
+            if header[18:20] == b"\x02\x02":
+                raise StoreError("SCHEMA_UNSUPPORTED", "Read-only Studio supports DELETE-journal thoughts only")
+            db.execute("ATTACH DATABASE ? AS thoughts", (path.as_uri() + "?mode=ro",))
+            if db.execute("PRAGMA thoughts.user_version").fetchone()[0] != 1:
+                raise StoreError("SCHEMA_UNSUPPORTED", "Read-only Studio supports thoughts schema 1")
+            binding = db.execute("""SELECT owner_id,platform,stream_id,group_id
+                FROM thoughts.thought_groups WHERE space_id=?""", (space_id,)).fetchone()
+            scope = self.scopes[space_id]
+            if binding is None or (binding["owner_id"], binding["platform"], binding["stream_id"], binding["group_id"]) != (
+                    scope.user_id, scope.platform, scope.stream_id, group_id):
+                raise StoreError("NOT_FOUND", "Group thoughts not available for this reader")
+            # Older ledgers have no source-link table. Never migrate them just
+            # to view notes. A v8 link is visible only through its complete
+            # persisted group/scope binding and a work in that exact space.
+            adoption_join, adoption_args = "", ()
+            adoption_status, associated_work = "'unadopted'", "NULL"
+            if db.execute("PRAGMA main.user_version").fetchone()[0] >= 8:
+                adoption_join = """LEFT JOIN (
+                    SELECT link.space_id,link.note_id,link.adopted_by
+                    FROM main.group_thought_links link
+                    JOIN main.group_thought_policy policy
+                        ON policy.space_id=link.space_id AND policy.group_id=link.group_id
+                    JOIN main.spaces owner
+                        ON owner.space_id=policy.space_id AND owner.scope=policy.scope_snapshot
+                    JOIN main.artist_works work
+                        ON work.space_id=link.space_id AND work.work_id=link.adopted_by
+                    WHERE link.space_id=? AND policy.scope_snapshot=? AND policy.platform=?
+                        AND policy.stream_id=? AND policy.group_id=?
+                        AND link.adopted_at IS NOT NULL
+                    ) adopted ON adopted.space_id=topic.space_id AND adopted.note_id=topic.note_id"""
+                adoption_args = (space_id, scope.snapshot(), scope.platform, scope.stream_id, group_id)
+                adoption_status = "CASE WHEN adopted.adopted_by IS NULL THEN 'unadopted' ELSE 'adopted' END"
+                associated_work = "substr(adopted.adopted_by,1,200)"
+            rows = db.execute(f"""SELECT
+                substr(topic.note_id,1,200) AS note_id,substr(topic.title,1,1000) AS summary,
+                'MaiBot 群聊构思' AS source,
+                strftime('%Y-%m-%dT%H:%M:%SZ',topic.first_seen,'unixepoch') AS created_at,
+                strftime('%Y-%m-%dT%H:%M:%SZ',topic.last_seen,'unixepoch') AS updated_at,
+                {adoption_status} AS adoption_status,{associated_work} AS work_id
+                FROM thoughts.thought_topics topic {adoption_join} WHERE topic.space_id=?
+                ORDER BY topic.last_seen DESC,topic.theme_key ASC LIMIT ? OFFSET ?""",
+                              (*adoption_args, space_id, limit + 1, offset)).fetchall()
+            items, size = [], 0
+            for row in rows[:limit]:
+                item = dict(row)
+                item_size = len(json.dumps(item, ensure_ascii=True).encode("ascii"))
+                if size + item_size > MAX_PAGE_BYTES:
+                    break
+                items.append(item)
+                size += item_size
+            more = len(rows) > len(items) and offset + len(items) <= MAX_OFFSET
+            return {"items": items, "offset": offset, "limit": limit, "available": True,
+                    "has_more": more, "next_offset": offset + len(items) if more else None}
+
+    def _group_inspirations(self, space_id: str, offset: int, limit: int) -> dict:
+        """Read the experimental notebook; never evidence of production ingress.
+
+        Notebook v1 persists its immutable binding in notebook_groups and
+        aggregate themes in notebook_topics. This phase has no adoption path.
+        Never read notebook_seen or notebook_topic_members, even their hashes.
+        """
+        empty = {"items": [], "offset": offset, "limit": limit, "has_more": False,
+                 "next_offset": None, "available": False}
+        with self._open() as db:
+            space = self._space(db, space_id)
+            group_id = self.group_bindings.get(space_id)
+            if space is None or group_id is None:
+                return empty
+            path = self._path("group_notebook.sqlite3")
+            if not path.exists():
+                return empty
+            # Use the existing query-only transaction and fixed, validated path.
+            # Both the ledger owner and notebook binding must match this reader.
+            db.execute("ATTACH DATABASE ? AS notebook", (path.as_uri() + "?mode=ro",))
+            if db.execute("PRAGMA notebook.user_version").fetchone()[0] != 1:
+                raise StoreError("SCHEMA_UNSUPPORTED", "Read-only Studio supports notebook schema 1")
+            binding = db.execute("""SELECT owner_id,platform,stream_id,group_id
+                FROM notebook.notebook_groups WHERE space_id=?""",
+                                 (space_id,)).fetchone()
+            scope = self.scopes[space_id]
+            if binding is None or (binding["owner_id"], binding["platform"], binding["stream_id"], binding["group_id"]) != (
+                    scope.user_id, scope.platform, scope.stream_id, group_id):
+                raise StoreError("NOT_FOUND", "Group notebook not available for this reader")
+            rows = db.execute("""SELECT
+                substr(theme_key,1,200) AS inspiration_id,substr(title,1,1000) AS summary,
+                CASE WHEN typeof(member_count)='integer' AND member_count>=0
+                    THEN member_count END AS participant_count,
+                CASE WHEN typeof(source_count)='integer' AND source_count>=0
+                    THEN source_count END AS message_count,
+                strftime('%Y-%m-%dT%H:%M:%SZ',first_seen,'unixepoch') AS created_at,
+                strftime('%Y-%m-%dT%H:%M:%SZ',last_seen,'unixepoch') AS updated_at,
+                'unadopted' AS adoption_status
+                FROM notebook.notebook_topics WHERE space_id=?
+                ORDER BY last_seen DESC,theme_key ASC LIMIT ? OFFSET ?""", (space_id, limit + 1, offset)).fetchall()
+            items, size = [], 0
+            for row in rows[:limit]:
+                item = dict(row)
+                item_size = len(json.dumps(item, ensure_ascii=True).encode("ascii"))
+                if size + item_size > MAX_PAGE_BYTES:
+                    break
+                items.append(item)
+                size += item_size
+            more = len(rows) > len(items) and offset + len(items) <= MAX_OFFSET
+            return {"items": items, "offset": offset, "limit": limit, "available": True,
+                    "has_more": more, "next_offset": offset + len(items) if more else None}
 
     @staticmethod
     def _json_summary(db, table, column, space_id, rowid):

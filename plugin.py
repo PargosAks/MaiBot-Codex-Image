@@ -12,11 +12,15 @@ from maibot_sdk.types import HookMode
 from .bridge import Bridge
 from .delivery import Deliveries
 from .host_runtime import Autonomy, HostRuntime, joined
+from .group_thought_runtime import (
+    GroupThoughtRuntime, group_thought_after_response, group_thought_before_request, group_thought_receipt,
+)
 from .policy import Scope
 from .rendering import MCPRenderer
 from .studio import Studio
 from .studio_chat import (
-    StudioChat, StudioChatBinding, StudioChatPolicy, is_studio_status_message,
+    StudioChat, StudioChatBinding, StudioChatPolicy, StudioChatSnapshot, is_studio_status_message,
+    is_studio_suggestion_message,
     snapshot_from_summary, studio_chat_before_replyer_request, studio_chat_before_request,
 )
 
@@ -24,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 class PluginSection(PluginConfigBase):
-    config_version: str = "0.10.0"
+    config_version: str = "0.11.0"
     enabled: bool = True
 
 
@@ -84,6 +88,9 @@ class CodexImagePlugin(MaiBotPlugin):
     config_model = Config
     studio_chat_before_request = studio_chat_before_request
     studio_chat_before_replyer_request = studio_chat_before_replyer_request
+    group_thought_before_request = group_thought_before_request
+    group_thought_after_response = group_thought_after_response
+    group_thought_receipt = group_thought_receipt
 
     @classmethod
     def build_config_schema(cls, **metadata):
@@ -106,6 +113,7 @@ class CodexImagePlugin(MaiBotPlugin):
         self.watchers: dict[str, asyncio.Task] = {}
         self.studio_chat = None
         self.artist_runtime = None
+        self.group_thought_runtime = None
 
     async def on_load(self):
         async with self.lifecycle:
@@ -128,7 +136,9 @@ class CodexImagePlugin(MaiBotPlugin):
             await joined(self._open_journal())
             self.artist_runtime = HostRuntime(self)
             await self.artist_runtime.start()
-            self.studio_chat = StudioChat(self.ctx, policy=self._studio_chat_policy, read=self._studio_chat_read)
+            self.group_thought_runtime = GroupThoughtRuntime(self)
+            self.studio_chat = StudioChat(self.ctx, policy=self._studio_chat_policy, read=self._studio_chat_read,
+                                         read_receipt=self._studio_suggestion_receipt)
             if connection_error:
                 raise ValueError(connection_error)
         except ValueError as exc:
@@ -150,6 +160,8 @@ class CodexImagePlugin(MaiBotPlugin):
         )
 
     def _stop_artist_workers(self):
+        if self.group_thought_runtime is not None:
+            self.group_thought_runtime.stop()
         if self.studio_chat is not None:
             self.studio_chat.clear_queries()
             self.studio_chat = None
@@ -165,6 +177,9 @@ class CodexImagePlugin(MaiBotPlugin):
         await joined(self._cleanup())
 
     async def _cleanup(self):
+        if self.group_thought_runtime is not None:
+            await self.group_thought_runtime.close()
+            self.group_thought_runtime = None
         if self.artist_runtime is not None:
             await self.artist_runtime.close()
             self.artist_runtime = None
@@ -204,6 +219,18 @@ class CodexImagePlugin(MaiBotPlugin):
             summary = await asyncio.to_thread(view.summary, space_id)
             return snapshot_from_summary(space_id, scope, summary)
 
+    async def _studio_suggestion_receipt(self, space_id, scope, message_id):
+        async with self.lifecycle:
+            view = Studio(Path(self.ctx.paths.data_dir), scopes={space_id: scope})
+            runtime = self.artist_runtime
+            if runtime is None or runtime.stopping or space_id not in runtime.grant_versions:
+                raise ValueError("Inactive studio delegation")
+            receipt = await asyncio.to_thread(view.inspiration_receipt, space_id, message_id,
+                                              expected_auth_version=runtime.grant_versions[space_id])
+            auth = receipt["authorization"]
+            return StudioChatSnapshot(receipt["space_id"], scope, auth["version"], auth["authorized"],
+                                      {"inspiration_received": receipt["inspiration_received"]})
+
     @API("studio_spaces", version="1", public=False)
     async def studio_spaces(self, offset: int = 0, limit: int = 20):
         return await asyncio.to_thread(Studio.for_plugin(self).spaces, offset, limit)
@@ -238,13 +265,21 @@ class CodexImagePlugin(MaiBotPlugin):
             is_query = is_studio_status_message(message)
             # Invalidate older reads on receipt, before an in-flight read can
             # hold lifecycle and delay this event. No I/O or await in this step.
-            if self.studio_chat is not None:
-                self.studio_chat.note_ingress(Scope(**scope), message_id, is_query=is_query)
+            chat, runtime = self.studio_chat, self.artist_runtime
+            owner = Scope(**scope)
+            suggestion = not is_query and is_studio_suggestion_message(message)
+            noted = chat is not None and chat.note_ingress(owner, message_id, is_query=is_query,
+                                                            is_suggestion=suggestion)
             if is_query:
                 return None
             async with self.lifecycle:
                 if self.config.plugin.enabled and self.config.autonomy.enabled and self.artist_runtime is not None:
-                    await self.artist_runtime.on_chat(scope, message_id, message)
+                    accepted = await self.artist_runtime.on_chat(scope, message_id, message)
+                    # on_chat returns True only for a newly committed wake. A replay,
+                    # skipped message or runtime replacement cannot issue a receipt.
+                    if (accepted is True and noted and suggestion and self.studio_chat is chat
+                            and self.artist_runtime is runtime):
+                        chat.note_suggestion_accepted(owner, message_id)
         except ValueError as exc:
             # Rejected context must not interrupt MaiBot's normal chat flow.
             logger.warning("Artist ignored Host message: %s", getattr(exc, "code", "IDENTITY_INVALID"))

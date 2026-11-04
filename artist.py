@@ -86,6 +86,7 @@ class Artist:
         idle_seconds: int = 300,
         timeout_seconds: float = 30,
         send_timeout_seconds: float = 240.0,
+        share_preflight_seconds: float = 0.0,
         allow_network_renderer: bool = False,
         allow_host_sender: bool = False,
         reference_inputs: bool = False,
@@ -110,6 +111,10 @@ class Artist:
         if (isinstance(send_timeout_seconds, bool) or not isinstance(send_timeout_seconds, (float, int))
                 or not 0 < send_timeout_seconds <= 600 or not math.isfinite(send_timeout_seconds)):
             raise StoreError("INVALID_ARGUMENT", "send_timeout_seconds must be finite, positive and at most 600")
+        if (type(share_preflight_seconds) not in (float, int) or not math.isfinite(share_preflight_seconds)
+                or not 0 <= share_preflight_seconds <= 30):
+            raise StoreError("INVALID_ARGUMENT", "share_preflight_seconds must be finite and within 0..30")
+        self.share_preflight_seconds = share_preflight_seconds
         self.store, self.space_id, self.scope = store, space_id, scope
         self.thinking, self.renderer, self.sender = thinking, renderer, sender
         self.persona, self.idle_seconds, self.timeout = persona, idle_seconds, timeout_seconds
@@ -234,6 +239,7 @@ class Artist:
         visible += [w for w in works if w["status"] in {"finished", "abandoned"}][-20:]
         context = {
             "persona": self.persona,
+            "sharing": await self._db("sharing_policy"),
             "events": [
                 {k: event.get(k) for k in ("event_id", "kind", "text", "source_ref")} for event in events
             ],
@@ -726,7 +732,9 @@ class Artist:
         current = next(v for v in versions if v["request_id"] == work["pending_request"])
         version = await self._version(current["version_id"])
         review_context = {
-            **context,
+            # Sharing permission is live planning policy, not a frozen visual
+            # review input. A later mode change must not rewrite old evidence.
+            **{key: value for key, value in context.items() if key != "sharing"},
             "current_work": {k: work[k] for k in ("work_id", "brief", "best_version")},
             "current_version": {k: version[k] for k in ("version_id", "sha256", "mime")},
             "versions": [
@@ -865,7 +873,8 @@ class Artist:
             # Let the Host RPC wait expire first, leaving time to persist its
             # uncertain receipt before the Artist's outer cancellation runs.
             result = await asyncio.wait_for(
-                self.sender.send(scope=self.scope, version=version), self.send_timeout_seconds + 5
+                self.sender.send(scope=self.scope, version=version),
+                self.send_timeout_seconds + self.share_preflight_seconds + 5,
             )
         except BaseException as exc:
             await self._db("mark_unknown", request_id, reason="SEND_UNCONFIRMED")

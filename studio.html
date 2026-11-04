@@ -20,7 +20,7 @@
 (() => {
   'use strict';
   const $ = id => document.getElementById(id);
-  const sections = {works:'作品',tasks:'任务 / 发送',versions:'版本 / 原图',reviews:'评审',profiles:'创作档案',series:'系列',assets:'参考档案'};
+  const sections = {works:'作品',tasks:'任务 / 发送',versions:'版本 / 原图',reviews:'评审',profiles:'创作档案',series:'系列',assets:'参考档案',group_thoughts:'创作念头',group_inspirations:'群灵感簿（实验）'};
   let space='', section='works', offset=0, work='', busy=false, more=false, nextOffset=null, generation=0, originalURL='';
   let history=[];
   let spaceValidated=false, viewReady=false;
@@ -68,6 +68,10 @@
     for(const reason of s.waiting)auth.append(node('p',reason.text));
     if(!s.waiting.length)auth.append(node('p','未发现本空间等待条件；不代表已获准执行。'));
     grid.append(auth);
+    if(s.sharing){const sharing=node('section',undefined,'card');sharing.append(node('h2','自主分享权限'));
+      const title=s.sharing.mode==='private'?'私聊原授权':s.sharing.mode==='original_group'?'可自主分享到原群':'仅收藏';
+      sharing.append(node('p',title),node('p',s.sharing.allowed?'当前分享许可有效；是否分享由 MaiBot 自主决定。':'当前不允许自主分享。'));
+      sharing.append(node('p','允许不等于必发；仍需有效委托、预算和发送授权。仅收藏不阻止规划、生成和评审，实际分享结果以作品记录为准。','muted'));grid.append(sharing);}
     const budget=node('section',undefined,'card');budget.append(node('h2','当前空间预算'),node('p',s.day+' · Asia/Hong_Kong'));
     for(const [key,title] of Object.entries({think:'思考',render:'绘图',share:'分享'})){const b=s.budget[key];budget.append(node('p',title+'：'+(b?`本空间剩余 ${b.space_remaining??'未知'} / ${b.limit??'未知'}，占用 ${b.held}，已耗 ${b.consumed}；当前预算${b.available_now?'可用':'受限'}`:'尚无账本')));}
     budget.append(node('p','未知结果跨日继续占用。共享上限仅显示是否受限，不披露其他空间用量。预算可用不代表获准执行。','muted'));grid.append(budget);
@@ -96,6 +100,8 @@
     if(token!==generation)return;more=result.has_more;nextOffset=result.next_offset;
     if(offset===0)history=[];
     $('filter').replaceChildren();if(work){$('filter').append(node('span','当前作品：'+work),button('查看全部',async()=>{work='';offset=0;await loadRecords();}));}
+    if(section==='group_thoughts')$('filter').append(node('span','MaiBot 群聊构思：MaiBot 的自主创作念头，不归因于群成员或消息。仅查看当前绑定群空间的记录。已采用表示已建立创作计划，不代表生成或分享成功。时间为 UTC。'));
+    if(section==='group_inspirations')$('filter').append(node('span','实验数据，不作为生产收信。仅查看当前绑定群空间的主题摘要与统计；不展示成员或聊天原文。当前 Host 缺少最终过滤通过凭据，群消息采集尚不可用。灵感尚未接入创作调度。时间为 UTC。'));
     if(!result.items.length)$('records').append(node('p',result.available?'暂无记录':'历史账本尚无此类记录','muted'));
     for(const item of result.items){
       const card=node('article',undefined,'card');card.append(node('h2',item.subject||item.data?.title||item.title||sections[section]));
@@ -109,6 +115,8 @@
       if(section==='profiles'){const d=item.data||{};fields(card,[['档案编号',item.profile_id],['修订版本',item.revision],['启用状态',item.active?'启用':'停用'],['档案标题',d.title],['偏好配色',d.palette],['表现方式',d.technique],['稳定属性',d.stable],['可变属性',d.variable],['来源说明',d.source],['来源类型',origin(item.provenance?.origin)],['来源依据',item.provenance?.source_ref]]);}
       if(section==='series')fields(card,[['系列编号',item.series_id],['系列标题',item.title],['目标',item.goal],['档案编号',item.profile_id],['档案版本',item.profile_revision],['启用状态',item.active?'启用':'停用'],['结束状态',item.closed?'已结束':'未结束'],['来源类型',origin(item.provenance?.origin)],['来源依据',item.provenance?.source_ref]]);
       if(section==='assets')fields(card,[['素材编号',item.asset_id],['摘要',item.summary],['用途',Array.isArray(item.roles)?item.roles.map(role):'未记录用途'],['标签',item.tags],['来源',state(item.source_kind)],['来源版本',item.source_version_id],['启用状态',item.active?'启用':'停用'],['图像格式',item.mime]]);
+      if(section==='group_thoughts')fields(card,[['来源','MaiBot 群聊构思'],['主题',item.summary],['记录时间',item.created_at],['更新时间',item.updated_at],['采用状态',item.adoption_status==='adopted'?'已采用（已立项）':item.adoption_status==='unadopted'?'未采用':'未记录'],['关联作品',item.adoption_status==='adopted'?item.work_id:null]]);
+      if(section==='group_inspirations')fields(card,[['主题摘要',item.summary],['参与人数',item.participant_count],['消息数',item.message_count],['首次记录',item.created_at],['最近更新',item.updated_at],['采用状态',item.adoption_status==='unadopted'?'未采用':'未记录']]);
       $('records').append(card);
       if(section==='versions'){
         const image=node('img');image.alt='已保存作品的缩略图';image.className='thumb';card.prepend(image);

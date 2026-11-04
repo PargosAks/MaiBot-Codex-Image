@@ -1,0 +1,470 @@
+{
+  "record_version": 1,
+  "verification_date": "2026-11-04",
+  "timezone": "Asia/Hong_Kong",
+  "prepared_on": "2026-11-05",
+  "plugin_version": "0.11.0",
+  "tested_snapshot": {
+    "base_commit": "161d6e408d42cf865a750d4639e2b55cfe10ad6e",
+    "hash_basis": "Raw file bytes at verification time, before Git line-ending normalization.",
+    "file_sha256": {
+      "_manifest.json": "edc099cd0f782613bed32db0389011fc8774a170ae53e4c456eac1b01b294028",
+      "artist.py": "98acbf655f8d257131fb4a3e3de134daa501dc72573c2a88a65900f5ca4c5e2f",
+      "assets.py": "3559894fd471aa69f6b2412bcbfe9243fde56062c84650cd8bfbfdcc237dce03",
+      "bridge.py": "5d3e37e2ea5be6c69a08138669c1ea7c88a0648d8afc0fe796bfce8417847e91",
+      "config.example.toml": "93a47872adb2920847b392cf2bbe136db503f3ec32bf0e6ad473e9d5ae81732a",
+      "delivery.py": "dcb13f504af5df477cc09a0a00a5db6ed48743d7f9292407c9c117082249a971",
+      "editing.py": "25bcbd513800f56759e9e2c2954288f025add9b1039cdf71f8da034f7f142556",
+      "group_collection.py": "1e5905cb34a70d65972edcbbb619fe71df2293c8fb0eafcca3fa4966bf661553",
+      "group_ingress.py": "07fdec86dfc28c4607b850c6b617e119ee4dfc356cdb11285ab7034ffae6c3de",
+      "group_notebook.py": "2e30ce2601193d22b6e2872e6b681d069df5aee80d12be172a504d86b483428e",
+      "group_thought_runtime.py": "747859d965e8bbc12447c446ef21da55c07adf737ad6e770412b9457596642d2",
+      "group_thoughts.py": "8cc7c8d57195f031132e35335593cdc78daa23c6ad677d6614c222b742c6951b",
+      "host_adapters.py": "ba36182eec2f9a1edd4e8bf0871e82d5e25cd33e4a9c315332d29ce0d565c28c",
+      "host_media.py": "b978d097451d5fa1a508364f718d93278de198efd0a9f405662612814e89fa8e",
+      "host_runtime.py": "9f461449891f221cc7fbff98babfaff48969a9adc0e85b056597f84baabeaae0",
+      "plugin.py": "a7d3ec454b2d418c8c53118f202a1c44699de8c2e20c5f13b0835f4f48233b96",
+      "policy.py": "bc4e3e34c42c905ced008ed3802e971cd798e93d6b7b2ad5ddcaf6a048549916",
+      "profiles.py": "ce91cbc79bf9dd1b5c6e9cc4dff25078635972a16323c5bb95324bd285f70b0f",
+      "recovery.py": "0d9e2f0b621302ea585ffd519e738e52d159acbc43777f41db319415301c60fb",
+      "references.py": "77ce3d2cb87732a9f6fb66444ebb5ec1c1acafabbec15a27f1249c5c7e43f796",
+      "rendering.py": "505eba6b89bb8af2a144e443bc767d2f8509cd70a6e467638f0802ac5bd27559",
+      "scripts/build_bundle.py": "50eb4bcd130c361587410b15bb58bfcd25073f188ecb5030e0aeae1b6ad66538",
+      "store.py": "f4e109ee8251b857418747e535f4b4dc76ec1520e9a9be38a3bcef453ae0f262",
+      "studio.html": "2e68eff4604ca032807707bb34998dc0a7255b930c576d2a70261ed460e6aed1",
+      "studio.py": "8c5502c291cc72d3bd5689157b1918ac398dd51a77507503169d5452c5821eba",
+      "studio_chat.py": "e7be2a4b2fb9a368d0e29e9f9e579a471205ec27e1a7ceb18fbb59a10f2f3058",
+      "tests/conftest.py": "d8baa87c9f4024501db1ab1a3c221c0ca4ade8bb4e6fe0255d2d5705546602f7",
+      "tests/protocol_fixture.py": "5d1ceedca0c5c4845349bc48bc73d21456d96e738d9a58a0b51387edc02be782",
+      "tests/test_artist_boundaries.py": "ba6737bbe0ceb816e1833bf2722f1453946e4095032a070c69bcea61257bdef0",
+      "tests/test_artist_flow.py": "657da75bd2f293c7d02655e67389d659c00715dbfce5d1de1bda4753732332c6",
+      "tests/test_artist_mcp_integration.py": "3aca464631b27e3c25f20857516924547a431a7393926172e4505f3fc3e5a5d1",
+      "tests/test_artist_recovery.py": "7d5daabe69955d8cecc8ac439f37c3f1d73dc4618f9ede565692cb7de0062e7d",
+      "tests/test_artist_state.py": "0b4cdc151c0c0c62bca3a7da9d3b808c073cc09c04ae6787b189aefeb5b8f1b0",
+      "tests/test_artist_store.py": "2d907643c2f515960f0228cb6a7a5f6b4071fcba879afdcbc1e953b1f995390b",
+      "tests/test_artist_studio_e2e.py": "826c1a6c51d782415766a492b84c8f2f82eb6d7f251dcdba83e36cc1b9c3e41e",
+      "tests/test_artist_studio_suggestion_e2e.py": "837b070ec5dfe24d3d29b09f4e8c26aafc2038b1715132b4a9db6c0f3de33043",
+      "tests/test_assets_flow.py": "c17abf193bc570019ea7ffcd4e94a8818d1db29720600916cfa0339dcadd59ee",
+      "tests/test_assets_store.py": "3305f3e3011737228b21948a786adf842c65e4bafd1289eb655c9b05285fbf1e",
+      "tests/test_autonomous_catalog.py": "11b6bbdd70258609e711e8bc917b5dbf000db73b03c10d76ec703e12a5c768d2",
+      "tests/test_autonomous_catalog_host.py": "c53fe0f7df4131ff1caa211a0b7fbf6fe60cb02bc012d306b270769b98e13b08",
+      "tests/test_bridge_edit.py": "0d16e1a0c9a91da2a57294390eb5472bd9e19a5c24dfd900aeecbf2a0ab42331",
+      "tests/test_bridge_recovery.py": "31a0038b80141f428c8dcbf96eecb8584c81f0a68ca860e79a1859d78a3616c4",
+      "tests/test_bundle.py": "e2de821f5185f44c17798a099bdc8218d82b2a2936c24de4fb69d85f238af03f",
+      "tests/test_chat_wait.py": "18d92e4c5002c4e7b23b8f6c45215c8a2f17d303360d97de7145df22bb93be22",
+      "tests/test_config_upgrade.py": "40e38b42ebf291d998f0ae488e901de1de923f397a05f9e018843bfcfccf354d",
+      "tests/test_editing.py": "14febe70d23f17cfec30cfe9769f8cacc814c0b495ec369aba9ac65ad989bf46",
+      "tests/test_external_plugin.py": "2db2cf1e884b0b4b6c56cb2e79ab97ff57a01c8dccf4ea7442ffbb26a8772de0",
+      "tests/test_group_collection.py": "39a4426e9720c0af6cffb41bd63c1fa4607cb31fc6c89580032116768f09d56c",
+      "tests/test_group_host_filter_boundary.py": "eb4405fb2545668f66a6a49c7162aaa991495534c48bd921f754967c902a7c97",
+      "tests/test_group_ingress.py": "d7731c63cc935c1da9dd1dc838f478a20eaf343cfc625dfb72b6afc806da67a0",
+      "tests/test_group_notebook.py": "038ddbf9d9b4cacbd0a457800bc0157989548b177ce72f494ad7fdd09d40cf89",
+      "tests/test_group_planner_note_contract.py": "18ac4c5e6414519561b6e5faeeb9331bcdfb13f870fbc4b0c938a44b49315ef6",
+      "tests/test_group_share_boundary.py": "0dd73990002514b4c48ac614f0085cf429dcbe9549e423fced4d2769d48a618c",
+      "tests/test_group_share_flow.py": "c308db8b49d02484241d6ae6131c6a697b5d2c302c4ca4666a9a296e4eef91b8",
+      "tests/test_group_share_policy_store.py": "35c72b7284caa6c0c474ad2317a10ade6d76ac3d983e3fad141e64d2c7b7a3d5",
+      "tests/test_group_share_studio.py": "c870bbf18652ec86dc7ca5dfb316a4cd6a8811cc061ddc3fbf51ef7214711d05",
+      "tests/test_group_studio.py": "7297ad25d84255296f711b9af3317c12701603bed8b094bed779658a542aff63",
+      "tests/test_group_thought_adoption_flow.py": "f55424d03fe5a74c03c37f173114882df1153543b7c40141e48fc7bcc32eb2ec",
+      "tests/test_group_thought_adoption_store.py": "77e4dec9e2995942d1dab5cfa803e0fdc0f80496f6f2363863cfcf8e8552c737",
+      "tests/test_group_thought_host.py": "12faa3c056fded501b29a98a29cb73253cc8af0e2246d0954d9f844440b81e27",
+      "tests/test_group_thought_runtime.py": "a51971b965c9a12b0a1cfc47919adaa6605948144e18a6e280b1fb4be1e671e5",
+      "tests/test_group_thought_studio.py": "911153be0cd4456879a07d105046ae9a67b1cbd026eeb8dc637b405e9cce2412",
+      "tests/test_group_thought_sync.py": "c14406852e6cf45032d35361fd6e06fcb65dd34494b6f212be0270b7183d7b5d",
+      "tests/test_group_thoughts.py": "fe5ca4b3f3763c360e5fb5b0e9e419050484936c6d07bb324895109e2bf350dd",
+      "tests/test_host_adapters.py": "96b297f1a7175dc0a499bda99c9b61b97219dfc7a41a5c7098dcee6e9e7dae2f",
+      "tests/test_host_integration.py": "88cdec24dec4180bbb72a89ac4b8a7e27d55f04a13c4fed4c918e8556fdd0cef",
+      "tests/test_host_lifecycle.py": "7b6ad071f9ee6b18f95ab80497d862e451f90ce12620856f71e270b71009cd09",
+      "tests/test_host_media.py": "2df33b6dbb60b69f006b5dab5756fe32a8da731915009d8be9bb4088d5491a8a",
+      "tests/test_host_runtime.py": "a8627a8080e41016f66859abea8874da134a7e20b018552028f6c4027c3d8372",
+      "tests/test_mcp_edit_integration.py": "25d50fa75cffeefefe3b59c8aeeac320325ee01a7f6503a644348eecd1617486",
+      "tests/test_mcp_plugin.py": "69893347d12cde32af3d3dac8b59f436c408efe05ace61e097910a7570f4f54f",
+      "tests/test_mcp_recovery_integration.py": "7d3c50a5fe45e6e44580d70051a84749ba64632e821e1174d1e5be7069837b69",
+      "tests/test_planned_wait_restore.py": "3e63d124a55fe4206b57d4bc49c1d492d3d530b14439963b119278d23b661aa2",
+      "tests/test_plugin_authorization.py": "db4883149db8098a9a044f31f762a9e652b1fc7f95d8a41000b43eb84d3071c4",
+      "tests/test_profiles_flow.py": "c6ef307f83794a19ba9b09a77adc2c4a4b1185e4cf3c43207b8823e31c1d9e2b",
+      "tests/test_profiles_store.py": "ef72c1c7df29bbf4619aca4bddf61aa233742dbdbe0b55bd6cec8f5628908032",
+      "tests/test_recovery.py": "5d267cc70a749dde4d0fe5d2d4a03013fb29b9d908040640e1cd41febcb9b041",
+      "tests/test_reference_flow.py": "7e4313b11eb0ace5b4a0c102fd8a1101ac99291a2fe16a757b1efaedd96a31d9",
+      "tests/test_reference_mcp_integration.py": "371a2600ca792e5e003541fcce0e4d2c88f8d423fd213fb3f6d563b595783fc8",
+      "tests/test_reference_store.py": "72bc0afe1b4a454bb7736e5dd247e007112b3cb50f7f085cd8094f03b5fb5afb",
+      "tests/test_reference_transport.py": "d58555c06682e91b3e485b70bf119b4f679d496535348c9afcd0ca6269dd583d",
+      "tests/test_rendering.py": "0a1ed3fc08dd65ddf20acfa6456549a8516cda33c62b71d4dcee806c0e22e6c6",
+      "tests/test_review_contract.py": "3c01244cd0af923c6c02e805019eb61a60033a86c2abbd869ff1bdac006c8666",
+      "tests/test_review_flow.py": "55233fe6499adf1c75f1509b739811e88599b45e17226e630df1f23d91dddef7",
+      "tests/test_review_store.py": "b2e65fbb5df0290a38e92de69a3e1ccc7480e40a8bd9bde0372ed9e2c0bba844",
+      "tests/test_send_timeout.py": "2f022451b09571c5aad2c22d829784606d9c7fa3dcf2a22f52f3603bc5616715",
+      "tests/test_snowluma_timeout.py": "550650d574593e6cddeedc82f9f677b3f86fbb5422a09dd0fb21ac554a8a01f0",
+      "tests/test_studio.py": "73f4bff3e6bd6f55b1795609ec86d4b73b01c60cfc8986e911aa996b3c1e98d3",
+      "tests/test_studio_chat.py": "cd2a93196f214a1fb534e033afa1351073a1bc966e26e57cd4237da458eff902",
+      "tests/test_studio_chat_host.py": "6c6d3709c74ccc8e16933378e431c9ebf7c63a06bb0879b2c0673aedec820994",
+      "tests/test_studio_chat_planner.py": "39f7d66d5fb7bdcbfb930639e4809cd56db8553c8d9580c5074cb75dfcf6ccf4",
+      "tests/test_studio_chat_replyer.py": "4f80cdfa60e5c8b9991f2132a80bfba3da482f411b549caee954cf2226e9a5ec",
+      "tests/test_studio_host.py": "0beca7aa8c74e149d0cd404c955a24e8ec6d2f1a5046223dbe444b05e5c31f6a",
+      "tests/test_studio_receipt_read.py": "bbb62229acb3bf20c405c8dbd598f630a6c2d0e969ec2c6ccc7114571294f189",
+      "tests/test_studio_suggestion_chat.py": "462bbc60b0f23500620936e24be27f944efaf5fdbb46c13bf934a778fbe84722",
+      "tests/test_thinking.py": "994744a3bc2b37b90be41aff0d01b69efc0f0689ca03b08f71288cf0289ea525",
+      "thinking.py": "dc46ed519898e14fbe4a11843244f76d598e2d6cc56e658c3da8751fdc1f0291",
+      "webui.json": "1523fe3dfad985290531b8b5863b97e5a3e252f0950cb4135c8e8f3af33720c8"
+    },
+    "deployment_archive": {
+      "file_count": 52,
+      "sha256": "445e72723811dc4616402089c9db0c24bf095619b9b403affdaede0d7bf7610c"
+    }
+  },
+  "environments": {
+    "local_regression": {
+      "python": "3.14.7",
+      "sdk_runtime": "2.16.0",
+      "host_source": "1.3.15",
+      "sdk_source": "2.17.0"
+    },
+    "local_live_host": {
+      "maibot": "1.3.15",
+      "sdk": "2.17.0"
+    },
+    "vps": {
+      "maibot": "1.3.15",
+      "sdk": "2.16.0",
+      "python": "3.13.16"
+    }
+  },
+  "test_runs": {
+    "local-full": {
+      "collected": 2711,
+      "passed": 2690,
+      "failed": 1,
+      "errors": 0,
+      "skipped": 20,
+      "skip_reasons": {
+        "symlink creation unavailable: 1314": 5,
+        "OS hardlink unavailable: 5": 5,
+        "OS link permission unavailable": 10
+      }
+    },
+    "clock-retest": {
+      "collected": 41,
+      "passed": 41,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "skip_reasons": {}
+    },
+    "local-full-final": {
+      "collected": 2711,
+      "passed": 2691,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 20,
+      "skip_reasons": {
+        "symlink creation unavailable: 1314": 5,
+        "OS hardlink unavailable: 5": 5,
+        "OS link permission unavailable": 10
+      }
+    },
+    "vps-regression": {
+      "collected": 1944,
+      "passed": 1886,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 58,
+      "skip_reasons": {
+        "Independent MCP source is explicitly opt-in": 12,
+        "External fixed-Host contract: set CODEX_IMAGE_TEST_HOST_REPO to a public MaiBot Git repository containing 062d45cf8bd4272ac57d7ec03fcf405e5a458211, then run pytest tests/test_artist_studio_e2e.py": 33,
+        "Node required for the isolated Studio DOM harness": 6,
+        "Opt in with CODEX_IMAGE_TEST_DASHBOARD_SOURCE=<public Dashboard directory>": 7
+      }
+    },
+    "vps-post-regression": {
+      "collected": 212,
+      "passed": 197,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 15,
+      "skip_reasons": {
+        "External fixed-Host contract: set CODEX_IMAGE_TEST_HOST_REPO to a public MaiBot Git repository containing 062d45cf8bd4272ac57d7ec03fcf405e5a458211, then run pytest tests/test_artist_studio_e2e.py": 15
+      }
+    }
+  },
+  "live_host_simulated_effects": {
+    "status": "PASS",
+    "model": "scripted",
+    "render": "synthetic_png",
+    "delivery": "real_host_local_websocket",
+    "scenarios": {
+      "chat": {
+        "version_count": 2,
+        "render_count": 2,
+        "share_count": 1,
+        "parent_binding": true,
+        "reviews": [
+          "revise",
+          "accept"
+        ],
+        "frozen_creative_profile": true,
+        "reference_render": true,
+        "received_image_matches_approved_version": true,
+        "chat_wake_count": 1,
+        "operation_counts": {
+          "think": 7,
+          "submit": 1,
+          "edit": 1,
+          "share": 1
+        }
+      },
+      "idle": {
+        "version_count": 2,
+        "render_count": 2,
+        "share_count": 1,
+        "parent_binding": true,
+        "reviews": [
+          "revise",
+          "accept"
+        ],
+        "frozen_creative_profile": true,
+        "reference_render": false,
+        "received_image_matches_approved_version": true,
+        "chat_wake_count": 0,
+        "operation_counts": {
+          "think": 6,
+          "submit": 1,
+          "edit": 1,
+          "share": 1
+        }
+      }
+    },
+    "test_autonomy_disabled": true,
+    "owned_processes_stopped": true
+  },
+  "migration": {
+    "local": {
+      "schema_before": 6,
+      "schema_after": 9,
+      "old_tables_unchanged": 23
+    },
+    "vps": {
+      "schema_before": 7,
+      "schema_after": 9,
+      "old_tables_unchanged": 26
+    }
+  },
+  "online_readonly_smoke": {
+    "local-smoke": {
+      "status": "PASS_WITH_SKIPS",
+      "plugin_version": "0.11.0",
+      "configured_groups": 0,
+      "spaces_checked": 2,
+      "http_requests": 40,
+      "image_content_check": "PASS_EXISTING_IMAGE_SHA256",
+      "group_live_config": "SKIP_NO_CONFIGURED_GROUP",
+      "group_live_queries": "SKIP_NO_CONFIGURED_GROUP",
+      "unauthenticated_denied": {
+        "protected_gets": 5,
+        "query_posts": 4
+      },
+      "config_schema": {
+        "group_inspiration_default": false,
+        "group_share_default": "collect_only",
+        "group_share_enum": [
+          "collect_only",
+          "original_group"
+        ],
+        "status": "PASS"
+      }
+    },
+    "vps-smoke": {
+      "status": "PASS_WITH_SKIPS",
+      "plugin_version": "0.11.0",
+      "configured_groups": 0,
+      "spaces_checked": 1,
+      "http_requests": 45,
+      "image_content_check": "PASS_EXISTING_IMAGE_SHA256",
+      "group_live_config": "SKIP_NO_CONFIGURED_GROUP",
+      "group_live_queries": "SKIP_NO_CONFIGURED_GROUP",
+      "unauthenticated_denied": {
+        "protected_gets": 5,
+        "query_posts": 4
+      },
+      "config_schema": {
+        "group_inspiration_default": false,
+        "group_share_default": "collect_only",
+        "group_share_enum": [
+          "collect_only",
+          "original_group"
+        ],
+        "status": "PASS"
+      }
+    }
+  },
+  "independent_deployment_review": {
+    "status": "PASS",
+    "guard_tests": {
+      "collected": 12,
+      "passed": 12,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "skip_reasons": {}
+    },
+    "post_checks": {
+      "release_52_files_match": true,
+      "loaded_011": true,
+      "schema9": true,
+      "effective_config_only_expected_safe_defaults": true,
+      "autonomy_retained": true,
+      "mcp_pid_unchanged": true,
+      "mcp_working_directory_unchanged": true,
+      "core_started_at_unchanged": true,
+      "mounts_unchanged": true,
+      "original_unknown_rows_preserved": true,
+      "unknown_counts_1_and2": true,
+      "limits_table_exactly_preserved": true,
+      "mcp_health_ready": true,
+      "pre_regression_pass": true,
+      "post_regression_pass": true,
+      "durable_original_history_preserved": true,
+      "cold_backup_matches_preinventory": true
+    }
+  },
+  "limitations": [
+    "No real model or Codex generation was initiated by this verification.",
+    "Group effects use isolated simulations; no production group was configured or enabled.",
+    "No real QQ group receipt or manual browser/visual acceptance is claimed.",
+    "VPS production retained its previously authorized private-space settings.",
+    "Test totals belong to separate runs and must not be added as unique coverage.",
+    "This historical 98-file snapshot precedes the documentation and bundle-list publication update."
+  ],
+  "private_evidence_fingerprints": [
+    {
+      "label": "source-manifest-final.json",
+      "sha256": "e775cd5801f54e4f273d5818e4e04b75f5d59eb7a33cb584a45213c3f3711b68"
+    },
+    {
+      "label": "local-full.xml",
+      "sha256": "a038c281d605ef922aa665c560d325c9ee000b92f0fc4c523c9f38eff366a535"
+    },
+    {
+      "label": "local-full-final.xml",
+      "sha256": "fd804e2680d12f0542acce746be56f9764b2f2ed45b41df403701f3a5f8cb41b"
+    },
+    {
+      "label": "clock-retest.xml",
+      "sha256": "29fb6b3c6cdd7df5424a2e47b680f341f6fed9156b13fe092c1ae662168a1d84"
+    },
+    {
+      "label": "local-history-rehearsal/result.json",
+      "sha256": "4b26486d96603cd78a7fffde588caf42c5808a94831af3b578ce102e802ec1fc"
+    },
+    {
+      "label": "live-test/result.json",
+      "sha256": "3c6636af50fc8c712f071e9cd856460ea27ce532a1f0a7a60ba26be4cbd516d8"
+    },
+    {
+      "label": "live-test/cleanup-result.json",
+      "sha256": "05a0aa73a8fccd1798e17aa37224dbcc42eab3ea1ccdf2ca9fa7b5f039f7a2b5"
+    },
+    {
+      "label": "local-smoke.json",
+      "sha256": "4a77475cee2718c836314aa87c3d7fed0c2df7c3f935baa26063b947149d6312"
+    },
+    {
+      "label": "vps-regression.xml",
+      "sha256": "7fb15b56ff38771eb3d0c71d172fa7687dd63ef36c6afbd42529a1603aee59a8"
+    },
+    {
+      "label": "vps-post-regression.xml",
+      "sha256": "15a93d7a97a00d2023c1185f87d8eac62683182325ecbb7f6cfb804ca54daa06"
+    },
+    {
+      "label": "vps-smoke.json",
+      "sha256": "3619b77d4db6c0763adbe01e3c25e13b8ee89559b8938bf4174c7067feb17bf9"
+    },
+    {
+      "label": "review-guard/results.xml",
+      "sha256": "8f37d5bbc18c90dc192c59cb61c666b034085d60a468e25f2972f1a6a3057bbe"
+    },
+    {
+      "label": "vps-independent-postcheck.json",
+      "sha256": "6b3b6b69a266aa44cba44e18891720c580a256c69fc7637fdb1a76e8fe4ee1b7"
+    }
+  ],
+  "publication_review": {
+    "date": "2026-11-05",
+    "runtime_code_unchanged": true,
+    "bundle_file_count": 54,
+    "source_overlay_sha256": {
+      "scripts/build_bundle.py": "8fb69d833402ed69ebfc491cd5c7405968e250729649db13ca31107926943be1",
+      "tests/test_artist_studio_suggestion_e2e.py": "35c111b81ba16e9423a6c938c1f87939f2eb3f72a64581a07891bb5f20f7fe2e",
+      "tests/test_bundle.py": "ad0931f8a229989b14a6e15d07680ed8d322ad5e3bfb57018a3ead9e47aa5310",
+      "tests/test_group_thought_adoption_store.py": "ba38402ed7055b6a4d42438b91844633046a4a8adc5e0eef4117235f2bfe8461",
+      "tests/test_studio_suggestion_chat.py": "ccad49cc0c70ede624f333bc3bbf1614bb4e1d4725ca1f7bbd879b67a76da3d3"
+    },
+    "test_runs": {
+      "review/targeted-run1": {
+        "collected": 1022,
+        "passed": 1001,
+        "failed": 1,
+        "errors": 0,
+        "skipped": 20,
+        "skip_reasons": {
+          "symlink creation unavailable: 1314": 5,
+          "OS hardlink unavailable: 5": 5,
+          "OS link permission unavailable": 10
+        }
+      },
+      "migration-clock-retest": {
+        "collected": 68,
+        "passed": 68,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0,
+        "skip_reasons": {}
+      },
+      "review/recheck-store-run1": {
+        "collected": 27,
+        "passed": 27,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0,
+        "skip_reasons": {}
+      },
+      "publish-full": {
+        "collected": 2711,
+        "passed": 2691,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 20,
+        "skip_reasons": {
+          "symlink creation unavailable: 1314": 5,
+          "OS hardlink unavailable: 5": 5,
+          "OS link permission unavailable": 10
+        }
+      },
+      "privacy-fixtures-retest": {
+        "collected": 324,
+        "passed": 324,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0,
+        "skip_reasons": {}
+      },
+      "bundle": {
+        "collected": 2,
+        "passed": 2,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0,
+        "skip_reasons": {}
+      }
+    },
+    "finding": {
+      "id": "PUB-R01",
+      "initial_status": "BLOCKED",
+      "final_status": "PASS",
+      "correction": "Reuse the fixture clock when reopening the migrated test database."
+    },
+    "privacy_fixture_update": "Replace an incident-derived suggestion with neutral synthetic text; no product behavior changed.",
+    "full_run_boundary": "The full suite precedes text-only fixture anonymization; both affected test files were then rerun.",
+    "deployment": "No deployment or real drawing during publication preparation."
+  }
+}

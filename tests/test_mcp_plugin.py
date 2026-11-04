@@ -97,12 +97,18 @@ async def test_protocol_fixture_rejects_tampering_with_signed_fields(mcp_protoco
 
 
 @pytest.mark.parametrize("mode", ["wrong_operation", "expired", "future", "wrong_key"])
-async def test_protocol_fixture_rejects_invalid_signed_context(mcp_protocol_fixture, mode):
+async def test_protocol_fixture_rejects_invalid_signed_context(mcp_protocol_fixture, mode, monkeypatch):
+    import protocol_fixture
+
+    # Keep the verifier clock stable: transport latency must not move a future
+    # timestamp back inside the 120-second validity window during this test.
+    now = int(time.time())
+    monkeypatch.setattr(protocol_fixture, "time", SimpleNamespace(time=lambda: now))
     data = {
         "scope": SCOPE,
         "op": "submit",
         "args": {"request_id": "bound", "prompt": "circle"},
-        "iat": int(time.time()),
+        "iat": now,
     }
     if mode == "wrong_operation":
         data["op"] = "health"
