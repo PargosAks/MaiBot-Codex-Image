@@ -11,9 +11,9 @@ import subprocess
 
 import pytest
 
-from image_plugin_under_test import store as ledger
-from image_plugin_under_test.policy import Delegation, Scope, StoreError
-from image_plugin_under_test.studio import Studio
+from image_plugin_under_test.domain import store as ledger
+from image_plugin_under_test.domain.policy import Delegation, Scope, StoreError
+from image_plugin_under_test.workspace.studio import Studio
 
 
 OWNER = Scope("synthetic", "stream-a", "owner-a")
@@ -165,7 +165,7 @@ def test_sharing_dom_displays_permission_separately_from_results(mode, allowed, 
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node required for the isolated Studio DOM harness")
-    script = re.search(r"<script>([\s\S]+)</script>", (ROOT / "studio.html").read_text(encoding="utf-8")).group(1)
+    script = re.search(r"<script>([\s\S]+)</script>", (ROOT / "assets/studio.html").read_text(encoding="utf-8")).group(1)
     harness = r'''
 const vm=require('node:vm'),assert=require('node:assert/strict'),fs=require('node:fs');
 const p=JSON.parse(fs.readFileSync(0,'utf8')),elements=new Map(),calls=[];

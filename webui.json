@@ -9,7 +9,7 @@
     "placement": "workspace",
     "icon": "chart",
     "mode": "custom",
-    "entry": "studio.html",
+    "entry": "assets/studio.html",
     "layout": "document",
     "queries": {
       "spaces": {"api": "studio_spaces", "version": "1", "parameters": {

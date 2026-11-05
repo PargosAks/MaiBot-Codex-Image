@@ -8,10 +8,10 @@ import json
 
 import pytest
 
-from image_plugin_under_test.bridge import BridgeError
-from image_plugin_under_test.policy import Delegation, Limits, Scope, StoreError
-from image_plugin_under_test.recovery import ReadOnlyRecovery
-from image_plugin_under_test.store import ArtistStore
+from image_plugin_under_test.mcp_client.bridge import BridgeError
+from image_plugin_under_test.domain.policy import Delegation, Limits, Scope, StoreError
+from image_plugin_under_test.creation.recovery import ReadOnlyRecovery
+from image_plugin_under_test.domain.store import ArtistStore
 
 
 SCOPE = Scope("test", "verified-stream", "verified-owner")

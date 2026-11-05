@@ -14,10 +14,10 @@ import subprocess
 import pytest
 
 from image_plugin_under_test import CodexImagePlugin
-from image_plugin_under_test.group_notebook import GroupNotebook
-from image_plugin_under_test.policy import Scope, StoreError
-from image_plugin_under_test.store import ArtistStore
-from image_plugin_under_test.studio import Studio
+from image_plugin_under_test.inspiration.group_notebook import GroupNotebook
+from image_plugin_under_test.domain.policy import Scope, StoreError
+from image_plugin_under_test.domain.store import ArtistStore
+from image_plugin_under_test.workspace.studio import Studio
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -287,7 +287,7 @@ def test_group_page_pagination_and_safe_text_without_browser():
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node required for the isolated Studio DOM harness")
-    html = (ROOT / "studio.html").read_text(encoding="utf-8")
+    html = (ROOT / "assets/studio.html").read_text(encoding="utf-8")
     script = re.search(r"<script>([\s\S]+)</script>", html).group(1)
     harness = r'''
 const vm=require('node:vm'),assert=require('node:assert/strict'),fs=require('node:fs');

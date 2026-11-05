@@ -10,12 +10,12 @@ import sqlite3
 
 import pytest
 
-from image_plugin_under_test.group_notebook import (
+from image_plugin_under_test.inspiration.group_notebook import (
     DATABASE_NAME, GroupBinding, GroupNotebook, NotebookError, NotebookLimits,
 )
-from image_plugin_under_test.policy import Scope, StoreError
-from image_plugin_under_test.store import ArtistStore
-from image_plugin_under_test.studio import Studio
+from image_plugin_under_test.domain.policy import Scope, StoreError
+from image_plugin_under_test.domain.store import ArtistStore
+from image_plugin_under_test.workspace.studio import Studio
 
 
 class Clock:

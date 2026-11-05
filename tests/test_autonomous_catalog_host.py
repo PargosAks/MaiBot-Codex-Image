@@ -5,8 +5,8 @@ import os
 
 import pytest
 
-from image_plugin_under_test.policy import Scope
-from image_plugin_under_test.thinking import Thinking
+from image_plugin_under_test.domain.policy import Scope
+from image_plugin_under_test.creation.thinking import Thinking
 from test_autonomous_catalog import NEW
 from test_host_integration import OWNER, PLATFORM, STREAM, host_chain, public_host  # noqa: F401
 from test_profiles_flow import PROFILES, SERIES

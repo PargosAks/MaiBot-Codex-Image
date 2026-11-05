@@ -18,7 +18,7 @@ import json
 
 import pytest
 
-from image_plugin_under_test.host_media import UNREVIEWED_DESCRIPTION
+from image_plugin_under_test.host.host_media import UNREVIEWED_DESCRIPTION
 from test_artist_studio_e2e import (
     SCOPE,
     SPACE,

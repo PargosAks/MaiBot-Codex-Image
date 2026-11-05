@@ -21,8 +21,8 @@ PACKAGE = "offline_group_thought_tests"
 package = ModuleType(PACKAGE)
 package.__path__ = [str(PLUGIN)]
 sys.modules[PACKAGE] = package
-thoughts = importlib.import_module(PACKAGE + ".group_thoughts")
-notebook = importlib.import_module(PACKAGE + ".group_notebook")
+thoughts = importlib.import_module(PACKAGE + ".inspiration.group_thoughts")
+notebook = importlib.import_module(PACKAGE + ".inspiration.group_notebook")
 GroupThoughts = thoughts.GroupThoughts
 ThoughtsError = thoughts.ThoughtsError
 
@@ -141,7 +141,7 @@ def test_fresh_interpreter_replays_without_clock_or_host(store):
     script = """
 import importlib,json,sys,types
 p=types.ModuleType('isolated_thoughts'); p.__path__=[sys.argv[1]]; sys.modules[p.__name__]=p
-m=importlib.import_module(p.__name__+'.group_thoughts')
+m=importlib.import_module(p.__name__+'.inspiration.group_thoughts')
 s=m.GroupThoughts(sys.argv[2], clock=lambda: float('nan'))
 r=s.record(space_id='a',platform='synthetic',stream_id='stream-a',group_id='group-a',
            owner_id='owner-a',tags=['rain','night','store'],request_id=sys.argv[3])

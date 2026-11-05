@@ -16,11 +16,11 @@ from maibot_sdk.components import collect_components
 from maibot_sdk.context import PluginContext
 import pytest
 
-from image_plugin_under_test import studio_chat as chat_module
+from image_plugin_under_test.host import studio_chat as chat_module
 from image_plugin_under_test import CodexImagePlugin
-from image_plugin_under_test.policy import Delegation, Limits, Scope
-from image_plugin_under_test.store import ArtistStore
-from image_plugin_under_test.studio_chat import is_studio_status_message, is_studio_status_query
+from image_plugin_under_test.domain.policy import Delegation, Limits, Scope
+from image_plugin_under_test.domain.store import ArtistStore
+from image_plugin_under_test.host.studio_chat import is_studio_status_message, is_studio_status_query
 
 
 SCOPE = Scope("synthetic", "actual-private-session", "delegating-owner")
@@ -67,7 +67,7 @@ def sdk(request):
     previous = {key: value for key, value in sys.modules.items()
                 if key == "maibot_sdk" or key.startswith("maibot_sdk.")}
     paths = list(sys.path)
-    alias = "image_plugin_under_test._studio_chat_sdk217"
+    alias = "image_plugin_under_test.host._studio_chat_sdk217"
     try:
         for key in previous:
             del sys.modules[key]
@@ -315,7 +315,7 @@ async def test_invalid_or_excessive_state_is_not_injected(sdk, data):
 
 async def test_scoped_studio_read_model_uses_real_sqlite_without_mutation(sdk, tmp_path):
     # Open only a new synthetic ledger; do not start/reload HostRuntime.
-    from image_plugin_under_test.studio import Studio
+    from image_plugin_under_test.workspace.studio import Studio
 
     db = ArtistStore(tmp_path / "artist.sqlite3")
     db.create_space("studio", SCOPE, binding_id="synthetic-test-service")

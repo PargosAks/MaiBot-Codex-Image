@@ -13,9 +13,9 @@ import socket
 import pytest
 import uvicorn
 
-from image_plugin_under_test.bridge import Bridge, BridgeError
-from image_plugin_under_test.policy import Delegation, Limits, Scope
-from image_plugin_under_test.store import ArtistStore
+from image_plugin_under_test.mcp_client.bridge import Bridge, BridgeError
+from image_plugin_under_test.domain.policy import Delegation, Limits, Scope
+from image_plugin_under_test.domain.store import ArtistStore
 from conftest import SECRET, SCOPE
 
 SOURCE = os.environ.get("CODEX_IMAGE_TEST_SERVICE_SOURCE")
@@ -92,7 +92,7 @@ def ledger(tmp_path):
 
 
 async def test_lost_submit_reply_is_recovered_without_second_submit(actual_mcp, ledger, monkeypatch):
-    from image_plugin_under_test.recovery import ReadOnlyRecovery
+    from image_plugin_under_test.creation.recovery import ReadOnlyRecovery
 
     bridge, service = actual_mcp
     store, scope = ledger
@@ -118,7 +118,7 @@ async def test_lost_submit_reply_is_recovered_without_second_submit(actual_mcp, 
 
 
 async def test_not_found_and_changed_digest_never_release_unknown_hold(actual_mcp, ledger):
-    from image_plugin_under_test.recovery import ReadOnlyRecovery
+    from image_plugin_under_test.creation.recovery import ReadOnlyRecovery
 
     bridge, service = actual_mcp
     store, scope = ledger

@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock
 import pytest
 from pydantic import ValidationError
 
-from image_plugin_under_test.host_runtime import ArtistSpace
-from image_plugin_under_test.policy import StoreError
-from image_plugin_under_test.thinking import Thinking
+from image_plugin_under_test.host.host_runtime import ArtistSpace
+from image_plugin_under_test.domain.policy import StoreError
+from image_plugin_under_test.creation.thinking import Thinking
 from test_artist_flow import SCOPE, finished, step, studio as studio
 
 

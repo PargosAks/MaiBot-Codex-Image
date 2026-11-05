@@ -11,11 +11,11 @@ import pytest
 from pydantic import ValidationError
 
 from image_plugin_under_test import CodexImagePlugin
-from image_plugin_under_test.group_collection import GroupCollection
-from image_plugin_under_test.group_ingress import GroupBinding, GroupIngressCandidate, HostGroupReceipt
-from image_plugin_under_test.group_notebook import DATABASE_NAME
-from image_plugin_under_test.host_runtime import HostRuntime
-from image_plugin_under_test.policy import Scope
+from image_plugin_under_test.inspiration.group_collection import GroupCollection
+from image_plugin_under_test.inspiration.group_ingress import GroupBinding, GroupIngressCandidate, HostGroupReceipt
+from image_plugin_under_test.inspiration.group_notebook import DATABASE_NAME
+from image_plugin_under_test.host.host_runtime import HostRuntime
+from image_plugin_under_test.domain.policy import Scope
 
 
 @pytest.fixture

@@ -7,10 +7,10 @@ import hashlib
 
 import pytest
 
-from image_plugin_under_test.artist import Artist, RenderResult, render_digest
-from image_plugin_under_test.policy import Delegation, Limits, Scope, StoreError
-from image_plugin_under_test.store import ArtistStore
-from image_plugin_under_test.thinking import Thinking
+from image_plugin_under_test.creation.artist import Artist, RenderResult, render_digest
+from image_plugin_under_test.domain.policy import Delegation, Limits, Scope, StoreError
+from image_plugin_under_test.domain.store import ArtistStore
+from image_plugin_under_test.creation.thinking import Thinking
 from protocol_fixture import PNG
 
 

@@ -31,12 +31,12 @@ import sys
 
 import pytest
 
-from image_plugin_under_test import host_runtime
-from image_plugin_under_test import studio as studio_module
-from image_plugin_under_test.policy import Limits, Scope
-from image_plugin_under_test.store import ArtistStore
-from image_plugin_under_test.studio import Studio
-from image_plugin_under_test.studio_chat import is_studio_status_message
+from image_plugin_under_test.host import host_runtime
+from image_plugin_under_test.workspace import studio as studio_module
+from image_plugin_under_test.domain.policy import Limits, Scope
+from image_plugin_under_test.domain.store import ArtistStore
+from image_plugin_under_test.workspace.studio import Studio
+from image_plugin_under_test.host.studio_chat import is_studio_status_message
 from protocol_fixture import PNG
 from test_profiles_flow import PROFILES
 import test_host_integration as host_fixture
@@ -353,8 +353,10 @@ class StudioHarness(host_fixture.Harness):
 
 @pytest.fixture(scope="module")
 def source_snapshot():
-    tracked = sorted(path.name for path in ROOT.glob("*.py")) + [
-        "_manifest.json", "webui.json", "studio.html", "pyproject.toml",
+    tracked = sorted(["plugin.py"] + [path.relative_to(ROOT).as_posix()
+                            for package in ("domain", "creation", "host", "inspiration", "mcp_client", "workspace")
+                            for path in (ROOT / package).glob("*.py")]) + [
+        "_manifest.json", "webui.json", "assets/studio.html", "pyproject.toml",
         "tests/conftest.py", "tests/protocol_fixture.py", "tests/test_artist_flow.py",
         "tests/test_profiles_flow.py", "tests/test_host_integration.py", "tests/test_artist_studio_e2e.py",
     ]

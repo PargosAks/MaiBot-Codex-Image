@@ -6,9 +6,9 @@ import sqlite3
 
 import pytest
 
-from image_plugin_under_test.policy import Delegation, Scope, StoreError
-from image_plugin_under_test.store import ArtistStore, _SCHEMA
-from image_plugin_under_test.studio import Studio
+from image_plugin_under_test.domain.policy import Delegation, Scope, StoreError
+from image_plugin_under_test.domain.store import ArtistStore, _SCHEMA
+from image_plugin_under_test.workspace.studio import Studio
 
 
 OWNER = Scope("synthetic", "private-stream", "owner")

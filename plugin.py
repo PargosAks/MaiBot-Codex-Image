@@ -9,16 +9,16 @@ import re
 from maibot_sdk import API, Command, HookHandler, Field, MaiBotPlugin, PluginConfigBase
 from maibot_sdk.types import HookMode
 
-from .bridge import Bridge
-from .delivery import Deliveries
-from .host_runtime import Autonomy, HostRuntime, joined
-from .group_thought_runtime import (
+from .mcp_client.bridge import Bridge
+from .domain.delivery import Deliveries
+from .host.host_runtime import Autonomy, HostRuntime, joined
+from .host.group_thought_runtime import (
     GroupThoughtRuntime, group_thought_after_response, group_thought_before_request, group_thought_receipt,
 )
-from .policy import Scope
-from .rendering import MCPRenderer
-from .studio import Studio
-from .studio_chat import (
+from .domain.policy import Scope
+from .creation.rendering import MCPRenderer
+from .workspace.studio import Studio
+from .host.studio_chat import (
     StudioChat, StudioChatBinding, StudioChatPolicy, StudioChatSnapshot, is_studio_status_message,
     is_studio_suggestion_message,
     snapshot_from_summary, studio_chat_before_replyer_request, studio_chat_before_request,
@@ -389,7 +389,7 @@ class CodexImagePlugin(MaiBotPlugin):
                 pass
 
     async def _deliver(self, scope, job, manual=False):
-        from .host_adapters import send_image_receipt
+        from .host.host_adapters import send_image_receipt
 
         image = await self.bridge.call("result", scope, {"job_id": job})
         if not await joined(asyncio.to_thread(self.journal.begin, job, manual)):

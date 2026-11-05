@@ -9,7 +9,7 @@ import hashlib
 import re
 import warnings
 
-from .policy import StoreError
+from ..domain.policy import StoreError
 
 MAX_IMAGES = 3
 MAX_IMAGE_BYTES = 8 * 1024 * 1024

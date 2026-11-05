@@ -18,20 +18,23 @@ def inspect_plugin_bundle(destination):
     outputs = bundle.build(destination)
     assert len(outputs) == 1
     output, digest = outputs[0]
-    assert output.name == "MaiBot-Codex-Image-plugin-v0.11.0.zip"
+    assert output.name == "MaiBot-Codex-Image-plugin-v0.11.1.zip"
     assert hashlib.sha256(output.read_bytes()).hexdigest() == digest
     with zipfile.ZipFile(output) as archive:
         names = set(archive.namelist())
         assert {
-            "studio.py", "studio_chat.py", "webui.json", "studio.html",
-            "group_notebook.py", "group_ingress.py", "group_collection.py", "docs/group-inspiration.md",
+            "domain/__init__.py", "creation/__init__.py", "host/__init__.py",
+            "inspiration/__init__.py", "mcp_client/__init__.py", "workspace/__init__.py",
+            "docs/architecture.md", "docs/plugin-audit-20261105.md",
+            "workspace/studio.py", "host/studio_chat.py", "webui.json", "assets/studio.html",
+            "inspiration/group_notebook.py", "inspiration/group_ingress.py", "inspiration/group_collection.py", "docs/group-inspiration.md",
             "docs/group-inspiration-validation.md", "docs/validation/group-inspiration-20261104.json",
-            "group_thoughts.py", "group_thought_runtime.py",
-            "plugin.py", "bridge.py", "delivery.py", "policy.py", "store.py", "artist.py", "thinking.py",
-            "recovery.py", "docs/implementation-stage-3.md",
-            "editing.py", "docs/implementation-stage-4.md",
-            "rendering.py", "docs/implementation-stage-5.md",
-            "host_runtime.py", "host_adapters.py", "docs/implementation-stage-6.md",
+            "inspiration/group_thoughts.py", "host/group_thought_runtime.py",
+            "plugin.py", "mcp_client/bridge.py", "domain/delivery.py", "domain/policy.py", "domain/store.py", "creation/artist.py", "creation/thinking.py",
+            "creation/recovery.py", "docs/implementation-stage-3.md",
+            "creation/editing.py", "docs/implementation-stage-4.md",
+            "creation/rendering.py", "docs/implementation-stage-5.md",
+            "host/host_runtime.py", "host/host_adapters.py", "docs/implementation-stage-6.md",
             "config.example.toml", "_manifest.json", "docs/artist-design.md",
             "docs/artist-stage-0.md", "docs/implementation-stage-1.md", "docs/implementation-stage-2.md",
         } <= names
@@ -46,7 +49,7 @@ def inspect_plugin_bundle(destination):
             "setup.sh",
         }
         manifest = json.loads(archive.read("_manifest.json"))
-        assert manifest["version"] == "0.11.0"
+        assert manifest["version"] == "0.11.1"
         assert {x["name"] for x in manifest["dependencies"]} == {"httpx", "mcp", "pillow"}
     assert (destination / "SHA256SUMS").read_text(encoding="ascii") == f"{digest}  {output.name}\n"
     return output, names

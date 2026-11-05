@@ -13,10 +13,10 @@ import zlib
 from PIL import Image
 import pytest
 
-from image_plugin_under_test import host_media
-from image_plugin_under_test.host_runtime import ArtistSpace, HostRuntime
-from image_plugin_under_test.policy import Delegation, Scope, StoreError
-from image_plugin_under_test.store import ArtistStore
+from image_plugin_under_test.host import host_media
+from image_plugin_under_test.host.host_runtime import ArtistSpace, HostRuntime
+from image_plugin_under_test.domain.policy import Delegation, Scope, StoreError
+from image_plugin_under_test.domain.store import ArtistStore
 
 SCOPE = Scope("test", "media-stream", "media-owner")
 
@@ -233,7 +233,7 @@ async def test_revoke_and_regrant_during_decode_cannot_use_new_authority(runtime
         assert release.wait(5)
         return decode(message)
 
-    monkeypatch.setattr("image_plugin_under_test.host_runtime.current_images", paused)
+    monkeypatch.setattr("image_plugin_under_test.host.host_runtime.current_images", paused)
     task = asyncio.create_task(chat(runtime))
     try:
         assert await asyncio.to_thread(entered.wait, 2)
@@ -255,7 +255,7 @@ async def test_media_policy_revoked_during_decode_is_rechecked_by_store(runtime,
         runtime.store.configure_reference_policy("studio", SCOPE, enabled=False, consent_ref="", expected_auth_version=1)
         return original(message)
 
-    monkeypatch.setattr("image_plugin_under_test.host_runtime.current_images", revoke_media)
+    monkeypatch.setattr("image_plugin_under_test.host.host_runtime.current_images", revoke_media)
     assert not await chat(runtime)
     assert not assets(runtime) and runtime.media_errors
 
@@ -267,7 +267,7 @@ async def test_stopping_during_decode_prevents_new_import(runtime, monkeypatch):
         runtime.stopping = True
         return original(message)
 
-    monkeypatch.setattr("image_plugin_under_test.host_runtime.current_images", stop)
+    monkeypatch.setattr("image_plugin_under_test.host.host_runtime.current_images", stop)
     assert not await chat(runtime)
     assert not assets(runtime)
 

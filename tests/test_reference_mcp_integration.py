@@ -5,8 +5,8 @@ from copy import deepcopy
 
 import pytest
 
-from image_plugin_under_test.references import ReferenceInputs
-from image_plugin_under_test.thinking import Thinking
+from image_plugin_under_test.creation.references import ReferenceInputs
+from image_plugin_under_test.creation.thinking import Thinking
 from test_artist_mcp_integration import BINDING, SPACE, studio  # noqa: F401
 from test_mcp_recovery_integration import SOURCE, actual_mcp  # noqa: F401
 

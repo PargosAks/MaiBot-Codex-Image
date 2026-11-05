@@ -20,12 +20,12 @@ import pytest
 import pytest_asyncio
 import uvicorn
 
-from image_plugin_under_test.artist import render_digest
-from image_plugin_under_test.bridge import Bridge, BridgeError
-from image_plugin_under_test.policy import Delegation, Limits, StoreError
-from image_plugin_under_test.recovery import ReadOnlyRecovery
-from image_plugin_under_test.rendering import MCPRenderer
-from image_plugin_under_test.store import ArtistStore
+from image_plugin_under_test.creation.artist import render_digest
+from image_plugin_under_test.mcp_client.bridge import Bridge, BridgeError
+from image_plugin_under_test.domain.policy import Delegation, Limits, StoreError
+from image_plugin_under_test.creation.recovery import ReadOnlyRecovery
+from image_plugin_under_test.creation.rendering import MCPRenderer
+from image_plugin_under_test.domain.store import ArtistStore
 from conftest import SECRET
 from protocol_fixture import PNG, ProtocolFixture
 from test_rendering import BINDING, BRIEF, HASH, OTHER, PROMPT, SCOPE, parent
@@ -413,7 +413,7 @@ async def test_reference_policy_disabled_during_health_prevents_render(ledger, r
 
 @pytest.mark.parametrize("failure", [False, True])
 async def test_prepare_references_delegates_registry_policy_and_total_size(ledger, monkeypatch, failure):  # noqa: F811
-    module = types.ModuleType("image_plugin_under_test.references")
+    module = types.ModuleType("image_plugin_under_test.creation.references")
     registry = types.SimpleNamespace(prepare=AsyncMock(return_value=deepcopy(REFERENCES)))
     module.ReferenceInputs = Mock(return_value=registry)
     monkeypatch.setitem(sys.modules, module.__name__, module)
@@ -432,7 +432,7 @@ async def test_prepare_references_delegates_registry_policy_and_total_size(ledge
 
 
 async def test_prepare_references_rejects_cross_scope_before_registry(ledger, monkeypatch):  # noqa: F811
-    module = types.ModuleType("image_plugin_under_test.references")
+    module = types.ModuleType("image_plugin_under_test.creation.references")
     module.ReferenceInputs = Mock()
     monkeypatch.setitem(sys.modules, module.__name__, module)
     adapter = MCPRenderer(ledger, "s", SCOPE, AsyncMock(), binding_id=BINDING)

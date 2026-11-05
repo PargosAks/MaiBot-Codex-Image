@@ -16,12 +16,12 @@ import pytest
 
 from maibot_sdk.context import PluginContext
 
-from image_plugin_under_test.artist import stable_id
-from image_plugin_under_test.delivery import Deliveries
-from image_plugin_under_test.host_adapters import HostSender, HostThinking, send_image_receipt
-from image_plugin_under_test.policy import Delegation, Limits, Scope, StoreError
-from image_plugin_under_test.store import ArtistStore
-from image_plugin_under_test.thinking import Thinking
+from image_plugin_under_test.creation.artist import stable_id
+from image_plugin_under_test.domain.delivery import Deliveries
+from image_plugin_under_test.host.host_adapters import HostSender, HostThinking, send_image_receipt
+from image_plugin_under_test.domain.policy import Delegation, Limits, Scope, StoreError
+from image_plugin_under_test.domain.store import ArtistStore
+from image_plugin_under_test.creation.thinking import Thinking
 from protocol_fixture import PNG
 
 

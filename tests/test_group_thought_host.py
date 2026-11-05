@@ -17,9 +17,9 @@ import sys
 import pytest
 import test_host_integration as host_integration
 
-from image_plugin_under_test.group_thought_runtime import TAGS, TOOL_NAME
-from image_plugin_under_test.policy import Scope
-from image_plugin_under_test.studio import Studio
+from image_plugin_under_test.host.group_thought_runtime import TAGS, TOOL_NAME
+from image_plugin_under_test.domain.policy import Scope
+from image_plugin_under_test.workspace.studio import Studio
 from test_host_integration import HOST_REV, OWNER, PLATFORM, PLUGIN_ID, STREAM, host_file, load_nodes
 
 

@@ -3,8 +3,8 @@
 import hashlib
 import json
 
-from .bridge import BridgeError
-from .policy import StoreError
+from ..mcp_client.bridge import BridgeError
+from ..domain.policy import StoreError
 from .recovery import ReadOnlyRecovery
 
 

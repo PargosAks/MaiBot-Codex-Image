@@ -60,7 +60,7 @@ import re
 from maibot_sdk import HookHandler
 from maibot_sdk.types import HookMode
 
-from .policy import Scope, StoreError
+from ..domain.policy import Scope, StoreError
 
 
 logger = logging.getLogger(__name__)

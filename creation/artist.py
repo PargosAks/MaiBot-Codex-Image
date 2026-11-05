@@ -10,11 +10,11 @@ import math
 import re
 import uuid
 
-from .bridge import BridgeError
-from .policy import Scope, StoreError, canonical_json
-from .profiles import CATALOG_ACTIONS, render_prompt
-from .assets import reference_prompt
-from .store import ArtistStore
+from ..mcp_client.bridge import BridgeError
+from ..domain.policy import Scope, StoreError, canonical_json
+from ..domain.profiles import CATALOG_ACTIONS, render_prompt
+from ..domain.assets import reference_prompt
+from ..domain.store import ArtistStore
 from .thinking import Thinking
 
 

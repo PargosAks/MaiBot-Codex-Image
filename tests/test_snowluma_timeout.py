@@ -17,8 +17,8 @@ import pytest
 from test_send_timeout import UploadRPC
 from test_host_runtime import runner_bridge
 from test_host_adapters import ctx as sdk_context_fixture
-from image_plugin_under_test.host_adapters import send_image_receipt
-from image_plugin_under_test.policy import StoreError
+from image_plugin_under_test.host.host_adapters import send_image_receipt
+from image_plugin_under_test.domain.policy import StoreError
 
 ctx = sdk_context_fixture
 

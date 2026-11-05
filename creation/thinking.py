@@ -6,9 +6,9 @@ from typing import Any
 import hashlib
 import re
 
-from .policy import StoreError, canonical_json
-from .profiles import CATALOG_ACTIONS, validate_catalog, validate_catalog_decision, validate_choice
-from .assets import validate_references
+from ..domain.policy import StoreError, canonical_json
+from ..domain.profiles import CATALOG_ACTIONS, validate_catalog, validate_catalog_decision, validate_choice
+from ..domain.assets import validate_references
 
 
 GUIDANCE = (

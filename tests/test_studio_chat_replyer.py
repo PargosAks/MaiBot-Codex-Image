@@ -11,7 +11,7 @@ import logging
 import pytest
 
 from image_plugin_under_test import CodexImagePlugin
-from image_plugin_under_test.policy import Scope
+from image_plugin_under_test.domain.policy import Scope
 from test_studio_chat import Harness, OTHER, SCOPE, payload, sdk  # noqa: F401
 from test_studio_chat_host import host  # noqa: F401
 

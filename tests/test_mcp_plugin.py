@@ -14,8 +14,8 @@ from mcp.client.streamable_http import streamable_http_client
 import httpx
 import pytest
 
-from image_plugin_under_test.bridge import Bridge, sign
-from image_plugin_under_test.delivery import Deliveries
+from image_plugin_under_test.mcp_client.bridge import Bridge, sign
+from image_plugin_under_test.domain.delivery import Deliveries
 from image_plugin_under_test import CodexImagePlugin, trusted_identity
 from conftest import SECRET, SCOPE
 from protocol_fixture import PNG

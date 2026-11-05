@@ -12,10 +12,10 @@ import io
 
 import pytest
 
-from image_plugin_under_test.artist import Artist
-from image_plugin_under_test.policy import Delegation, Limits, Scope, StoreError
-from image_plugin_under_test.store import ArtistStore
-from image_plugin_under_test.thinking import Thinking
+from image_plugin_under_test.creation.artist import Artist
+from image_plugin_under_test.domain.policy import Delegation, Limits, Scope, StoreError
+from image_plugin_under_test.domain.store import ArtistStore
+from image_plugin_under_test.creation.thinking import Thinking
 from conftest import SCOPE
 from test_artist_flow import BRIEF, Clock, Sender
 from test_mcp_recovery_integration import SOURCE, actual_mcp  # noqa: F401 - shared opt-in fixture
@@ -186,7 +186,7 @@ class Studio:
 @pytest.fixture
 async def studio(actual_mcp, tmp_path, monkeypatch):  # noqa: F811 - shared pytest fixture
     from PIL import Image
-    from image_plugin_under_test.rendering import MCPRenderer
+    from image_plugin_under_test.creation.rendering import MCPRenderer
 
     bridge, service = actual_mcp
     images = []

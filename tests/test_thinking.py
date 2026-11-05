@@ -6,8 +6,8 @@ import asyncio
 
 import pytest
 
-from image_plugin_under_test.policy import StoreError
-from image_plugin_under_test.thinking import Thinking
+from image_plugin_under_test.domain.policy import StoreError
+from image_plugin_under_test.creation.thinking import Thinking
 
 
 BRIEF = {"intent": "练习光影", "subject": "窗边的花", "mood": "宁静", "prompt": "画窗边的花", "completion_criteria": "主体清晰"}

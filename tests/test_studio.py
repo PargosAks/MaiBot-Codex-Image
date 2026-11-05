@@ -11,9 +11,9 @@ import sqlite3
 import pytest
 
 from image_plugin_under_test import CodexImagePlugin
-from image_plugin_under_test.policy import Delegation, Limits, Scope, StoreError
-from image_plugin_under_test.store import ArtistStore, SCHEMA_VERSION, _SCHEMA
-from image_plugin_under_test.studio import Studio
+from image_plugin_under_test.domain.policy import Delegation, Limits, Scope, StoreError
+from image_plugin_under_test.domain.store import ArtistStore, SCHEMA_VERSION, _SCHEMA
+from image_plugin_under_test.workspace.studio import Studio
 from protocol_fixture import PNG
 
 
@@ -230,7 +230,7 @@ def test_linked_database_rejected_before_open(data, monkeypatch):
 
 
 def test_scoped_summary_for_chat_omits_full_text_and_rejects_foreign_scope(data):
-    from image_plugin_under_test.studio_chat import snapshot_from_summary
+    from image_plugin_under_test.host.studio_chat import snapshot_from_summary
 
     root, _, _ = data
     summary = Studio(root, scopes={"a": OWNER}, clock=lambda: NOW).summary("a")
@@ -292,7 +292,7 @@ def test_recent_work_evidence_bounded_subjects_and_unknown_beats_sent(data):
 def test_original_chunks_bounded_for_real_host_result_limit(data):
     from io import BytesIO
     from PIL import Image
-    from image_plugin_under_test.studio import IMAGE_CHUNK_BYTES
+    from image_plugin_under_test.workspace.studio import IMAGE_CHUNK_BYTES
     import random
 
     _, db, view = data
@@ -396,7 +396,7 @@ def test_studio_r1_02_long_valid_profile_and_frozen_brief_keep_independent_displ
 
 @pytest.mark.parametrize("decision", ["accept", "revise", "discard"])
 async def test_studio_r1_03_real_review_contract_is_visible_in_summary_and_records(data, decision):
-    from image_plugin_under_test.thinking import Thinking
+    from image_plugin_under_test.creation.thinking import Thinking
     from test_thinking import ACCEPT, CONTEXT
 
     _, db, view = data
@@ -418,7 +418,7 @@ async def test_studio_r1_03_real_review_contract_is_visible_in_summary_and_recor
 
 @pytest.mark.parametrize("version", range(1, SCHEMA_VERSION + 1))
 def test_each_supported_schema_read_does_not_migrate(tmp_path, version):
-    from image_plugin_under_test import store as module
+    from image_plugin_under_test.domain import store as module
 
     db = sqlite3.connect(tmp_path / "artist.sqlite3")
     for number in range(1, version + 1):

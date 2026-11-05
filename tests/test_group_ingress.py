@@ -5,7 +5,7 @@ import asyncio
 
 import pytest
 
-from image_plugin_under_test.group_ingress import (
+from image_plugin_under_test.inspiration.group_ingress import (
     CURRENT_HOST_SUPPORTED,
     HOST_LIMITATION,
     ConfirmedGroupMessage,

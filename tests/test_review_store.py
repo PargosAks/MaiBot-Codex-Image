@@ -9,9 +9,9 @@ import sqlite3
 
 import pytest
 
-from image_plugin_under_test import store as store_module
-from image_plugin_under_test.policy import Delegation, Limits, Scope, StoreError, canonical_json
-from image_plugin_under_test.store import SCHEMA_VERSION, ArtistStore
+from image_plugin_under_test.domain import store as store_module
+from image_plugin_under_test.domain.policy import Delegation, Limits, Scope, StoreError, canonical_json
+from image_plugin_under_test.domain.store import SCHEMA_VERSION, ArtistStore
 
 
 SCOPE = Scope("test", "review-stream", "review-owner")

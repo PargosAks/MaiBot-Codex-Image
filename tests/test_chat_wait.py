@@ -7,9 +7,9 @@ import asyncio
 
 import pytest
 
-from image_plugin_under_test.policy import Delegation, Limits, StoreError, canonical_json
-from image_plugin_under_test.store import ArtistStore, SCHEMA_VERSION
-from image_plugin_under_test.thinking import Thinking
+from image_plugin_under_test.domain.policy import Delegation, Limits, StoreError, canonical_json
+from image_plugin_under_test.domain.store import ArtistStore, SCHEMA_VERSION
+from image_plugin_under_test.creation.thinking import Thinking
 from test_artist_flow import SCOPE as FLOW_SCOPE, studio as studio_fixture
 from test_artist_state import SCOPE, ledger as ledger_fixture
 
@@ -271,7 +271,7 @@ def test_newer_failed_or_unknown_operation_cannot_borrow_old_wait(ledger, new_st
 
 
 async def test_regranted_runtime_uses_epoch_three_for_new_think_not_old_wait(studio):
-    from image_plugin_under_test.artist import Artist
+    from image_plugin_under_test.creation.artist import Artist
 
     runtime, store, clock, model, renderer, sender = studio
     old_calls = []

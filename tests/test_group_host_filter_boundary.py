@@ -20,8 +20,8 @@ import sys
 import pytest
 import test_host_integration as host_integration
 
-from image_plugin_under_test.group_notebook import DATABASE_NAME
-from image_plugin_under_test.policy import Scope
+from image_plugin_under_test.inspiration.group_notebook import DATABASE_NAME
+from image_plugin_under_test.domain.policy import Scope
 from test_host_integration import (
     HOST_REV,
     PLATFORM,

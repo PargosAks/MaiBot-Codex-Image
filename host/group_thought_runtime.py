@@ -17,9 +17,9 @@ import time
 from maibot_sdk import HookHandler, Tool
 from maibot_sdk.types import HookMode
 
-from .group_thoughts import DATABASE_NAME, GroupThoughts
+from ..inspiration.group_thoughts import DATABASE_NAME, GroupThoughts
 from .host_runtime import joined
-from .policy import Scope
+from ..domain.policy import Scope
 
 
 logger = logging.getLogger(__name__)

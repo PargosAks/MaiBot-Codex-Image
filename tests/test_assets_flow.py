@@ -2,8 +2,8 @@
 
 from copy import deepcopy
 
-from image_plugin_under_test.policy import Limits
-from image_plugin_under_test.thinking import Thinking
+from image_plugin_under_test.domain.policy import Limits
+from image_plugin_under_test.creation.thinking import Thinking
 from test_artist_flow import BRIEF, SCOPE, finished, step, studio  # noqa: F401
 
 

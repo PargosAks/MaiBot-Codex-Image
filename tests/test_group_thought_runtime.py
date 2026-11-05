@@ -6,8 +6,8 @@ import asyncio
 
 import pytest
 
-from image_plugin_under_test.group_thought_runtime import GroupThoughtRuntime, PARAMETERS, TOOL_NAME
-from image_plugin_under_test.policy import Scope
+from image_plugin_under_test.host.group_thought_runtime import GroupThoughtRuntime, PARAMETERS, TOOL_NAME
+from image_plugin_under_test.domain.policy import Scope
 from test_group_collection import groups as groups
 
 

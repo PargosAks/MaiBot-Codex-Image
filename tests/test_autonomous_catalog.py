@@ -8,10 +8,10 @@ import sqlite3
 
 import pytest
 
-from image_plugin_under_test import store as store_module
-from image_plugin_under_test.policy import Delegation, Limits, Scope, StoreError, canonical_json
-from image_plugin_under_test.store import ArtistStore, SCHEMA_VERSION
-from image_plugin_under_test.thinking import Thinking
+from image_plugin_under_test.domain import store as store_module
+from image_plugin_under_test.domain.policy import Delegation, Limits, Scope, StoreError, canonical_json
+from image_plugin_under_test.domain.store import ArtistStore, SCHEMA_VERSION
+from image_plugin_under_test.creation.thinking import Thinking
 from test_artist_flow import BRIEF, SCOPE, step, studio as studio_fixture
 from test_profiles_flow import PROFILES, SERIES
 

@@ -7,16 +7,18 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = json.loads((ROOT / "_manifest.json").read_text(encoding="utf-8"))["version"]
 PLUGIN_FILES = (
-    "plugin.py", "bridge.py", "delivery.py", "policy.py", "store.py", "artist.py", "thinking.py", "recovery.py", "editing.py", "rendering.py",
-    "host_runtime.py", "host_adapters.py", "studio.py", "studio_chat.py", "webui.json", "studio.html",
-    "profiles.py", "assets.py", "references.py", "host_media.py",
-    "group_notebook.py", "group_ingress.py", "group_collection.py", "docs/group-inspiration.md",
+    "domain/__init__.py", "creation/__init__.py", "host/__init__.py", "inspiration/__init__.py", "mcp_client/__init__.py", "workspace/__init__.py",
+    "plugin.py", "mcp_client/bridge.py", "domain/delivery.py", "domain/policy.py", "domain/store.py", "creation/artist.py", "creation/thinking.py", "creation/recovery.py", "creation/editing.py", "creation/rendering.py",
+    "host/host_runtime.py", "host/host_adapters.py", "workspace/studio.py", "host/studio_chat.py", "webui.json", "assets/studio.html",
+    "domain/profiles.py", "domain/assets.py", "creation/references.py", "host/host_media.py",
+    "inspiration/group_notebook.py", "inspiration/group_ingress.py", "inspiration/group_collection.py", "docs/group-inspiration.md",
     "docs/group-inspiration-validation.md", "docs/validation/group-inspiration-20261104.json",
-    "group_thoughts.py", "group_thought_runtime.py",
+    "inspiration/group_thoughts.py", "host/group_thought_runtime.py",
     "_manifest.json", "config.example.toml",
     "requirements.txt", "README.md", "LICENSE", "CHANGELOG.md",
     "docs/quickstart.md", "docs/advanced.md", "docs/troubleshooting.md",
     "docs/development.md", "docs/validation.md", "docs/studio.md", "docs/retained-plan-recovery.md",
+    "docs/architecture.md", "docs/plugin-audit-20261105.md",
     "docs/artist-design.md", "docs/artist-stage-0.md", "docs/implementation-stage-1.md",
     "docs/implementation-stage-2.md",
     "docs/implementation-stage-3.md",

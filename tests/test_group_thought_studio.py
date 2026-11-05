@@ -13,12 +13,12 @@ from types import SimpleNamespace
 
 import pytest
 from image_plugin_under_test import CodexImagePlugin
-from image_plugin_under_test import store as artist_store
-from image_plugin_under_test.group_notebook import GroupNotebook
-from image_plugin_under_test.group_thoughts import GroupThoughts
-from image_plugin_under_test.policy import Delegation, Scope, StoreError
-from image_plugin_under_test.store import ArtistStore
-from image_plugin_under_test.studio import Studio
+from image_plugin_under_test.domain import store as artist_store
+from image_plugin_under_test.inspiration.group_notebook import GroupNotebook
+from image_plugin_under_test.inspiration.group_thoughts import GroupThoughts
+from image_plugin_under_test.domain.policy import Delegation, Scope, StoreError
+from image_plugin_under_test.domain.store import ArtistStore
+from image_plugin_under_test.workspace.studio import Studio
 
 ROOT = Path(__file__).resolve().parents[1]
 OWNER = Scope("synthetic", "thought-stream-a", "delegator")
@@ -443,7 +443,7 @@ def test_webui_thoughts_use_existing_private_query_without_actions():
     manifest = json.loads((ROOT / "webui.json").read_text(encoding="utf-8"))
     assert len(manifest["pages"]) == 1
     page = manifest["pages"][0]
-    assert page["placement"] == "workspace" and page["entry"] == "studio.html"
+    assert page["placement"] == "workspace" and page["entry"] == "assets/studio.html"
     assert set(page["queries"]) == {"spaces", "summary", "records", "image"}
     records = page["queries"]["records"]
     assert records["api"] == "studio_records" and records["version"] == "1"
@@ -456,7 +456,7 @@ def test_thought_page_safe_text_pagination_and_experiment_separation_without_bro
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node required for the isolated Studio DOM harness")
-    html = (ROOT / "studio.html").read_text(encoding="utf-8")
+    html = (ROOT / "assets/studio.html").read_text(encoding="utf-8")
     script = re.search(r"<script>([\s\S]+)</script>", html).group(1)
     harness = r'''
 const vm=require('node:vm'),assert=require('node:assert/strict'),fs=require('node:fs');

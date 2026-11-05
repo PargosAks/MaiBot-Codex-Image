@@ -6,8 +6,8 @@ import sqlite3
 
 import pytest
 
-from image_plugin_under_test.policy import Delegation, Limits, Scope, StoreError
-from image_plugin_under_test.store import ArtistStore
+from image_plugin_under_test.domain.policy import Delegation, Limits, Scope, StoreError
+from image_plugin_under_test.domain.store import ArtistStore
 
 
 SCOPE = Scope("test-platform", "verified-stream", "verified-owner")

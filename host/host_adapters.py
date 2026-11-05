@@ -11,12 +11,12 @@ import hashlib
 import json
 import math
 
-from .artist import stable_id
-from .delivery import Deliveries
-from .policy import Scope, StoreError, canonical_json, nonempty
-from .recovery import ReadOnlyRecovery
-from .store import ArtistStore
-from .thinking import _context, _review_images
+from ..creation.artist import stable_id
+from ..domain.delivery import Deliveries
+from ..domain.policy import Scope, StoreError, canonical_json, nonempty
+from ..creation.recovery import ReadOnlyRecovery
+from ..domain.store import ArtistStore
+from ..creation.thinking import _context, _review_images
 
 
 _IMAGE_LIMIT = 8 * 1024 * 1024

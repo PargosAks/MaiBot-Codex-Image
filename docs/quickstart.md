@@ -1,6 +1,6 @@
 # 安装与升级
 
-插件 **0.11.0** 的手动命令兼容已有 MCP **0.5.0** 旧接口；参考图片功能需另行协商服务能力，见文末。本仓库不安装、配置或启动 MCP，也不代替 Codex 登录。
+插件 **0.11.1** 的手动命令兼容已有 MCP **0.5.0** 旧接口；参考图片功能需另行协商服务能力，见文末。本仓库不安装、配置或启动 MCP，也不代替 Codex 登录。
 
 ## 已有用户：先检查服务入口
 
@@ -22,7 +22,7 @@
 
 前置条件为 MaiBot 1.3.x、SDK 2.16.x / 2.17.x 和已有的兼容 MCP；仅使用原命令时可沿用 MCP 0.5.0，参考图片功能的要求见文末。向服务维护者取得从 MaiBot 运行环境可达的 URL 与共享密钥，确认服务已准备 Codex 环境和手动登录。本指南不创建新的 MCP 仓库或部署方案。
 
-将源码或插件 zip 内容放入 MaiBot 实际加载的 `plugins/codex_image`，根层包含 `_manifest.json`、`plugin.py`、`bridge.py`、`delivery.py`。不要覆盖已有目录。Docker 使用现有插件挂载对应的宿主机路径，无需向容器安装 Codex 或挂载宿主机登录目录。
+将源码或插件 zip 内容放入 MaiBot 实际加载的 `plugins/codex_image`，根层包含 `_manifest.json`、`plugin.py`、`webui.json`，同时保留 `domain/`、`creation/`、`host/`、`inspiration/`、`mcp_client/`、`workspace/` 和 `assets/`。0.11.1 调整了内部模块路径，不能只复制根入口；完整升级和回退见[目录说明](architecture.md#升级与回退)。不要覆盖已有目录。Docker 使用现有插件挂载对应的宿主机路径，无需向容器安装 Codex 或挂载宿主机登录目录。
 
 在 MaiBot 插件面板配置：
 

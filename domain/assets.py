@@ -19,7 +19,7 @@ MAX_ASSET_BYTES = 64 * 1024 * 1024
 
 def validate_asset_image(data: Any, mime: Any) -> dict:
     """Reuse the Host decoder to verify original bytes without interpreting them."""
-    from .host_media import MAX_IMAGE_BYTES, _validate_image
+    from ..host.host_media import MAX_IMAGE_BYTES, _validate_image
 
     _require(type(data) is bytes and 0 < len(data) <= MAX_IMAGE_BYTES, "Image bytes exceed the 8 MiB limit")
     _require(type(mime) is str and mime in {"image/png", "image/jpeg", "image/webp"}, "Invalid image MIME")

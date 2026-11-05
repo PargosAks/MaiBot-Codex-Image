@@ -11,10 +11,11 @@ import pytest
 
 from maibot_sdk.context import PluginContext
 
-from image_plugin_under_test import CodexImagePlugin, studio_chat as chat_module
-from image_plugin_under_test.policy import Delegation
-from image_plugin_under_test.store import ArtistStore
-from image_plugin_under_test.studio import Studio
+from image_plugin_under_test import CodexImagePlugin
+from image_plugin_under_test.host import studio_chat as chat_module
+from image_plugin_under_test.domain.policy import Delegation
+from image_plugin_under_test.domain.store import ArtistStore
+from image_plugin_under_test.workspace.studio import Studio
 from test_studio_chat import Harness, OTHER, SCOPE, payload, sdk  # noqa: F401
 
 

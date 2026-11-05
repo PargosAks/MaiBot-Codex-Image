@@ -9,11 +9,11 @@ import json
 
 import pytest
 
-from image_plugin_under_test.artist import RenderResult, render_digest
-from image_plugin_under_test.bridge import Bridge, BridgeError
-from image_plugin_under_test.policy import Delegation, Limits, Scope, StoreError
-from image_plugin_under_test.rendering import MCPRenderer
-from image_plugin_under_test.store import ArtistStore
+from image_plugin_under_test.creation.artist import RenderResult, render_digest
+from image_plugin_under_test.mcp_client.bridge import Bridge, BridgeError
+from image_plugin_under_test.domain.policy import Delegation, Limits, Scope, StoreError
+from image_plugin_under_test.creation.rendering import MCPRenderer
+from image_plugin_under_test.domain.store import ArtistStore
 from protocol_fixture import PNG
 
 

@@ -9,8 +9,8 @@ from copy import deepcopy
 
 import pytest
 
-from image_plugin_under_test.artist import stable_id
-from image_plugin_under_test.policy import Limits, StoreError
+from image_plugin_under_test.creation.artist import stable_id
+from image_plugin_under_test.domain.policy import Limits, StoreError
 from protocol_fixture import PNG
 from test_group_thought_adoption_flow import (
     AdoptionModel, HOST_SCOPE, adoption_host as adoption_host, advance,
@@ -247,7 +247,7 @@ async def test_failed_preflight_is_known_not_sent_without_releasing_history(shar
         if failure in {"revoke", "regrant"}:
             h.runtime.store.revoke("studio", HOST_SCOPE, source_ref="preflight-test", granted_by="test")
             if failure == "regrant":
-                from image_plugin_under_test.policy import Delegation
+                from image_plugin_under_test.domain.policy import Delegation
                 h.runtime.store.grant("studio", HOST_SCOPE, Delegation("new-consent", "test", True))
         elif failure == "budget":
             h.runtime.store.set_limits("studio", HOST_SCOPE,

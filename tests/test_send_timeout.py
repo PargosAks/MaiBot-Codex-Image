@@ -10,9 +10,9 @@ from types import SimpleNamespace
 import pytest
 
 from image_plugin_under_test import Config
-from image_plugin_under_test.delivery import Deliveries
-from image_plugin_under_test.host_adapters import HostSender, send_image_receipt
-from image_plugin_under_test.policy import StoreError
+from image_plugin_under_test.domain.delivery import Deliveries
+from image_plugin_under_test.host.host_adapters import HostSender, send_image_receipt
+from image_plugin_under_test.domain.policy import StoreError
 from test_artist_flow import SCOPE, finished, step, studio as studio_fixture
 from test_host_adapters import ctx as sdk_context_fixture
 from test_host_runtime import runner_bridge

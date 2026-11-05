@@ -10,8 +10,8 @@ import json
 
 import pytest
 
-from image_plugin_under_test.policy import Limits, Scope
-from image_plugin_under_test.thinking import Thinking
+from image_plugin_under_test.domain.policy import Limits, Scope
+from image_plugin_under_test.creation.thinking import Thinking
 from protocol_fixture import PNG
 from test_artist_flow import BRIEF, Model, SCOPE, step, studio as studio
 from test_group_thought_host import (

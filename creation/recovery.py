@@ -9,9 +9,9 @@ import asyncio
 import json
 
 from .artist import render_digest
-from .bridge import Bridge, BridgeError, _reference_digest, _reference_params, _validate_job
-from .policy import Scope, StoreError
-from .store import ArtistStore
+from ..mcp_client.bridge import Bridge, BridgeError, _reference_digest, _reference_params, _validate_job
+from ..domain.policy import Scope, StoreError
+from ..domain.store import ArtistStore
 
 
 _PENDING = {"submitting", "accepted", "unknown"}

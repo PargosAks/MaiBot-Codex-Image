@@ -11,12 +11,12 @@ from typing import Literal
 
 from maibot_sdk import Field, PluginConfigBase
 
-from .artist import Artist
-from .assets import ASSET_ROLES
+from ..creation.artist import Artist
+from ..domain.assets import ASSET_ROLES
 from .host_media import IMAGE_ONLY_TEXT, UNREVIEWED_DESCRIPTION, current_images
-from .policy import Delegation, Limits, Scope, StoreError
-from .store import ArtistStore
-from .thinking import Thinking
+from ..domain.policy import Delegation, Limits, Scope, StoreError
+from ..domain.store import ArtistStore
+from ..creation.thinking import Thinking
 
 logger = logging.getLogger(__name__)
 

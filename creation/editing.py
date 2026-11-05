@@ -10,10 +10,10 @@ import hashlib
 import json
 
 from .artist import render_digest, stable_id
-from .bridge import Bridge, BridgeError, _validate_job
-from .policy import Scope, StoreError, nonempty
+from ..mcp_client.bridge import Bridge, BridgeError, _validate_job
+from ..domain.policy import Scope, StoreError, nonempty
 from .recovery import ReadOnlyRecovery
-from .store import ArtistStore
+from ..domain.store import ArtistStore
 
 
 def _receipt(operation, result):

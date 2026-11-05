@@ -7,11 +7,11 @@ from copy import deepcopy
 import pytest
 from PIL import Image
 
-from image_plugin_under_test.artist import RenderResult, render_digest
-from image_plugin_under_test.bridge import BridgeError
-from image_plugin_under_test.policy import StoreError
-from image_plugin_under_test.references import ReferenceInputs
-from image_plugin_under_test.thinking import Thinking
+from image_plugin_under_test.creation.artist import RenderResult, render_digest
+from image_plugin_under_test.mcp_client.bridge import BridgeError
+from image_plugin_under_test.domain.policy import StoreError
+from image_plugin_under_test.creation.references import ReferenceInputs
+from image_plugin_under_test.creation.thinking import Thinking
 from test_artist_flow import SCOPE, step, studio  # noqa: F401
 
 
@@ -172,7 +172,7 @@ async def test_old_service_blocks_image_plan_without_text_fallback(studio):  # n
 def test_reference_digest_vector_and_old_submit_digest_are_distinct():
     params = {"prompt": "雨夜", "transport_operation": "render", "reference_contract": 1,
               "reference_inputs": [{"asset_id": "a", "sha256": "1" * 64, "role": "palette"}]}
-    from image_plugin_under_test.policy import canonical_json
+    from image_plugin_under_test.domain.policy import canonical_json
     expected = hashlib.sha256(canonical_json({"operation": "render", "mode": "create", "prompt": "雨夜",
                                              "source": None, "references": params["reference_inputs"]}).encode()).hexdigest()
     assert render_digest("submit", params) == expected

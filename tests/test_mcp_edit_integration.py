@@ -10,10 +10,10 @@ import sys
 
 import pytest
 
-from image_plugin_under_test.bridge import BridgeError
-from image_plugin_under_test.editing import ImageEdits
-from image_plugin_under_test.policy import Delegation, Limits, Scope
-from image_plugin_under_test.store import ArtistStore
+from image_plugin_under_test.mcp_client.bridge import BridgeError
+from image_plugin_under_test.creation.editing import ImageEdits
+from image_plugin_under_test.domain.policy import Delegation, Limits, Scope
+from image_plugin_under_test.domain.store import ArtistStore
 from conftest import SCOPE
 from test_mcp_recovery_integration import SOURCE, actual_mcp  # noqa: F401
 

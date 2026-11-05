@@ -28,7 +28,7 @@ For a Host-verified incoming-message acknowledgement, inspiration_receipt reads
 only its exact wake key and returns the same minimal authorization envelope.
 It is not a WebUI API and proves receipt only, never model processing or artwork.
 All methods are synchronous: keep filesystem work off Host loops.
-Bundle integration must include studio.py, webui.json and studio.html explicitly.
+Bundle integration must include workspace/studio.py, webui.json and assets/studio.html explicitly.
 """
 
 from contextlib import contextmanager
@@ -45,7 +45,7 @@ import warnings
 
 from PIL import Image, UnidentifiedImageError
 
-from .policy import Scope, StoreError, budget_day
+from ..domain.policy import Scope, StoreError, budget_day
 
 
 MAX_PAGE = 50

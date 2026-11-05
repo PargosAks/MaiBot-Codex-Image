@@ -7,10 +7,10 @@ from types import SimpleNamespace
 import pytest
 
 from image_plugin_under_test import CodexImagePlugin
-from image_plugin_under_test.host_runtime import RuntimeLease, joined
-from image_plugin_under_test.policy import Delegation, Scope, StoreError
-from image_plugin_under_test.store import ArtistStore
-from image_plugin_under_test.delivery import Deliveries
+from image_plugin_under_test.host.host_runtime import RuntimeLease, joined
+from image_plugin_under_test.domain.policy import Delegation, Scope, StoreError
+from image_plugin_under_test.domain.store import ArtistStore
+from image_plugin_under_test.domain.delivery import Deliveries
 from test_mcp_plugin import plugin_instance
 from conftest import SCOPE
 

@@ -1,5 +1,9 @@
 # 开发与测试
 
+## 当前源码布局
+
+根 `plugin.py` 保持 Host 入口；内部模块迁至 `domain/`、`creation/`、`host/`、`inspiration/`、`mcp_client/`、`workspace/`，页面为 `assets/studio.html`。职责与旧文件映射见[架构说明](architecture.md)。下方阶段沿革中的旧根文件名表示原实现阶段；新代码与测试使用对应子包路径。测试不导入 MaiBot 本体作为运行依赖。
+
 ## 0.10.0 小画师工作区
 
 工作区与聊天摘要仅查询已有账本；档案写入由 Artist 处理。分别运行 `tests/test_studio*.py`、`tests/test_autonomous_catalog*.py`，再用 `tests/test_artist_studio_e2e.py` 验证从建档到原图、细化、评审、分享以及只读查询的联动。用临时数据和模拟外部效果，勿指向运行实例的数据目录。
@@ -10,6 +14,7 @@
 | --- | --- |
 | `CODEX_IMAGE_TEST_HOST_REPO` | 含固定提交 `062d45cf` 的公开 MaiBot Git 仓库 |
 | `CODEX_IMAGE_TEST_HOST_SOURCE`、`CODEX_IMAGE_TEST_STUDIO_HOST_SOURCE` | 对应 Host 的公开 `src` 目录 |
+| `CODEX_IMAGE_TEST_HOST_SITE_PACKAGES` | 已安装公开 MaiBot 包的 site-packages 根；新增发行包 Loader 检查需要真实 Host，不能只提供 SDK |
 | `CODEX_IMAGE_TEST_SDK_SOURCE` | 包含公开 SDK 2.17 的 site-packages；插件开发环境为 SDK 2.16 |
 | `CODEX_IMAGE_TEST_DASHBOARD_SOURCE` | 含 `src/` 的 Dashboard 源码目录，页面桥接测试使用 Node |
 | `CODEX_IMAGE_TEST_SERVICE_SOURCE`、`CODEX_IMAGE_TEST_SNOWLUMA_SOURCE` | 独立 MCP 的 `src` 目录及公开适配器源码快照 |
@@ -39,7 +44,7 @@
 ```sh
 uv sync --locked
 uv run --locked pytest -q
-uv run --locked ruff check --select E4,E7,E9,F plugin.py bridge.py delivery.py policy.py store.py artist.py thinking.py recovery.py editing.py rendering.py host_runtime.py host_adapters.py scripts/build_bundle.py tests
+uv run --locked ruff check --select E4,E7,E9,F plugin.py domain creation host inspiration mcp_client workspace scripts tests
 ```
 
 根 `pyproject.toml` / `uv.lock` 管理插件开发依赖。这些是开发命令，不是用户安装 MCP 的步骤，不应修改 MaiBot 已安装环境。定向检查可在 pytest 后指定相关文件；不再使用 `--project service` 或 `service/tests`。
@@ -62,6 +67,8 @@ uv run --locked python scripts/build_bundle.py
 ```
 
 构建器仅生成插件 zip，不生成包含 MCP 的完整源码发行包。核对白名单、归档内容和脚本输出的校验信息；不得包含 service、部署工具、实际 config、secret、登录、任务、发送库、缓存、虚拟环境或 `.git`。构建成功不代表已发布或部署。
+
+`tests/test_package_layout.py` 从发行包解压出独立目录，用隔离 Python 子进程和真实 Host `PluginLoader` 验证包导入、任意插件命名空间、组件/配置/HTML注册、卸载及重新加载；运行时网络和外部进程调用被测试审计拒绝。Runner仅执行公开源码中选定的注册方法，注册接收端为内存替身，不是实际Host进程或IPC部署验收。缺少公开Host源码时明确跳过，不用自造Loader代替。
 
 ## 文档与验证交接
 

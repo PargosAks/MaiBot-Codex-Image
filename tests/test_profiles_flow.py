@@ -4,8 +4,8 @@ from copy import deepcopy
 
 import pytest
 
-from image_plugin_under_test.policy import StoreError
-from image_plugin_under_test.thinking import Thinking
+from image_plugin_under_test.domain.policy import StoreError
+from image_plugin_under_test.creation.thinking import Thinking
 from test_artist_flow import SCOPE, step, studio  # noqa: F401
 
 

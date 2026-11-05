@@ -14,9 +14,9 @@ import os
 import pytest
 
 from image_plugin_under_test import CodexImagePlugin
-from image_plugin_under_test import host_runtime
-from image_plugin_under_test.host_adapters import HostThinking
-from image_plugin_under_test.thinking import Thinking
+from image_plugin_under_test.host import host_runtime
+from image_plugin_under_test.host.host_adapters import HostThinking
+from image_plugin_under_test.creation.thinking import Thinking
 from test_artist_flow import SCOPE, step, studio as studio_fixture
 from test_host_adapters import WAIT, ctx as sdk_context_fixture
 

@@ -19,7 +19,7 @@ import sys
 
 import pytest
 
-from image_plugin_under_test import studio_chat
+from image_plugin_under_test.host import studio_chat
 from test_studio_chat import Harness, SCOPE, sdk  # noqa: F401
 
 

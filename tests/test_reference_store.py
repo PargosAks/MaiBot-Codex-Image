@@ -9,10 +9,10 @@ import sqlite3
 from PIL import Image
 import pytest
 
-from image_plugin_under_test import store as store_module
-from image_plugin_under_test.assets import reference_prompt
-from image_plugin_under_test.policy import Delegation, Limits, Scope, StoreError
-from image_plugin_under_test.store import ArtistStore
+from image_plugin_under_test.domain import store as store_module
+from image_plugin_under_test.domain.assets import reference_prompt
+from image_plugin_under_test.domain.policy import Delegation, Limits, Scope, StoreError
+from image_plugin_under_test.domain.store import ArtistStore
 from test_assets_store import BRIEF, make_schema_4, reviewed
 
 

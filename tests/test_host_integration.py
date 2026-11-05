@@ -34,10 +34,10 @@ from pydantic import BaseModel, Field
 import pytest
 
 from image_plugin_under_test import CodexImagePlugin
-from image_plugin_under_test.artist import RenderResult, render_digest
-from image_plugin_under_test import host_runtime
-from image_plugin_under_test.policy import Scope
-from image_plugin_under_test.store import ArtistStore
+from image_plugin_under_test.creation.artist import RenderResult, render_digest
+from image_plugin_under_test.host import host_runtime
+from image_plugin_under_test.domain.policy import Scope
+from image_plugin_under_test.domain.store import ArtistStore
 from conftest import SECRET
 from protocol_fixture import PNG
 from test_artist_flow import BRIEF, Clock
@@ -554,7 +554,7 @@ async def test_current_images_through_fixed_public_serializer_and_hook(host_chai
     asset = h.runtime.store.get_asset("studio", scope, catalog[0]["asset_id"])
     assert asset["sha256"] == hashlib.sha256(data).hexdigest() and asset["mime"] == "image/png"
     assert set(asset["roles"]) == {"character", "style", "composition", "palette"}
-    from image_plugin_under_test.host_media import IMAGE_ONLY_TEXT, UNREVIEWED_DESCRIPTION
+    from image_plugin_under_test.host.host_media import IMAGE_ONLY_TEXT, UNREVIEWED_DESCRIPTION
 
     assert asset["description"].endswith(UNREVIEWED_DESCRIPTION)
     wakes = h.runtime.store.db.execute("SELECT event_id,text FROM artist_wakes").fetchall()

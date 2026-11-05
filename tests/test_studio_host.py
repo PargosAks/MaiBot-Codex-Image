@@ -34,7 +34,7 @@ from starlette.exceptions import HTTPException
 import pytest
 
 from image_plugin_under_test import CodexImagePlugin
-from image_plugin_under_test.policy import StoreError
+from image_plugin_under_test.domain.policy import StoreError
 from test_studio import OWNER, data as _studio_data
 
 
@@ -122,7 +122,7 @@ def test_real_schema_loads_workspace_and_strict_bindings(host):
     extension = host.schema.load_webui_extension(str(ROOT))
     assert extension.workspace_title == "小画师"
     page = extension.pages[0]
-    assert page.placement == "workspace" and page.entry == "studio.html"
+    assert page.placement == "workspace" and page.entry == "assets/studio.html"
     assert not page.actions and not page.uploads
     assert "<h1>小画师</h1>" in page.document
     page.queries["records"].validate_args({"space_id": "a", "section": "tasks", "limit": 50})
@@ -183,7 +183,7 @@ def test_actual_iframe_csp_allows_in_frame_blob_images(dashboard_source):
     assert "connect-src 'none'" in bridge
     assert 'sandbox="allow-scripts"' in renderer
     # Original Blob URLs are created in the iframe's own origin, never by parent.
-    html = (ROOT / "studio.html").read_text(encoding="utf-8")
+    html = (ROOT / "assets/studio.html").read_text(encoding="utf-8")
     assert "URL.createObjectURL(new Blob" in html and "URL.revokeObjectURL" in html
     assert "innerHTML" not in html and "fetch(" not in html and "JSON.stringify(item" not in html
 
@@ -206,7 +206,7 @@ def test_real_iframe_sdk_queries_and_chinese_page_without_browser(data, dashboar
                       (json.dumps({"decision": "discard", "reason": "synthetic discard", "strengths": [], "issues": []}),))
     bridge = (dashboard_source / "src/lib/plugin-custom-page.ts").read_text(encoding="utf-8")
     sdk = re.search(r"const SDK = `([\s\S]+?)`\n", bridge).group(1).replace("__MAIBOT_NONCE__", '"isolated-test"')
-    html = (ROOT / "studio.html").read_text(encoding="utf-8")
+    html = (ROOT / "assets/studio.html").read_text(encoding="utf-8")
     script = re.search(r"<script>([\s\S]+)</script>", html).group(1)
     payload = {"scenario": scenario, "sdk": sdk, "script": script, "summary": view.summary("a"), "works": view.records("a", "works"),
                "versions": view.records("a", "versions"), "thumbnail": view.image("a", "v-a"),

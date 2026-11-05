@@ -10,10 +10,10 @@ import json
 import re
 
 from .artist import RenderResult, render_digest
-from .bridge import Bridge, BridgeError, _reference_digest, _reference_params, _validate_asset, _validate_job
-from .policy import Scope, StoreError, nonempty
+from ..mcp_client.bridge import Bridge, BridgeError, _reference_digest, _reference_params, _validate_asset, _validate_job
+from ..domain.policy import Scope, StoreError, nonempty
 from .recovery import ReadOnlyRecovery
-from .store import ArtistStore
+from ..domain.store import ArtistStore
 
 
 class MCPRenderer:

@@ -44,7 +44,7 @@
 | `MCPRenderer`、`Bridge` | 单次 submit/edit、能力发现、原请求恢复 | I5 增加显式参考输入；不改变已有请求摘要 |
 | 独立 MCP `codex.py` | 按 thread/turn 处理事件，分离产物与回合状态 | I4 增加活动超时诊断并保留总时限与未知恢复 |
 
-源码入口：[artist.py](../artist.py)、[thinking.py](../thinking.py)、[host_adapters.py](../host_adapters.py)、[store.py](../store.py)、[rendering.py](../rendering.py)、[bridge.py](../bridge.py)。以上表格描述 0.8.0 基线：当时评审仅传当前图片，版本目录不能证明模型已看过历史图。I1 已补充实际多图证据，详见 [I1](implementation-i1.md)；后续契约见 [I2](implementation-i2.md)、[I3](implementation-i3.md) 与 [I5](implementation-i5.md)。
+当前源码入口：[artist.py](../creation/artist.py)、[thinking.py](../creation/thinking.py)、[host_adapters.py](../host/host_adapters.py)、[store.py](../domain/store.py)、[rendering.py](../creation/rendering.py)、[bridge.py](../mcp_client/bridge.py)。以上表格描述 0.8.0 基线：当时评审仅传当前图片，版本目录不能证明模型已看过历史图。I1 已补充实际多图证据，详见 [I1](implementation-i1.md)；后续契约见 [I2](implementation-i2.md)、[I3](implementation-i3.md) 与 [I5](implementation-i5.md)。
 
 ## 实施顺序与交付拆分
 

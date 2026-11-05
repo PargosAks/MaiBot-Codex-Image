@@ -3,9 +3,9 @@
 from dataclasses import replace
 import hashlib
 
-from image_plugin_under_test.artist import stable_id
-from image_plugin_under_test.policy import Limits
-from image_plugin_under_test.thinking import Thinking
+from image_plugin_under_test.creation.artist import stable_id
+from image_plugin_under_test.domain.policy import Limits
+from image_plugin_under_test.creation.thinking import Thinking
 from test_artist_flow import SCOPE, step, studio  # noqa: F401
 
 
