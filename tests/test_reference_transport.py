@@ -26,9 +26,9 @@ from image_plugin_under_test.domain.policy import Delegation, Limits, StoreError
 from image_plugin_under_test.creation.recovery import ReadOnlyRecovery
 from image_plugin_under_test.creation.rendering import MCPRenderer
 from image_plugin_under_test.domain.store import ArtistStore
-from conftest import SECRET
+from support.settings import SECRET
 from protocol_fixture import PNG, ProtocolFixture
-from test_rendering import BINDING, BRIEF, HASH, OTHER, PROMPT, SCOPE, parent
+from support.render_ledger import BINDING, BRIEF, HASH, OTHER, PROMPT, SCOPE, parent
 
 
 REFERENCES = [{"asset_id": "ref-owned", "sha256": HASH, "role": "style"}]

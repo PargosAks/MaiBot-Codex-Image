@@ -11,13 +11,13 @@ import hashlib
 import json
 import math
 
-from ..creation.artist import stable_id
+from ..creation.contracts import stable_id
+from ..domain.async_work import join_worker
+from ..creation.thinking import _context, _review_images
 from ..domain.delivery import Deliveries
 from ..domain.policy import Scope, StoreError, canonical_json, nonempty
-from ..creation.recovery import ReadOnlyRecovery
 from ..domain.store import ArtistStore
-from ..creation.thinking import _context, _review_images
-
+from .delivery_runtime import DeliveryBlocked, capability_denied, dispatch_delivery
 
 _IMAGE_LIMIT = 8 * 1024 * 1024
 _JSON_LIMIT = 32768
@@ -141,7 +141,7 @@ class HostThinking:
         ]
 
     async def __call__(self, request: dict) -> dict:
-        messages = await ReadOnlyRecovery._db(self._messages, request)
+        messages = await join_worker(self._messages, request)
         task = self.review_task_name if request["task"] == "review" else self.task_name
         args = {"prompt": messages, "task_name": task}
         # Omit the override so Host uses this task's configured output limit.
@@ -175,7 +175,7 @@ class HostThinking:
             raise StoreError("THINKING_UNKNOWN", "Host failure does not establish whether the model executed")
         if result.get("tool_calls"):
             raise StoreError("INVALID_DECISION", "Tool calls are not accepted")
-        return await ReadOnlyRecovery._db(_json_response, result.get("response"))
+        return await join_worker(_json_response, result.get("response"))
 
 
 async def send_image_receipt(
@@ -221,6 +221,10 @@ async def send_image_receipt(
     return True
 
 
+class _SharePreflightRejected(Exception):
+    """本次自主分享已取得意图，但群或委托复核未通过，尚未派发。"""
+
+
 class HostSender:
     simulation = False
 
@@ -262,29 +266,6 @@ class HostSender:
             raise StoreError("LEGACY_LOCK", "Historical delivery blocks sharing this job")
         return stored, _image(stored["data"], stored["mime"])
 
-    def _prepare(self, scope, version, claim):
-        stored, encoded = self._version(scope, version)
-        if not self.deliveries.begin(stored["job_id"]):
-            with self.deliveries.lock:
-                old = self.deliveries.db.execute(
-                    "SELECT state FROM delivery WHERE job=?", (stored["job_id"],)
-                ).fetchone()
-            if old is not None and old[0] in {"sent", "send_failed"}:
-                return old[0] == "sent"
-            raise StoreError("SEND_UNKNOWN", "Original send is in progress or its outcome is unknown")
-        claim["job_id"] = stored["job_id"]
-        return encoded
-
-    def _finish(self, claim, state):
-        if claim["job_id"] is not None:
-            # Never change another call's lock or overwrite a known result during
-            # cancellation cleanup; ownership is acquired only by begin=True.
-            with self.deliveries.lock, self.deliveries.db:
-                self.deliveries.db.execute(
-                    "UPDATE delivery SET state=? WHERE job=? AND state='sending'",
-                    (state, claim["job_id"]),
-                )
-
     async def _verify_group(self):
         if not self.group_id:
             return
@@ -303,38 +284,40 @@ class HostSender:
             raise StoreError("SHARE_TARGET_MISMATCH", "Original group no longer matches the trusted Host stream")
 
     async def send(self, *, scope: Scope, version: dict) -> bool:
-        claim = {"job_id": None}
-        dispatch_started = False
         try:
-            encoded = await ReadOnlyRecovery._db(self._prepare, scope, version, claim)
-            if type(encoded) is bool:
-                return encoded
-            await self._verify_group()
-            # Acquiring a delivery intent may wait behind SQLite. Recheck the
-            # latest delegation/budget before calling the Host capability.
-            await ReadOnlyRecovery._db(self._version, scope, version)
-            dispatch_started = True
-            sent = await send_image_receipt(
+            stored, encoded = await join_worker(self._version, scope, version)
+        except Exception as exc:
+            if capability_denied(exc) or (isinstance(exc, StoreError) and exc.code in {
+                "SHARE_NOT_ALLOWED", "SHARE_POLICY_CHANGED", "SHARE_TARGET_MISMATCH",
+            }):
+                return False
+            raise
+
+        async def recheck() -> None:
+            try:
+                await self._verify_group()
+                # SQLite 争用期间，委托或预算可能变化；派发前再次核对。
+                await join_worker(self._version, scope, version)
+            except Exception as exc:
+                # 群定位与账本复核都是只读的；此时尚未调用 send.image。
+                raise _SharePreflightRejected() from exc
+
+        async def dispatch() -> bool:
+            return await send_image_receipt(
                 self.ctx, encoded, self.scope.stream_id, timeout_seconds=self.timeout_seconds
             )
-            await ReadOnlyRecovery._db(self._finish, claim, "sent" if sent else "send_failed")
-            return sent
-        except asyncio.CancelledError:
-            await ReadOnlyRecovery._db(self._finish, claim, "send_unknown")
+
+        job = stored["job_id"]
+        try:
+            return await dispatch_delivery(self.deliveries, job, before_dispatch=recheck, dispatch=dispatch)
+        except DeliveryBlocked:
+            old = await join_worker(self.deliveries.state, job)
+            if old in {"sent", "send_failed"}:
+                return old == "sent"
             raise
+        except _SharePreflightRejected:
+            return False
         except Exception as exc:
-            denied = getattr(exc, "code", None) == "E_CAPABILITY_DENIED"
-            # We own this new intent, but send.image has not begun. A failed
-            # read-only lookup or a changed grant/budget is known not to send;
-            # do not permanently lock it as an uncertain upload. Never apply
-            # this inference to another call's pre-existing delivery intent.
-            denied |= not dispatch_started and claim["job_id"] is not None
-            # A locally proven preflight refusal cannot have sent an image.
-            # Once dispatch starts, preserve uncertainty exactly as before.
-            denied |= not dispatch_started and isinstance(exc, StoreError) and exc.code in {
-                "SHARE_NOT_ALLOWED", "SHARE_POLICY_CHANGED", "SHARE_TARGET_MISMATCH",
-            }
-            await ReadOnlyRecovery._db(self._finish, claim, "send_failed" if denied else "send_unknown")
-            if denied:
+            if capability_denied(exc):
                 return False
             raise

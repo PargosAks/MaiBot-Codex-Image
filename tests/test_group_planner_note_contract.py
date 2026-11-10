@@ -2,9 +2,12 @@
 from types import SimpleNamespace
 from typing import Any, Optional
 
-from test_host_integration import host_file, load_nodes
+import pytest
+
+from support.host_source import host_file, load_nodes
 
 
+@pytest.mark.external_contract
 def test_planner_note_can_bind_to_the_runtime_stream_but_not_attribute_members():
     def execution_context(**values):
         return SimpleNamespace(metadata={}, **values)

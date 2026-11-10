@@ -6,8 +6,8 @@ import pytest
 
 from image_plugin_under_test.host.host_runtime import HostRuntime
 from image_plugin_under_test.domain.policy import Scope
-from test_group_collection import groups as groups
-from test_group_thought_runtime import notes as notes, offer, response
+from support.group_runtime import groups as groups
+from support.group_runtime import notes as notes, offer, response
 
 
 SERVE = HostRuntime._serve

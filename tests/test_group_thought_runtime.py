@@ -1,43 +1,13 @@
 """Planner note tests against real plugin lifecycle and isolated SQLite only."""
 from copy import deepcopy
 from threading import Event
-from types import SimpleNamespace
 import asyncio
 
 import pytest
 
-from image_plugin_under_test.host.group_thought_runtime import GroupThoughtRuntime, PARAMETERS, TOOL_NAME
 from image_plugin_under_test.domain.policy import Scope
-from test_group_collection import groups as groups
-
-
-def request(session="stream-a"):
-    return {"session_id": session, "item_schema_version": 1, "items": [],
-            "tool_definitions": [
-                {"type": "function", "function": {"name": "ordinary_reply", "parameters": {"type": "object"}}},
-                {"type": "function", "function": {"name": TOOL_NAME, "parameters": deepcopy(PARAMETERS)}}]}
-
-
-async def offer(plugin, session="stream-a"):
-    modified = await plugin.group_thought_before_request(**request(session))
-    definitions = modified["modified_kwargs"]["tool_definitions"]
-    selected, = [d for d in definitions if d["function"]["name"] == TOOL_NAME]
-    return selected["function"]["parameters"]["properties"]["notebook_context"]["enum"][0]
-
-
-def response(token, tags=None, session="stream-a"):
-    return {"session_id": session, "item_schema_version": 1, "output_items": [{
-        "item_type": "FunctionCallItem", "meta": {"logical_turn_id": "synthetic-turn"},
-        "tool_call": {"call_id": "synthetic-call", "func_name": TOOL_NAME,
-                      "args": {"notebook_context": token, "tags": tags or ["rain", "store"]}}}]}
-
-
-@pytest.fixture
-def notes(groups):
-    clock = SimpleNamespace(wall=1800., monotonic=100.)
-    runtime = GroupThoughtRuntime(groups, clock=lambda: clock.wall, monotonic=lambda: clock.monotonic)
-    groups.group_thought_runtime = runtime
-    return groups, runtime, clock
+from support.group_runtime import groups as groups
+from support.group_runtime import request, offer, response, notes as notes
 
 
 async def page(plugin, group="a"):

@@ -283,6 +283,7 @@ def test_webui_reuses_private_records_query_and_has_no_actions():
     assert not page["actions"] and not page["uploads"]
 
 
+@pytest.mark.local_integration
 def test_group_page_pagination_and_safe_text_without_browser():
     node = shutil.which("node")
     if node is None:

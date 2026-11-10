@@ -1,5 +1,5 @@
 [plugin]
-config_version = "0.11.0"
+config_version = "0.12.0"
 enabled = true
 
 [connection]
@@ -30,6 +30,12 @@ max_revisions = 0
 # Each spaces entry uses space_id, platform, user_id (delegator), stream_id
 # (existing Host session), group_id (empty for private), continuous=false,
 # consent_ref, and limits with the same five fields as global_limits.
+# paused=false: pause this space's workers/ingress without revoking its grant.
+# single_work=false: opt in on a fresh stream to one permanent work, one initial
+# attempt, at most one original-image edit and one share attempt across all days.
+# This policy is latched in schema 10; failures/unknowns do not refund attempts,
+# removing/changing the space ID cannot reset it, and manual draw/resend is blocked.
+# For standby acceptance use continuous=true, single_work=true, paused=true.
 # group_inspiration=false: opt in per group to MaiBot's planner-authored visual
 # thoughts. No transcript/contributor counts or direct model/render/send call.
 # Authorized chat/idle planning may adopt them using the existing budgets;

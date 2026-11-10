@@ -8,10 +8,12 @@ from typing import Callable
 import asyncio
 import json
 
-from .artist import render_digest
-from ..mcp_client.bridge import Bridge, BridgeError, _reference_digest, _reference_params, _validate_job
+from .contracts import render_digest
+from ..mcp_client.bridge import Bridge, BridgeError
+from ..mcp_client.contracts import job_outcome, reference_digest, reference_params, validate_job
 from ..domain.policy import Scope, StoreError
 from ..domain.store import ArtistStore
+from ..domain.async_work import join_worker
 
 
 _PENDING = {"submitting", "accepted", "unknown"}
@@ -24,24 +26,8 @@ class ReadOnlyRecovery:
 
     @staticmethod
     async def _db(function: Callable, *args, **kwargs):
-        worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
-        try:
-            return await asyncio.shield(worker)
-        except asyncio.CancelledError as cancelled:
-            # Cancelling an asyncio waiter cannot stop SQLite in its thread.
-            # Repeated cancellation must not detach that worker either.
-            while not worker.done():
-                try:
-                    await asyncio.shield(worker)
-                except asyncio.CancelledError:
-                    continue
-                except Exception:
-                    break
-            try:
-                worker.result()
-            except Exception as exc:
-                raise cancelled from exc
-            raise
+        # 保留旧调用入口；所有线程收尾共用同一实现。
+        return await join_worker(function, *args, **kwargs)
 
     def _unknown(self, space_id, scope, request_id, reason):
         operation = self.store.get_operation(space_id, scope, request_id)
@@ -58,26 +44,8 @@ class ReadOnlyRecovery:
                     raise
         return self.store.get_operation(space_id, scope, request_id)
 
-    @staticmethod
-    def _outcome(job):
-        if job["status"] == "completed":
-            if job["turn_status"] not in {None, "completed"}:
-                raise StoreError("PROTOCOL_ERROR", "Completed job contradicts its turn status")
-            return "succeeded"
-        if job["status"] == "failed":
-            return "failed"
-        if job["status"] == "outcome_unknown":
-            return "unknown"
-        if job["status"] == "artifact_ready":
-            if job["turn_status"] == "completed":
-                return "succeeded"
-            if job["turn_status"] in {"failed", "interrupted", "cancelled"}:
-                return "failed"
-            if job["turn_status"] not in {"queued", "starting", "running", "inProgress", "in_progress"}:
-                return "unknown"
-        if job["status"] not in {"queued", "starting", "running", "artifact_ready"}:
-            raise StoreError("PROTOCOL_ERROR", "Unexpected lookup job state")
-        return "accepted"
+    # 保留旧恢复器入口，状态投影由同一协议契约处理。
+    _outcome = staticmethod(job_outcome)
 
     def _apply(self, space_id, scope, request_id, job):
         operation = self.store.get_operation(space_id, scope, request_id)
@@ -136,10 +104,10 @@ class ReadOnlyRecovery:
         try:
             frozen_scope = json.loads(operation["scope_snapshot"])
             params = json.loads(operation["params_json"])
-            reference = _reference_params(operation["action"], params)
+            reference = reference_params(operation["action"], params)
             remote_operation = "render" if reference is not None else operation["action"]
             digest = (
-                _reference_digest(reference) if reference is not None else render_digest(operation["action"], params)
+                reference_digest(reference) if reference is not None else render_digest(operation["action"], params)
             )
             result = await self.bridge.lookup(
                 frozen_scope,
@@ -157,7 +125,7 @@ class ReadOnlyRecovery:
                 if result.keys() != expected:
                     raise BridgeError("INVALID_RESPONSE", kind="protocol")
                 if result["found"]:
-                    _validate_job(result["job"])
+                    validate_job(result["job"])
             if result.get("found") is False:
                 return await self._db(self._unknown, space_id, scope, request_id, "LOOKUP_NOT_FOUND")
             # Bridge performs the full schema check. Recheck the identity boundary

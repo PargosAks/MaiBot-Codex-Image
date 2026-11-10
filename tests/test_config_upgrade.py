@@ -59,7 +59,7 @@ FIELDS = (("connection", "poll_seconds", 2.0),
           ("autonomy", "timeout_seconds", 30.0))
 
 
-@pytest.fixture(params=["contract", "public-host"])
+@pytest.fixture(params=["contract", pytest.param("public-host", marks=pytest.mark.external_contract)])
 def overlay(request):
     text, filename = CONTRACT, "<host-1.3.15-contract>"
     if request.param == "public-host":
@@ -82,7 +82,7 @@ def overlay(request):
 
 def test_studio_catalog_is_importable_but_not_an_operator_form():
     from image_plugin_under_test import CodexImagePlugin
-    from test_profiles_flow import PROFILES, SERIES
+    from support.catalog_examples import PROFILES, SERIES
 
     plugin = CodexImagePlugin()
     plugin.set_plugin_config({"plugin": {"config_version": "0.9.2"},

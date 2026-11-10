@@ -10,7 +10,7 @@ import pytest
 from mcp.types import CallToolResult, TextContent
 
 from image_plugin_under_test.mcp_client.bridge import Bridge, BridgeError
-from conftest import SCOPE, SECRET
+from support.settings import SCOPE, SECRET
 
 DIGEST = hashlib.sha256(b"circle").hexdigest()
 RECEIPT = {

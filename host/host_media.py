@@ -1,23 +1,22 @@
 """Bounded current-event image decoding. No URL, path, history or vision access."""
 
 from dataclasses import dataclass
-from io import BytesIO
 from typing import List
 import base64
 import binascii
 import hashlib
 import re
-import warnings
 
-from ..domain.policy import StoreError
+# 常量及私有名称继续保留，以兼容既有调用方；实现属于纯图片边界。
+from ..domain.image_validation import (
+    MAX_IMAGE_BYTES as MAX_IMAGE_BYTES, MAX_PIXELS as MAX_PIXELS, IMAGE_MIMES as IMAGE_MIMES,
+    _reject, validate_image as _validate_image,
+)
 
 MAX_IMAGES = 3
-MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_EVENT_BYTES = 24 * 1024 * 1024
-MAX_PIXELS = 64_000_000
 IMAGE_ONLY_TEXT = "[收到当前消息中的参考图片；内容尚未审阅]"
 UNREVIEWED_DESCRIPTION = "Unreviewed Host image metadata only; image content has not been reviewed."
-IMAGE_MIMES = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp"}
 
 
 @dataclass(frozen=True)
@@ -26,39 +25,6 @@ class HostImage:
     data: bytes
     mime: str
     sha256: str
-
-
-def _reject(code: str) -> None:
-    # Never include component fields, binary data or decoder exception text.
-    raise StoreError(code, "Current Host image input was rejected")
-
-
-def _validate_image(data: bytes) -> str:
-    # Lazy import keeps text-only loading independent of the optional decoder.
-    from PIL import Image
-
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", Image.DecompressionBombWarning)
-            with Image.open(BytesIO(data), formats=list(IMAGE_MIMES)) as image:
-                mime = IMAGE_MIMES.get(image.format)
-                if mime is None:
-                    _reject("MEDIA_FORMAT_INVALID")
-                if not 0 < image.width * image.height <= MAX_PIXELS:
-                    _reject("MEDIA_PIXELS_EXCEEDED")
-                if getattr(image, "is_animated", False) or getattr(image, "n_frames", 1) != 1:
-                    _reject("MEDIA_ANIMATION_UNSUPPORTED")
-                image.verify()
-            # Header/CRC verification alone does not reject truncated JPEG/WebP.
-            with Image.open(BytesIO(data), formats=list(IMAGE_MIMES)) as image:
-                image.load()
-        return mime
-    except StoreError:
-        raise
-    except (Image.DecompressionBombError, Image.DecompressionBombWarning):
-        _reject("MEDIA_PIXELS_EXCEEDED")
-    except Exception:  # noqa: BLE001 - decoder failures must not expose component data
-        _reject("MEDIA_FORMAT_INVALID")
 
 
 def current_images(message: dict) -> List[HostImage]:

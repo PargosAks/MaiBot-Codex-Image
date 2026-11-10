@@ -5,8 +5,8 @@ import asyncio
 
 from image_plugin_under_test import CodexImagePlugin
 from image_plugin_under_test.mcp_client.bridge import Bridge
-from conftest import SECRET, SCOPE
-from test_mcp_plugin import Sender, plugin_instance
+from support.settings import SECRET, SCOPE
+from support.command_plugin import Sender, plugin_instance
 
 
 def command(action, arg="", message="host-message"):

@@ -13,7 +13,8 @@ from image_plugin_under_test.domain import store as store_module
 from image_plugin_under_test.domain.assets import reference_prompt
 from image_plugin_under_test.domain.policy import Delegation, Limits, Scope, StoreError
 from image_plugin_under_test.domain.store import ArtistStore
-from test_assets_store import BRIEF, make_schema_4, reviewed
+from support.reviewed_assets import BRIEF, reviewed
+from support.historical_ledger import make_schema_4
 
 
 SCOPE = Scope("test", "reference-stream", "reference-owner")
@@ -493,10 +494,11 @@ def test_older_schemas_upgrade_without_changing_existing_rows(tmp_path, version)
         upgraded.close()
 
 
-def test_older_schema_client_rejects_v6_without_writes_and_readonly_history_stays_available(ledger, monkeypatch):
+def test_schema_5_client_rejects_current_schema_without_writes_and_readonly_history_stays_available(ledger, monkeypatch):
     policy(ledger)
     asset = import_image(ledger)
     before = ledger.path.read_bytes()
+    # 源库由当前版本创建；固定 5 模拟尚未支持外部图片的旧客户端。
     with monkeypatch.context() as patch:
         patch.setattr(store_module, "SCHEMA_VERSION", 5)
         with error("SCHEMA_UNSUPPORTED"):

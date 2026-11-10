@@ -1,6 +1,5 @@
 """Load the plugin directly; no production MCP service implementation is imported."""
 
-from pathlib import Path
 import asyncio
 import importlib.util
 import socket
@@ -10,8 +9,12 @@ import pytest_asyncio
 import uvicorn
 
 from protocol_fixture import ProtocolFixture
+from support.settings import PLUGIN, SECRET
+from support.settings import SCOPE as SCOPE
 
-PLUGIN = Path(__file__).resolve().parents[1]
+pytest_plugins = ("support.testing", "pytester")
+
+# 给测试提供包命名空间，使插件相对导入不依赖真实 Host 启动。
 spec = importlib.util.spec_from_file_location(
     "image_plugin_under_test",
     PLUGIN / "plugin.py",
@@ -20,9 +23,6 @@ spec = importlib.util.spec_from_file_location(
 module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
-
-SCOPE = {"platform": "qq", "stream_id": "real-stream", "user_id": "123"}
-SECRET = "local-test-secret-" + "s" * 32
 
 
 @pytest_asyncio.fixture

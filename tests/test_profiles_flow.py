@@ -6,17 +6,9 @@ import pytest
 
 from image_plugin_under_test.domain.policy import StoreError
 from image_plugin_under_test.creation.thinking import Thinking
-from test_artist_flow import SCOPE, step, studio  # noqa: F401
-
-
-PROFILES = [{"profile_id": "rain", "revision": 1, "data": {
-    "title": "Rain studies", "palette": "warm amber", "technique": "watercolor",
-    "stable": {"subject": "cat by window"}, "variable": {"light": "soft"}, "source": "configured",
-}}]
-SERIES = [{"series_id": "windows", "title": "Window series", "goal": "Explore changing weather",
-           "profile_id": "rain", "profile_revision": 1}]
-CHOICE = {"profile_id": "rain", "profile_revision": 1, "series_id": "windows",
-          "changes": {"light": "moonlight"}, "reason": "Continue the weather study"}
+from support.artist_fakes import SCOPE
+from support.artist_flow import step, studio as studio
+from support.catalog_examples import PROFILES, SERIES, CHOICE
 
 
 def configure(store, profiles=None, series=None):

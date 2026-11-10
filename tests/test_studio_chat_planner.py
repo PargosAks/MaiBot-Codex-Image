@@ -8,8 +8,11 @@ import json
 
 import pytest
 
-from test_studio_chat import Harness, OTHER, SCOPE, sdk  # noqa: F401
-from test_studio_chat_host import host, load_nodes  # noqa: F401
+from support.studio_chat import Harness, OTHER, SCOPE, sdk as sdk
+from support.studio_chat_host import host as host, load_nodes
+
+
+pytestmark = pytest.mark.external_contract
 
 
 @pytest.fixture

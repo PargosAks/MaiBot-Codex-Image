@@ -28,6 +28,9 @@ PLAN = (
     "可不采用、等待或与其他本空间灵感合成主题；采用时必须选择对应 inspiration_keys，"
     "再自行决定画什么，不把记下念头视为必须绘图或分享，也不把同一念头复制为新 ideas 来绕过采用记录。"
     "create 仅在没有 planned/deferred/creating/review_pending 活动作品时允许。"
+    "若有 single_work 且 enabled=true，这是跨日和重启保留的单作品限制："
+    "work_id 非空后不得 create 另一幅；初绘、该原图细化、分享分别最多一次，"
+    "create_used/edit_used/share_used 为是否已占用，失败或未知也不返还。可等待或不分享。"
     "continue/defer 仅用于 planned/deferred 作品；defer 还必含60到86400的整数 delay_seconds。"
     "share 仅用于 finished 且 best_version 非空的作品；abandon 仅用于上述活动作品。"
     "sharing 是当前可信分享许可；allowed=false 时只收藏，不提出 share。"
@@ -188,7 +191,7 @@ def _context(context: dict) -> dict:
     try:
         _object(context, set(), set(FIELDS) | {"persona", "current_work", "current_version",
                                              "review_contract", "review_inputs", "profiles", "series",
-                                             "assets", "asset_details", "sharing"})
+                                             "assets", "asset_details", "sharing", "single_work"})
         canonical_json(context)
         _safe(context)
         for name in FIELDS:
@@ -207,6 +210,14 @@ def _context(context: dict) -> dict:
             _require(permission["mode"] in {"collect_only", "original_group", "private"})
             _require(type(permission["allowed"]) is bool)
             _require(permission["mode"] != "collect_only" or permission["allowed"] is False)
+        if "single_work" in context:
+            policy = context["single_work"]
+            _object(policy, {"enabled", "work_id", "create_used", "edit_used", "share_used"})
+            _require(type(policy["enabled"]) is bool)
+            if policy["work_id"] is not None:
+                _text(policy["work_id"], 200)
+            for key in ("create_used", "edit_used", "share_used"):
+                _require(type(policy[key]) is bool)
         if {"review_contract", "review_inputs"}.intersection(context):
             _review_metadata(context)
         if {"profiles", "series"}.intersection(context):

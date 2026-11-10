@@ -452,6 +452,7 @@ def test_webui_thoughts_use_existing_private_query_without_actions():
     assert "实验" in page["description"] and "不作为生产收信" in page["description"]
 
 
+@pytest.mark.local_integration
 def test_thought_page_safe_text_pagination_and_experiment_separation_without_browser():
     node = shutil.which("node")
     if node is None:

@@ -6,7 +6,7 @@ import sqlite3
 import pytest
 
 from image_plugin_under_test.domain.policy import Delegation, Limits, Scope, StoreError
-from image_plugin_under_test.domain.store import ArtistStore
+from image_plugin_under_test.domain.store import ArtistStore, SCHEMA_VERSION
 
 
 SCOPE = Scope("qq", "group-stream", "owner")
@@ -317,12 +317,14 @@ def test_schema8_migration_preserves_history_and_group_old_claims_never_dispatch
     usage = store.budget_usage("s", SCOPE)
     store.db.execute("DROP TABLE share_policy_claims")
     store.db.execute("DROP TABLE group_share_policy")
+    store.db.execute("DROP TABLE single_work_policies")
+    store.db.execute("DROP INDEX operation_single_work")
     store.db.execute("PRAGMA user_version=8")
     path = store.path
     store.close()
     migrated = ArtistStore(path, clock=store.clock)
     try:
-        assert migrated.db.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert migrated.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert {table: rows(migrated, table) for table in before} == before
         assert migrated.budget_usage("s", SCOPE) == usage
         assert share(migrated)["state"] == state

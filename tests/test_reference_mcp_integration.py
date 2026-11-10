@@ -7,8 +7,8 @@ import pytest
 
 from image_plugin_under_test.creation.references import ReferenceInputs
 from image_plugin_under_test.creation.thinking import Thinking
-from test_artist_mcp_integration import BINDING, SPACE, studio  # noqa: F401
-from test_mcp_recovery_integration import SOURCE, actual_mcp  # noqa: F401
+from support.artist_mcp import BINDING, SPACE, studio as studio
+from support.external_mcp import SOURCE, actual_mcp as actual_mcp
 
 pytestmark = pytest.mark.skipif(not SOURCE, reason="Independent MCP source is explicitly opt-in")
 

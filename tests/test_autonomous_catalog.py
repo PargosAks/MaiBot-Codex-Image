@@ -12,13 +12,10 @@ from image_plugin_under_test.domain import store as store_module
 from image_plugin_under_test.domain.policy import Delegation, Limits, Scope, StoreError, canonical_json
 from image_plugin_under_test.domain.store import ArtistStore, SCHEMA_VERSION
 from image_plugin_under_test.creation.thinking import Thinking
-from test_artist_flow import BRIEF, SCOPE, step, studio as studio_fixture
-from test_profiles_flow import PROFILES, SERIES
-
-
-studio = studio_fixture
-DATA = PROFILES[0]["data"]
-NEW = {"action": "create_profile", "reason": "Explore a personal style", "data": DATA}
+from support.artist_fakes import BRIEF, SCOPE
+from support.artist_flow import step, studio as studio
+from support.catalog_examples import PROFILES, SERIES
+from support.catalog_examples import DATA, NEW
 
 
 def thought(store, decision, request="catalog", *, task="plan", state="succeeded", context=None):

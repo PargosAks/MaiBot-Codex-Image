@@ -12,7 +12,7 @@ import pytest
 from image_plugin_under_test.creation.artist import render_digest
 from image_plugin_under_test.mcp_client.bridge import Bridge, BridgeError
 from image_plugin_under_test.domain.policy import StoreError
-from conftest import SCOPE, SECRET
+from support.settings import SCOPE, SECRET
 from protocol_fixture import PNG
 
 PARAMS = {

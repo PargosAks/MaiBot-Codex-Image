@@ -16,7 +16,7 @@ from image_plugin_under_test.mcp_client.bridge import Bridge, BridgeError
 from image_plugin_under_test.creation.editing import ImageEdits
 from image_plugin_under_test.domain.policy import Delegation, Limits, Scope, StoreError
 from image_plugin_under_test.domain.store import ArtistStore
-from conftest import SECRET
+from support.settings import SECRET
 
 
 SCOPE = Scope("test", "verified-stream", "verified-owner")

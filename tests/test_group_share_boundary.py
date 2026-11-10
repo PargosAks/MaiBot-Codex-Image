@@ -9,7 +9,8 @@ from pydantic import ValidationError
 from image_plugin_under_test.host.host_runtime import ArtistSpace
 from image_plugin_under_test.domain.policy import StoreError
 from image_plugin_under_test.creation.thinking import Thinking
-from test_artist_flow import SCOPE, finished, step, studio as studio
+from support.artist_fakes import SCOPE
+from support.artist_flow import finished, step, studio as studio
 
 
 def test_group_collection_and_sharing_are_independent_and_default_to_collection():

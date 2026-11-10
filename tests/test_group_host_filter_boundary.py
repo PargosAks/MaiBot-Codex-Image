@@ -1,6 +1,6 @@
 """Fixed Host execution proves observe is not post-filter admission evidence.
 
-Reuse the public_host/SDK/dispatcher/runner fixture from test_host_integration,
+Reuse the public_host/SDK/dispatcher/runner fixture from support.host_chain,
 but replace its permissive filter/command stubs with AST-loaded implementations
 from HOST_REV. Execute the real HeartFlow receiver too. Synthetic configuration,
 session lookup, command executor, persistence, memory and person services record
@@ -18,22 +18,13 @@ import re
 import sys
 
 import pytest
-import test_host_integration as host_integration
 
 from image_plugin_under_test.inspiration.group_notebook import DATABASE_NAME
 from image_plugin_under_test.domain.policy import Scope
-from test_host_integration import (
-    HOST_REV,
-    PLATFORM,
-    STREAM,
-    host_file,
-    load_nodes,
-)
+from support.host_source import host_file, load_nodes
+from support.host_chain import PLATFORM, STREAM, host_chain as host_chain, public_host as public_host
 
 
-# Export the existing fixtures for pytest without importing unrelated tests.
-public_host = host_integration.public_host
-host_chain = host_integration.host_chain
 
 
 pytestmark = pytest.mark.skipif(
@@ -246,4 +237,3 @@ async def test_real_host_observe_filter_and_storage_boundary(filter_boundary, ca
     assert (h.calls, h.renderer.calls, h.sends, h.reviews) == before_effects
     assert not h.gate.is_set()
     assert not [record for record in caplog.records if record.levelno >= 40]
-    assert HOST_REV == "062d45cf8bd4272ac57d7ec03fcf405e5a458211"

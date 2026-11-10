@@ -1,7 +1,7 @@
 """Persistent artist state, with synthetic SQLite files and no external clients."""
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from threading import Barrier
 import hashlib
 import sqlite3
@@ -9,11 +9,11 @@ import sqlite3
 import pytest
 
 from image_plugin_under_test.domain import store as store_module
-from image_plugin_under_test.domain.policy import Delegation, Limits, Scope, StoreError
+from image_plugin_under_test.domain.policy import Delegation, Scope, StoreError
 from image_plugin_under_test.domain.store import ArtistStore
+from support.artist_ledger import SCOPE, ledger as ledger
 
 
-SCOPE = Scope("test", "verified-stream", "verified-owner")
 OTHER = Scope("test", "other-stream", "other-owner")
 BRIEF = {
     "intent": "study light",
@@ -22,27 +22,6 @@ BRIEF = {
     "prompt": "soft light",
     "completion_criteria": ["recognizable window", "warm lighting"],
 }
-
-
-class Clock:
-    def __init__(self):
-        self.now = datetime(2026, 10, 31, 4, tzinfo=timezone.utc)
-
-    def __call__(self):
-        return self.now
-
-
-@pytest.fixture
-def ledger(tmp_path):
-    clock = Clock()
-    db = ArtistStore(tmp_path / "artist.sqlite3", clock=clock)
-    db.create_space("s", SCOPE, binding_id="synthetic-binding")
-    db.grant("s", SCOPE, Delegation("explicit-ongoing-consent", "trusted-adapter", continuous=True))
-    limits = Limits(think=50, render=50, share=0, max_inflight=50, max_revisions=5)
-    db.set_global_limits(limits)
-    db.set_limits("s", SCOPE, limits)
-    yield db, clock
-    db.close()
 
 
 def error(code):

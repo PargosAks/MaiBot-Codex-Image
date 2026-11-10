@@ -14,13 +14,12 @@ from uuid import uuid4
 
 import pytest
 
-from test_send_timeout import UploadRPC
-from test_host_runtime import runner_bridge
-from test_host_adapters import ctx as sdk_context_fixture
+from support.host_rpc import UploadRPC
+from support.host_rpc import runner_bridge
+from support.sdk_context import ctx as ctx
 from image_plugin_under_test.host.host_adapters import send_image_receipt
 from image_plugin_under_test.domain.policy import StoreError
 
-ctx = sdk_context_fixture
 
 
 @pytest.fixture

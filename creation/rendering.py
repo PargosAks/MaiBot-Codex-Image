@@ -4,15 +4,17 @@ The trusted application supplies a Bridge belonging to binding_id. This adapter
 does not discover endpoints, grant authority, retry submissions or persist results.
 """
 
+from dataclasses import replace
 from typing import Optional
 import hashlib
 import json
 import re
 
-from .artist import RenderResult, render_digest
-from ..mcp_client.bridge import Bridge, BridgeError, _reference_digest, _reference_params, _validate_asset, _validate_job
+from .contracts import ArtifactRef, RenderResult, render_digest
+from ..mcp_client.bridge import Bridge, BridgeError
+from ..mcp_client.contracts import job_outcome, reference_digest, reference_params, validate_asset, validate_job
+from ..domain.async_work import join_worker
 from ..domain.policy import Scope, StoreError, nonempty
-from .recovery import ReadOnlyRecovery
 from ..domain.store import ArtistStore
 
 
@@ -52,7 +54,7 @@ class MCPRenderer:
         }:
             raise StoreError("INVALID_STATE", "Only an attempted render can use this adapter")
         try:
-            reference = _reference_params(op["action"], op["params"])
+            reference = reference_params(op["action"], op["params"])
         except BridgeError as exc:
             raise StoreError("REQUEST_CONFLICT", "Invalid frozen reference transport parameters") from exc
         expected = {"prompt"} if op["action"] == "submit" else {"prompt", "source_job_id", "source_sha256"}
@@ -70,7 +72,7 @@ class MCPRenderer:
         work = self.store.get_artist_work(self.space_id, scope, op["work_id"])
         if work["pending_request"] != request_id:
             raise StoreError("REQUEST_CONFLICT", "Work does not own this pending request")
-        if _reference_params(op["action"], op["params"]) is not None:
+        if reference_params(op["action"], op["params"]) is not None:
             self._reference_submission(scope, op, work)
         if op["action"] == "submit":
             if source is not None or work["parent_version"] is not None:
@@ -118,7 +120,7 @@ class MCPRenderer:
             ):
                 raise StoreError("REQUEST_CONFLICT", "Reference registration is not confirmed for this service")
             receipt = registration.get("receipt")
-            _validate_asset(receipt)
+            validate_asset(receipt)
             image = self.store.get_asset_image(self.space_id, scope, reference["asset_id"])
             identity = (reference["sha256"], reference["mime"], len(image["data"]))
             if (image["sha256"], image["mime"], len(image["data"])) != identity or any(
@@ -135,7 +137,7 @@ class MCPRenderer:
         self, *, scope: Scope, references: list, expected_auth_version: int, source_size: int = 0,
     ) -> list:
         # The registry owns durable registration intent, policy and aggregate limits.
-        await ReadOnlyRecovery._db(self._space, scope)
+        await join_worker(self._space, scope)
         from .references import ReferenceInputs
 
         return await ReferenceInputs(
@@ -144,7 +146,7 @@ class MCPRenderer:
 
     @staticmethod
     def _job(job):
-        _validate_job(job)
+        validate_job(job)
         code = job["error_code"]
         if code is not None and re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", code) is None:
             raise BridgeError("INVALID_RESPONSE", kind="protocol")
@@ -152,9 +154,9 @@ class MCPRenderer:
 
     @staticmethod
     def _transport(op):
-        reference = _reference_params(op["action"], op["params"])
+        reference = reference_params(op["action"], op["params"])
         if reference is not None:
-            return "render", _reference_digest(reference)
+            return "render", reference_digest(reference)
         return op["action"], render_digest(op["action"], op["params"])
 
     @staticmethod
@@ -206,50 +208,62 @@ class MCPRenderer:
             raise BridgeError("ARTIFACT_INVALID", kind="protocol")
         return image
 
-    async def _project(self, op, job):
-        outcome = ReadOnlyRecovery._outcome(job)
+    def _receipt_result(self, op, job) -> RenderResult:
+        """只投影已经校验的回执；这里不得因下载失败丢失后端终态。"""
+        outcome = job_outcome(job)
         if outcome == "accepted":
             state = "queued" if job["status"] in {"queued", "starting"} else "running"
         else:
             state = {"succeeded": "completed", "failed": "failed", "unknown": "outcome_unknown"}[outcome]
-        image = {}
+        artifact_ref = None
         if job["artifacts"]:
             artifact = job["artifacts"][0]
-            if artifact["size_bytes"] > 8 * 1024 * 1024:
-                raise BridgeError("ARTIFACT_INVALID", kind="protocol")
-            image = await self.bridge.image(
-                json.loads(op["scope_snapshot"]),
-                job["job_id"],
-                expected_sha256=artifact["sha256"],
-                expected_mime=artifact["mime_type"],
-                expected_size=artifact["size_bytes"],
-            )
-            image = await ReadOnlyRecovery._db(self._image, image, artifact)
+            artifact_ref = ArtifactRef(artifact["sha256"], artifact["mime_type"], artifact["size_bytes"])
         return RenderResult(
             op["request_id"],
             self._transport(op)[1],
             job["job_id"],
             state,
-            image.get("data"),
-            image.get("mime", "image/png"),
-            image.get("sha256"),
             error_code=job["error_code"],
+            artifact=artifact_ref,
         )
 
-    async def submit(
+    async def fetch_artifact(self, *, scope: Scope, receipt: RenderResult) -> RenderResult:
+        """取回原任务的字节，重新核对归属，不创建新任务或修改操作账本。"""
+        op = await join_worker(self._operation, scope, receipt.request_id)
+        if receipt.request_digest != self._transport(op)[1] or (
+            op["job_id"] is not None and op["job_id"] != receipt.job_id
+        ):
+            raise BridgeError("RECEIPT_MISMATCH", kind="binding")
+        artifact = receipt.artifact
+        if artifact is None:
+            return receipt
+        if not isinstance(artifact, ArtifactRef) or not 0 < artifact.size_bytes <= 8 * 1024 * 1024:
+            raise BridgeError("ARTIFACT_INVALID", kind="protocol")
+        image = await self.bridge.image(
+            json.loads(op["scope_snapshot"]), receipt.job_id,
+            expected_sha256=artifact.sha256, expected_mime=artifact.mime,
+            expected_size=artifact.size_bytes,
+        )
+        image = await join_worker(self._image, image, {
+            "sha256": artifact.sha256, "mime_type": artifact.mime, "size_bytes": artifact.size_bytes,
+        })
+        return replace(receipt, image=image["data"], mime=image["mime"], sha256=image["sha256"], artifact=None)
+
+    async def submit_receipt(
         self, *, scope: Scope, request_id: str, prompt: str, source: Optional[dict]
     ) -> RenderResult:
-        op = await ReadOnlyRecovery._db(self._submission, scope, request_id, prompt, source)
+        op = await join_worker(self._submission, scope, request_id, prompt, source)
         if "lookup_v1" not in await self.bridge.capabilities(json.loads(op["scope_snapshot"])):
             raise BridgeError("LOOKUP_UNSUPPORTED", kind="capability")
         # Health awaits network I/O. Recheck the dispatch claim and authority
         # before generation rather than using a pre-health ledger snapshot.
-        op = await ReadOnlyRecovery._db(self._submission, scope, request_id, prompt, source)
-        reference = _reference_params(op["action"], op["params"])
+        op = await join_worker(self._submission, scope, request_id, prompt, source)
+        reference = reference_params(op["action"], op["params"])
         if reference is not None:
 
             async def before_dispatch():
-                await ReadOnlyRecovery._db(self._submission, scope, request_id, prompt, source)
+                await join_worker(self._submission, scope, request_id, prompt, source)
 
             result = await self.bridge.reference_render(
                 json.loads(op["scope_snapshot"]), op["request_id"], **reference,
@@ -259,7 +273,7 @@ class MCPRenderer:
         elif op["action"] == "edit":
 
             async def before_dispatch():
-                await ReadOnlyRecovery._db(self._submission, scope, request_id, prompt, source)
+                await join_worker(self._submission, scope, request_id, prompt, source)
 
             result = await self.bridge.edit(
                 json.loads(op["scope_snapshot"]),
@@ -279,16 +293,29 @@ class MCPRenderer:
             job = await self._lookup(op, expected_job_id=legacy["job_id"])
             if job is None:
                 raise BridgeError("LOOKUP_NOT_FOUND", kind="binding")
-        return await self._project(op, job)
+        return self._receipt_result(op, job)
 
-    async def lookup(self, *, scope: Scope, request_id: str) -> Optional[RenderResult]:
-        op = await ReadOnlyRecovery._db(self._operation, scope, request_id)
+    async def lookup_receipt(self, *, scope: Scope, request_id: str) -> Optional[RenderResult]:
+        op = await join_worker(self._operation, scope, request_id)
         job = await self._lookup(op)
-        return None if job is None else await self._project(op, job)
+        return None if job is None else self._receipt_result(op, job)
 
-    async def status(self, *, scope: Scope, job_id: str) -> RenderResult:
-        op = await ReadOnlyRecovery._db(self._operation, scope, job_id=job_id)
+    async def status_receipt(self, *, scope: Scope, job_id: str) -> RenderResult:
+        op = await join_worker(self._operation, scope, job_id=job_id)
         job = await self._lookup(op)
         if job is None:
             raise BridgeError("LOOKUP_NOT_FOUND", kind="binding")
-        return await self._project(op, job)
+        return self._receipt_result(op, job)
+
+    # 保留带图接口供旧调用方使用；Artist 通过 ReceiptRenderer 显式选择两阶段路径。
+    async def submit(self, *, scope: Scope, request_id: str, prompt: str, source: Optional[dict]) -> RenderResult:
+        receipt = await self.submit_receipt(scope=scope, request_id=request_id, prompt=prompt, source=source)
+        return await self.fetch_artifact(scope=scope, receipt=receipt)
+
+    async def lookup(self, *, scope: Scope, request_id: str) -> Optional[RenderResult]:
+        receipt = await self.lookup_receipt(scope=scope, request_id=request_id)
+        return None if receipt is None else await self.fetch_artifact(scope=scope, receipt=receipt)
+
+    async def status(self, *, scope: Scope, job_id: str) -> RenderResult:
+        receipt = await self.status_receipt(scope=scope, job_id=job_id)
+        return await self.fetch_artifact(scope=scope, receipt=receipt)

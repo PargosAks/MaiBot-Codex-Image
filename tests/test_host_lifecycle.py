@@ -11,8 +11,8 @@ from image_plugin_under_test.host.host_runtime import RuntimeLease, joined
 from image_plugin_under_test.domain.policy import Delegation, Scope, StoreError
 from image_plugin_under_test.domain.store import ArtistStore
 from image_plugin_under_test.domain.delivery import Deliveries
-from test_mcp_plugin import plugin_instance
-from conftest import SCOPE
+from support.command_plugin import plugin_instance
+from support.settings import SCOPE
 
 
 def plugin_at(tmp_path, config=None):
@@ -169,7 +169,8 @@ async def test_unload_joins_cancelled_legacy_send_intent_writer(tmp_path, monkey
     assert not sender.images and plugin.journal is None
     journal = Deliveries(tmp_path / "delivery.sqlite3")
     try:
-        assert journal.db.execute("SELECT state FROM delivery").fetchone()[0] == "send_unknown"
+        # 意图写入结束后关闭，但未派发给 Host，可确定没有发送。
+        assert journal.db.execute("SELECT state FROM delivery").fetchone()[0] == "send_failed"
     finally:
         journal.close()
 
@@ -184,8 +185,11 @@ async def test_stop_workers_before_waiting_for_a_command_lock(tmp_path, update):
         await proceed.wait()
         external.append("simulated dispatch")
 
+    async def close():
+        pass
+
     task = asyncio.create_task(worker())
-    plugin.artist_runtime = SimpleNamespace(stopping=False, tasks={"space": task})
+    plugin.artist_runtime = SimpleNamespace(stopping=False, tasks={"space": task}, close=close)
     await plugin.lifecycle.acquire()
     callback = None
     try:
@@ -200,7 +204,9 @@ async def test_stop_workers_before_waiting_for_a_command_lock(tmp_path, update):
     finally:
         if callback:
             callback.cancel()
+        # 卸载调用方取消也会等清理，必须先释放本测试手动持有的锁。
+        plugin.lifecycle.release()
+        if callback:
             await asyncio.gather(callback, return_exceptions=True)
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
-        plugin.lifecycle.release()

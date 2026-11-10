@@ -3,13 +3,10 @@
 No Host imports, IPC, network or real models. Temporary ledgers are synthetic.
 """
 
-from pathlib import Path
 from types import SimpleNamespace
-import ast
 import asyncio
 import json
 import math
-import os
 
 import pytest
 
@@ -17,12 +14,12 @@ from image_plugin_under_test import CodexImagePlugin
 from image_plugin_under_test.host import host_runtime
 from image_plugin_under_test.host.host_adapters import HostThinking
 from image_plugin_under_test.creation.thinking import Thinking
-from test_artist_flow import SCOPE, step, studio as studio_fixture
-from test_host_adapters import WAIT, ctx as sdk_context_fixture
+from support.artist_fakes import SCOPE
+from support.artist_flow import step, studio as studio
+from support.sdk_context import WAIT, ctx as ctx
+from support.host_rpc import runner_bridge
 
 
-studio = studio_fixture
-ctx = sdk_context_fixture
 
 
 class PendingRPC:
@@ -44,24 +41,7 @@ class PendingRPC:
         }}))
 
 
-def runner_bridge(rpc):
-    source = os.environ.get('CODEX_IMAGE_TEST_HOST_SOURCE')
-    if not source:
-        pytest.skip('Set CODEX_IMAGE_TEST_HOST_SOURCE to read the public Host RPC bridge')
-    path = Path(source) / 'plugin_runtime/runner/runner_main.py'
-    tree = ast.parse(path.read_text('utf-8'))
-    runner = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'PluginRunner')
-    inject = next(n for n in runner.body if isinstance(n, ast.FunctionDef) and n.name == '_inject_context')
-    bridge = next(n for n in inject.body if isinstance(n, ast.AsyncFunctionDef) and n.name == '_rpc_call')
-    namespace = {'rpc_client': rpc, 'bound_plugin_id': 'isolated-adapter-test',
-                 '_PLUGIN_ALLOWED_RAW_HOST_METHODS': frozenset({'cap.call'}),
-                 'logger': SimpleNamespace(warning=lambda *args: None)}
-    future = ast.ImportFrom(module='__future__', names=[ast.alias(name='annotations')], level=0)
-    module = ast.Module(body=[future, bridge], type_ignores=[])
-    exec(compile(ast.fix_missing_locations(module), str(path), 'exec'), namespace)
-    return namespace['_rpc_call']
-
-
+@pytest.mark.external_contract
 async def test_real_sdk_runner_receives_timeout_and_task_default_tokens(ctx):
     rpc = PendingRPC()
     ctx.sdk._rpc_call = runner_bridge(rpc)
@@ -79,6 +59,7 @@ async def test_real_sdk_runner_receives_timeout_and_task_default_tokens(ctx):
     assert await task == WAIT and len(rpc.calls) == 1
 
 
+@pytest.mark.external_contract
 async def test_delayed_receipt_within_explicit_sdk_runner_timeout_succeeds_once(ctx):
     rpc = PendingRPC()
     ctx.sdk._rpc_call = runner_bridge(rpc)
@@ -93,6 +74,7 @@ async def test_delayed_receipt_within_explicit_sdk_runner_timeout_succeeds_once(
 
 
 @pytest.mark.parametrize('mode', ['rpc-timeout', 'cancel'])
+@pytest.mark.external_contract
 async def test_review_late_reply_preserves_unknown_and_never_retries(studio, ctx, mode):
     runtime, store, clock, _, renderer, _ = studio
     assert (await runtime.tick())['state'] == 'planned'

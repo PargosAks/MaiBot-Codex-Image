@@ -14,8 +14,8 @@ from image_plugin_under_test.host.host_runtime import Autonomy, HostRuntime, Run
 from image_plugin_under_test.domain.policy import Delegation, Limits, Scope, StoreError
 from image_plugin_under_test.domain.store import ArtistStore
 from image_plugin_under_test.creation.thinking import Thinking
-from test_artist_flow import Clock, Model, Renderer, Sender, SCOPE
-from test_host_adapters import Context
+from support.artist_fakes import Clock, Model, Renderer, Sender, SCOPE
+from support.sdk_context import Context
 from protocol_fixture import PNG
 
 
@@ -132,8 +132,9 @@ async def test_restore_original_flow_restart_and_lifetime_counts(retained, edits
         try:
             runtime = Artist(reopened, "s", SCOPE, Thinking(model), renderer, sender, idle_seconds=60)
             await runtime.recover(offline=True)
-            assert (await runtime.tick())["state"] == "idle"
-            clock.advance(60)
+            # Restored work advances on the next Host tick, independently of
+            # the idle inspiration interval. Its existing receipts still dedupe.
+            clock.advance(5)
             result = await runtime.tick()
             if result["state"] == "shared":
                 break

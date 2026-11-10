@@ -35,7 +35,7 @@ import pytest
 
 from image_plugin_under_test import CodexImagePlugin
 from image_plugin_under_test.domain.policy import StoreError
-from test_studio import OWNER, data as _studio_data
+from support.studio_data import OWNER, data as _studio_data
 
 
 ROOT = Path(__file__).resolve().parents[1]

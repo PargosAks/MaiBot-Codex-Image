@@ -10,12 +10,11 @@ import pytest
 from image_plugin_under_test.domain.policy import Delegation, Limits, StoreError, canonical_json
 from image_plugin_under_test.domain.store import ArtistStore, SCHEMA_VERSION
 from image_plugin_under_test.creation.thinking import Thinking
-from test_artist_flow import SCOPE as FLOW_SCOPE, studio as studio_fixture
-from test_artist_state import SCOPE, ledger as ledger_fixture
+from support.artist_fakes import SCOPE as FLOW_SCOPE
+from support.artist_flow import studio as studio
+from support.artist_ledger import SCOPE, ledger as ledger
 
 
-studio = studio_fixture
-ledger = ledger_fixture
 
 
 def successful_wait(db, *, finish=True):

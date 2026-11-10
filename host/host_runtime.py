@@ -13,8 +13,10 @@ from maibot_sdk import Field, PluginConfigBase
 
 from ..creation.artist import Artist
 from ..domain.assets import ASSET_ROLES
+# 旧入口继续导出；取消后的线程和资源收尾统一由基础组件处理。
+from ..domain.async_work import join_task as joined
 from .host_media import IMAGE_ONLY_TEXT, UNREVIEWED_DESCRIPTION, current_images
-from ..domain.policy import Delegation, Limits, Scope, StoreError
+from ..domain.policy import Delegation, Limits, Scope, StoreError, nonempty
 from ..domain.store import ArtistStore
 from ..creation.thinking import Thinking
 
@@ -48,6 +50,8 @@ class ArtistSpace(PluginConfigBase):
     )
     continuous: bool = Field(default=False, strict=True, description="明确授权持续自主创作，白名单本身不代表委托")
     consent_ref: str = Field(default="", description="管理员录入的持续委托依据；不要填密钥")
+    single_work: bool = Field(default=False, strict=True, description="为空白空间永久启用单作品限额，启用后不可关闭")
+    paused: bool = Field(default=False, strict=True, description="暂不执行本空间的自主创作或采集，保留持续委托")
     reference_inputs: bool = Field(default=False, strict=True, description="单独允许采集当前消息图片作为参考素材")
     media_consent_ref: str = Field(default="", description="独立媒体采集授权依据；原文字委托不授权图片采集")
     limits: Budget = Field(default_factory=Budget)
@@ -67,26 +71,6 @@ class Autonomy(PluginConfigBase):
     persona: str = Field(default="热爱观察与绘画的小画师", min_length=1, max_length=4000)
     plan_task: str = Field(default="utils", min_length=1, max_length=100)
     review_task: str = Field(default="vlm", min_length=1, max_length=100)
-
-
-async def joined(awaitable):
-    """Do not leave SQLite writes or cleanup running after the owner is cancelled."""
-    task = asyncio.ensure_future(awaitable)
-    try:
-        return await asyncio.shield(task)
-    except asyncio.CancelledError as cancelled:
-        while not task.done():
-            try:
-                await asyncio.shield(task)
-            except asyncio.CancelledError:
-                continue
-            except Exception:
-                break
-        try:
-            task.result()
-        except Exception as exc:
-            raise cancelled from exc
-        raise
 
 
 class RuntimeLease:
@@ -188,6 +172,8 @@ class HostRuntime:
                     continue
                 if not item.consent_ref.strip():
                     raise StoreError("AUTH_REQUIRED", "Continuous consent and allowlist membership are required")
+                if item.reference_inputs and not item.media_consent_ref.strip():
+                    raise StoreError("MEDIA_CONSENT_REQUIRED", "Separate media consent is required for image inputs")
                 desired[item.space_id] = (item, scope)
         # Removing an entry, disabling autonomy, or removing its allowlist owner
         # revokes persisted authority before any new work is started.
@@ -198,8 +184,15 @@ class HostRuntime:
         await self.db("set_global_limits", cfg.global_limits.limits() if enabled else Limits())
         if desired and plugin.bridge is None:
             raise StoreError("MCP_NOT_CONFIGURED", "Autonomous rendering requires a configured connection")
-        for item, scope in desired.values():
+        if desired:
+            if not cfg.persona.strip():
+                raise StoreError("INVALID_ARGUMENT", "A bounded public persona is required")
+            nonempty(cfg.plan_task, "plan_task")
+            nonempty(cfg.review_task, "review_task")
+        for item, _scope in desired.values():
             await self._verify_stream(item)
+        active = []
+        for item, scope in desired.values():
             # The endpoint defines a stable administrative binding. Changing it
             # cannot silently move an existing space or an unresolved operation.
             binding = "mcp:" + hashlib.sha256(plugin.config.connection.url.encode()).hexdigest()
@@ -210,8 +203,6 @@ class HostRuntime:
                               Delegation(item.consent_ref, "host-config", continuous=True))
             await self.db("set_limits", item.space_id, scope, item.limits.limits())
             current = await self.db("get_space", item.space_id, scope)
-            if item.reference_inputs and not item.media_consent_ref.strip():
-                raise StoreError("MEDIA_CONSENT_REQUIRED", "Separate media consent is required for image inputs")
             await self.db("configure_reference_policy", item.space_id, scope,
                           enabled=item.reference_inputs, consent_ref=item.media_consent_ref,
                           expected_auth_version=current["auth_version"])
@@ -224,7 +215,14 @@ class HostRuntime:
                           group_id=item.group_id if item.group_inspiration else "",
                           thoughts=[], enabled=bool(item.group_id and item.group_inspiration),
                           expected_auth_version=current["auth_version"])
-            from .host_adapters import HostThinking, HostSender, SHARE_TARGET_TIMEOUT_SECONDS
+            if item.paused:
+                continue
+            active.append((item, scope, binding, current["auth_version"]))
+        # These constructors only validate and retain dependencies; they perform
+        # no model, renderer, sender, or database calls. Defer recovery/registration.
+        prepared = []
+        for item, scope, binding, auth_version in active:
+            from .host_adapters import SHARE_TARGET_TIMEOUT_SECONDS, HostSender, HostThinking
             artist = Artist(
                 self.store, item.space_id, scope,
                 Thinking(HostThinking(plugin.ctx, plan_task=cfg.plan_task, review_task=cfg.review_task,
@@ -238,9 +236,16 @@ class HostRuntime:
                 allow_network_renderer=True, allow_host_sender=True,
                 reference_inputs=item.reference_inputs,
             )
+            prepared.append((item, scope, auth_version, artist))
+        # Permanent latches are committed together only after all configuration
+        # and constructors succeed, including paused spaces without a worker.
+        await self.db("configure_single_work_batch", [
+            (item.space_id, scope, item.single_work) for item, scope in desired.values()
+        ])
+        for item, scope, auth_version, artist in prepared:
             await artist.recover(offline=True)
             self.artists[item.space_id] = artist
-            self.grant_versions[item.space_id] = current["auth_version"]
+            self.grant_versions[item.space_id] = auth_version
             if item.group_inspiration and item.group_id:
                 self.verified_notebook_groups[item.space_id] = (item.group_id, scope, item.consent_ref)
             self.media_policies[item.space_id] = (item.reference_inputs, item.media_consent_ref)

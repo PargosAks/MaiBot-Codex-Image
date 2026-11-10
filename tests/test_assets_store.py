@@ -14,12 +14,11 @@ from image_plugin_under_test.domain.assets import reference_prompt, validate_ref
 from image_plugin_under_test.domain.policy import Delegation, Limits, Scope, StoreError, canonical_json
 from image_plugin_under_test.domain.profiles import render_prompt
 from image_plugin_under_test.domain.store import ArtistStore
+from support.reviewed_assets import SCOPE, BRIEF, reviewed
+from support.historical_ledger import make_schema_4
 
 
-SCOPE = Scope("test", "asset-stream", "asset-owner")
 OTHER = Scope("test", "other-stream", "other-owner")
-BRIEF = {"intent": "study light", "subject": "window", "mood": "quiet", "prompt": "a quiet window",
-         "completion_criteria": "warm lighting"}
 SUMMARY_KEYS = {"asset_id", "summary", "roles", "tags", "source_kind"}
 DETAIL_KEYS = SUMMARY_KEYS | {"sha256", "mime", "description"}
 
@@ -38,43 +37,6 @@ def ledger(tmp_path):
     db.set_limits("s", SCOPE, limits)
     yield db
     db.close()
-
-
-def reviewed(db, identifier="v", *, data=None, state="succeeded", decision="accept", selected=None,
-             review_reason="温暖的光线符合完成标准", strengths=None, contract=1, space="s", scope=SCOPE):
-    work, request, thought = "work-" + identifier, "render-" + identifier, "review-" + identifier
-    db.plan_work(space, scope, work_id=work, brief=BRIEF, inspiration_keys=[], expected_auth_version=1)
-    db.reserve(space, scope, request_id=request, action="submit", work_id=work, params={"prompt": BRIEF["prompt"]})
-    db.mark_submitting(space, scope, request)
-    db.settle(space, scope, request, outcome="succeeded", evidence="synthetic complete", job_id="job-" + identifier)
-    version = db.record_version(space, scope, work_id=work, version_id=identifier, request_id=request,
-                                job_id="job-" + identifier, data=data if data is not None else identifier.encode(),
-                                mime="image/png")
-    context = {"current_work": {"work_id": work, "brief": BRIEF, "best_version": None},
-               "current_version": {key: version[key] for key in ("version_id", "sha256", "mime")}}
-    if contract == 2:
-        context.update(review_contract=2, review_inputs=[{**context["current_version"], "roles": ["current"]}])
-        snapshot = db.freeze_review_snapshot(space, scope, version_id=identifier, context=context,
-                                             expected_auth_version=1)
-    params = {"task": "review", "version_id": identifier, "context": context}
-    if contract == 2:
-        params.update(review_contract=2, input_digest=snapshot["input_digest"])
-    review = {"decision": decision, "reason": review_reason,
-              "strengths": ["柔和配色", "清晰构图"] if strengths is None else strengths, "issues": []}
-    if selected is not None:
-        review["best_version_id"] = selected
-    if state != "absent":
-        db.reserve(space, scope, request_id=thought, action="think", work_id=work, params=params)
-        if state != "reserved":
-            db.mark_submitting(space, scope, thought)
-        if state in {"succeeded", "failed"}:
-            db.settle(space, scope, thought, outcome=state, evidence=canonical_json(review))
-        elif state == "unknown":
-            db.mark_unknown(space, scope, thought, reason="lost response")
-        if state in {"succeeded", "unknown", "submitting"}:
-            db.record_review(space, scope, version_id=identifier, request_id=thought, review=review)
-    db.update_artist_work(space, scope, work, changes={"status": "finished", "best_version": identifier})
-    return version
 
 
 def archive(db, identifier="v", *, roles=None, tags=None, reason="可复用配色与构图", auth=1):
@@ -422,40 +384,6 @@ def test_final_reference_prompt_limit_includes_creative_and_is_not_truncated(led
                               together["brief"]["references"])
     assert "character：cat" in prompt and "仅文字灵感，未输入参考图" in prompt
     assert len(prompt) <= 4000
-
-
-def make_schema_4(path):
-    db = sqlite3.connect(path)
-    for statements in (store_module._SCHEMA, store_module._SCHEMA_2, store_module._SCHEMA_3, store_module._SCHEMA_4):
-        for statement in statements:
-            db.execute(statement)
-    db.execute("INSERT INTO spaces VALUES('s',?,'old-binding',1,1)", (SCOPE.snapshot(),))
-    db.execute("INSERT INTO grants VALUES('s',1,1,'consent','adapter','then')")
-    db.execute("INSERT INTO works VALUES('s','w','then')")
-    db.execute("INSERT INTO artist_works(space_id,work_id,status,brief,inspiration_keys) "
-               "VALUES('s','w','finished',?,'[]')", (canonical_json(BRIEF),))
-    digest = hashlib.sha256(b"image").hexdigest()
-    db.execute("INSERT INTO versions VALUES('s','v','w','render','job',?,?,'image/png',NULL,'then')", (b"image", digest))
-    context = {"current_work": {"work_id": "w", "brief": BRIEF, "best_version": None},
-               "current_version": {"version_id": "v", "sha256": digest, "mime": "image/png"},
-               "review_contract": 2,
-               "review_inputs": [{"version_id": "v", "roles": ["current"], "sha256": digest, "mime": "image/png"}]}
-    input_digest = hashlib.sha256(canonical_json(context).encode()).hexdigest()
-    db.execute("INSERT INTO review_snapshots VALUES('s','v',1,?,?)", (canonical_json(context), input_digest))
-    params = {"task": "review", "version_id": "v", "context": context, "review_contract": 2, "input_digest": input_digest}
-    review = {"decision": "accept", "reason": "historically accepted", "strengths": ["lighting"], "issues": []}
-    for index, state in enumerate(("reserved", "unknown", "succeeded"), 1):
-        db.execute("""INSERT INTO operations VALUES(?,'s','w',?,'think','think',?,?,'old-binding',1,'idle',NULL,
-                   ?,'2026-10-31',NULL,?,'then','then')""",
-                   (index, state, canonical_json(params), SCOPE.snapshot(), state,
-                    canonical_json(review) if state == "succeeded" else None))
-    db.execute("INSERT INTO reviews VALUES(1,'s','w','v','succeeded',?,'then')", (canonical_json(review),))
-    db.execute("PRAGMA user_version=4")
-    db.commit()
-    tables = [row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")]
-    before = {table: db.execute(f"SELECT * FROM {table}").fetchall() for table in tables}
-    db.close()
-    return before
 
 
 def test_schema_4_to_5_preserves_old_data_acceptance_and_snapshots_and_restart(tmp_path):

@@ -135,6 +135,7 @@ def test_topics_refuse_changed_identity_or_invalid_theme(store, column, value):
         store.topics(**binding())
 
 
+@pytest.mark.local_integration
 def test_fresh_interpreter_replays_without_clock_or_host(store):
     first = record(store)
     store.close()

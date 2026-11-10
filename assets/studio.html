@@ -1,6 +1,8 @@
 <style>
   *{box-sizing:border-box}body{margin:0;font:14px/1.6 system-ui,sans-serif;color:var(--foreground,#202633);background:var(--background,#f6f7fb)}
   main{max-width:1200px;margin:auto;padding:24px}h1{margin:0;font-size:26px}h2{font-size:17px;margin:0 0 12px}p{margin:8px 0}.muted{opacity:.7}
+  /* 作品标识含连续哈希；详情筛选在窄屏也必须完整换行，避免撑宽 Host 的 iframe。 */
+  #filter{overflow-wrap:anywhere}
   .toolbar,.tabs,.pager{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:16px 0}button,select{font:inherit;color:inherit;background:var(--card,#fff);border:1px solid #858fa455;border-radius:8px;padding:8px 12px;max-width:100%}button{cursor:pointer}button:disabled{opacity:.45;cursor:default}button[aria-selected=true]{background:#5367df;color:#fff}
   .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}.card{background:var(--card,#fff);border:1px solid #858fa433;border-radius:12px;padding:16px;margin:12px 0;overflow-wrap:anywhere}dl{display:grid;grid-template-columns:minmax(80px,120px) 1fr;gap:6px 12px;margin:10px 0}dt{opacity:.7}dd{margin:0;white-space:pre-wrap}.error{color:#d64a4a}img{display:block;max-width:100%;max-height:70vh;object-fit:contain;margin:12px auto;border-radius:8px}.thumb{max-width:320px;max-height:240px;margin:8px 0}.badge{display:inline-block;border-radius:5px;padding:2px 8px;background:#8882;margin:2px}dialog{color:inherit;background:var(--card,#fff);border:1px solid #858fa455;border-radius:12px;max-width:90vw;max-height:90vh}dialog::backdrop{background:#0008}@media(max-width:600px){main{padding:14px}}
 </style>
@@ -63,6 +65,10 @@
   }
   function showSummary(s){
     const grid=$('summary');grid.replaceChildren();
+    if(s.single_work&&s.single_work.enabled){const single=node('section',undefined,'card');single.append(node('h2','单作品验收'));
+      single.append(node('p',s.single_work.work_id?'已绑定一个作品':'尚未建立作品'));
+      for(const [key,label] of [['create_used','初绘'],['edit_used','原图细化'],['share_used','分享']])single.append(node('p',label+'：'+(s.single_work[key]?'已占用':'尚未占用')+' / 最多一次'));
+      single.append(node('p','跨日、重启和失败均不恢复次数；结果未知请核查原记录。','muted'));grid.append(single);}
     const auth=node('section',undefined,'card');auth.append(node('h2','授权与等待'),node('p',s.authorization.authorized?'持续委托有效':'持续委托未生效'));
     auth.append(node('p',s.authorization.enabled===false?'自主创作未启用':'读取授权版本：'+(s.authorization.version??'尚无状态')));
     for(const reason of s.waiting)auth.append(node('p',reason.text));

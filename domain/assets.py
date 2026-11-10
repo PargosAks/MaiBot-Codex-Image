@@ -18,12 +18,12 @@ MAX_ASSET_BYTES = 64 * 1024 * 1024
 
 
 def validate_asset_image(data: Any, mime: Any) -> dict:
-    """Reuse the Host decoder to verify original bytes without interpreting them."""
-    from ..host.host_media import MAX_IMAGE_BYTES, _validate_image
+    """复用纯字节校验，不通过 Host 适配器导入领域逻辑。"""
+    from .image_validation import MAX_IMAGE_BYTES, validate_image
 
     _require(type(data) is bytes and 0 < len(data) <= MAX_IMAGE_BYTES, "Image bytes exceed the 8 MiB limit")
     _require(type(mime) is str and mime in {"image/png", "image/jpeg", "image/webp"}, "Invalid image MIME")
-    if _validate_image(data) != mime:
+    if validate_image(data) != mime:
         raise StoreError("ARTIFACT_INVALID", "Image MIME does not match the original format")
     return {"data": data, "mime": mime, "sha256": hashlib.sha256(data).hexdigest()}
 

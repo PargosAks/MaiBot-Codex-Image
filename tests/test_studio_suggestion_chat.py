@@ -11,12 +11,10 @@ import pytest
 
 from maibot_sdk.context import PluginContext
 
-from image_plugin_under_test import CodexImagePlugin
 from image_plugin_under_test.host import studio_chat as chat_module
 from image_plugin_under_test.domain.policy import Delegation
-from image_plugin_under_test.domain.store import ArtistStore
 from image_plugin_under_test.workspace.studio import Studio
-from test_studio_chat import Harness, OTHER, SCOPE, payload, sdk  # noqa: F401
+from support.studio_chat import active_studio_plugin as active_studio_plugin, Harness, OTHER, SCOPE, payload, sdk as sdk
 
 
 MESSAGE = "full-trusted-suggestion-message-id"
@@ -71,13 +69,9 @@ class SuggestionHarness(Harness):
         )
 
 
-def integrated_plugin(h, on_chat):
-    plugin = CodexImagePlugin()
-    config = plugin.build_default_config()
-    config["plugin"]["enabled"] = config["autonomy"]["enabled"] = True
-    plugin.set_plugin_config(config)
+def integrated_plugin(plugin, h, on_chat):
     plugin.studio_chat = h.chat
-    plugin.artist_runtime = SimpleNamespace(on_chat=on_chat)
+    plugin.artist_runtime.on_chat = on_chat
     return plugin
 
 
@@ -94,14 +88,14 @@ def test_conservative_known_drawing_requests_including_complete_original(sdk, te
 
 
 @pytest.mark.parametrize("text", NEGATIVE)
-async def test_negation_narrative_critique_commands_and_unrelated_never_inject(sdk, text):  # noqa: F811
+async def test_negation_narrative_critique_commands_and_unrelated_never_inject(active_studio_plugin, sdk, text):  # noqa: F811
     h = SuggestionHarness(sdk)
     assert not sdk.chat.is_studio_suggestion_message({"processed_plain_text": text})
 
     async def on_chat(*args):
         return True  # Even a new ordinary wake is not a suggestion attestation.
 
-    await ingress(integrated_plugin(h, on_chat), text)
+    await ingress(integrated_plugin(active_studio_plugin, h, on_chat), text)
     result = await h.invoke("replyer")
     if sdk.chat.is_studio_status_query(text):
         assert json.loads(result["modified_kwargs"]["items"][-1]["parts"][0]["text"])["data"] == h.snapshot.data
@@ -152,20 +146,20 @@ def test_receipt_rule_separates_evidence_and_explicitly_allows_normal_reply(sdk)
 
 
 @pytest.mark.parametrize("accepted", [True, False, None, 1, "true", {"accepted": True}])
-async def test_real_plugin_gate_requires_exact_true_new_ingress(sdk, accepted):  # noqa: F811
+async def test_real_plugin_gate_requires_exact_true_new_ingress(active_studio_plugin, sdk, accepted):  # noqa: F811
     h = SuggestionHarness(sdk)
 
     async def on_chat(*args):
         return accepted
 
-    await ingress(integrated_plugin(h, on_chat))
+    await ingress(integrated_plugin(active_studio_plugin, h, on_chat))
     assert (await h.invoke("planner") is not None) is (accepted is True)
     assert (await h.invoke("replyer") is not None) is (accepted is True)
     assert len(h.receipts) == (2 if accepted is True else 0) and h.reads == []
 
 
 @pytest.mark.parametrize("newer", [False, True])
-async def test_delayed_true_at_71_seconds_cannot_accept_a_superseded_message(sdk, newer):  # noqa: F811
+async def test_delayed_true_at_71_seconds_cannot_accept_a_superseded_message(active_studio_plugin, sdk, newer):  # noqa: F811
     h = SuggestionHarness(sdk)
 
     async def on_chat(*args):
@@ -174,7 +168,7 @@ async def test_delayed_true_at_71_seconds_cannot_accept_a_superseded_message(sdk
             assert h.chat.note_ingress(SCOPE, "newer-during-ingress", is_query=False)
         return True
 
-    await ingress(integrated_plugin(h, on_chat))
+    await ingress(integrated_plugin(active_studio_plugin, h, on_chat))
     assert h.chat._queries[(SCOPE, MESSAGE)].deadline == 120.0
     assert (await h.invoke("planner") is not None) is (not newer)
     assert (await h.invoke("replyer") is not None) is (not newer)
@@ -214,7 +208,7 @@ async def test_database_and_new_bindings_cannot_reconstruct_missing_attestation(
     assert h.receipts == h.reads == h.calls == []
 
 
-async def test_duplicate_ingress_does_not_rearm_reorder_or_extend_ttl(sdk):  # noqa: F811
+async def test_duplicate_ingress_does_not_rearm_reorder_or_extend_ttl(active_studio_plugin, sdk):  # noqa: F811
     h = SuggestionHarness(sdk)
     calls = []
 
@@ -222,7 +216,7 @@ async def test_duplicate_ingress_does_not_rearm_reorder_or_extend_ttl(sdk):  # n
         calls.append(args)
         return len(calls) == 1
 
-    plugin = integrated_plugin(h, on_chat)
+    plugin = integrated_plugin(active_studio_plugin, h, on_chat)
     await ingress(plugin)
     h.clock = 71.0
     await ingress(plugin)
@@ -423,36 +417,35 @@ def test_suggestion_ttl_is_bounded(sdk, ttl):  # noqa: F811
         sdk.chat.StudioChat(None, policy=lambda: None, read=None, suggestion_ttl_seconds=ttl)
 
 
-async def test_real_plugin_receipt_adapter_reads_exact_sqlite_row_without_side_effects(tmp_path):
+async def test_real_plugin_receipt_adapter_reads_exact_sqlite_row_without_side_effects(active_studio_plugin):
     # The real plugin and adapter share one module identity. The optional SDK
     # fixture reloads only studio_chat, so test that fixture separately above.
     h = SuggestionHarness(SimpleNamespace(chat=chat_module, context=PluginContext))
-    store = ArtistStore(tmp_path / "artist.sqlite3")
-    try:
-        store.create_space("studio", SCOPE, binding_id="isolated-studio")
-        store.grant("studio", SCOPE, Delegation("explicit-consent", "synthetic-admin", True))
+    plugin = active_studio_plugin
+    runtime = plugin.artist_runtime
+    store = runtime.store
+    store.create_space("studio", SCOPE, binding_id="isolated-studio")
+    store.grant("studio", SCOPE, Delegation("explicit-consent", "synthetic-admin", True))
 
-        async def on_chat(scope, message_id, message):
-            return store.enqueue_wake("studio", SCOPE, event_id="chat:" + message_id, kind="chat",
-                                      source_ref=message_id, text=message["processed_plain_text"])
+    async def on_chat(scope, message_id, message):
+        return store.enqueue_wake("studio", SCOPE, event_id="chat:" + message_id, kind="chat",
+                                  source_ref=message_id, text=message["processed_plain_text"])
 
-        plugin = integrated_plugin(h, on_chat)
-        plugin._set_context(SimpleNamespace(paths=SimpleNamespace(data_dir=str(tmp_path))))
-        plugin.artist_runtime.stopping = False
-        plugin.artist_runtime.grant_versions = {"studio": 1}
-        h.chat.read_receipt = plugin._studio_suggestion_receipt
-        await ingress(plugin)
-        store.close()
-        ledger = tmp_path / "artist.sqlite3"
-        before = hashlib.sha256(ledger.read_bytes()).digest()
-        h.clock = 71
-        assert await h.invoke("planner")
-        assert await h.invoke("replyer")
-        assert hashlib.sha256(ledger.read_bytes()).digest() == before
-        assert {path.name for path in tmp_path.iterdir()} == {"artist.sqlite3"}
-        receipt = Studio(tmp_path, scopes={"studio": SCOPE}).inspiration_receipt(
-            "studio", MESSAGE, expected_auth_version=1)
-        assert receipt["inspiration_received"] is True
-        assert h.reads == []
-    finally:
-        store.close()
+    integrated_plugin(plugin, h, on_chat)
+    runtime.grant_versions = {"studio": 1}
+    h.chat.read_receipt = plugin._studio_suggestion_receipt
+    await ingress(plugin)
+    # 生命周期启动时已创建 SQLite 和租约文件；只读调用不能再新增文件或修改账本。
+    ledger = store.path
+    root = ledger.parent
+    before = hashlib.sha256(ledger.read_bytes()).digest()
+    files = {path.name for path in root.iterdir()}
+    h.clock = 71
+    assert await h.invoke("planner")
+    assert await h.invoke("replyer")
+    assert hashlib.sha256(ledger.read_bytes()).digest() == before
+    assert {path.name for path in root.iterdir()} == files
+    receipt = Studio(root, scopes={"studio": SCOPE}).inspiration_receipt(
+        "studio", MESSAGE, expected_auth_version=1)
+    assert receipt["inspiration_received"] is True
+    assert h.reads == []

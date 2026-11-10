@@ -4,68 +4,16 @@ Set CODEX_IMAGE_TEST_SERVICE_SOURCE to the independent service's src directory.
 The default plugin suite stays independent of a production-service checkout.
 """
 
-from pathlib import Path
-import asyncio
-import importlib
-import os
-import socket
 
 import pytest
-import uvicorn
 
-from image_plugin_under_test.mcp_client.bridge import Bridge, BridgeError
+from image_plugin_under_test.mcp_client.bridge import BridgeError
 from image_plugin_under_test.domain.policy import Delegation, Limits, Scope
 from image_plugin_under_test.domain.store import ArtistStore
-from conftest import SECRET, SCOPE
+from support.settings import SCOPE
+from support.external_mcp import SOURCE, actual_mcp as actual_mcp
 
-SOURCE = os.environ.get("CODEX_IMAGE_TEST_SERVICE_SOURCE")
 pytestmark = pytest.mark.skipif(not SOURCE, reason="Independent MCP source is explicitly opt-in")
-
-
-@pytest.fixture
-async def actual_mcp(tmp_path, monkeypatch):
-    source = Path(SOURCE).resolve(strict=True)
-    monkeypatch.syspath_prepend(str(source))
-    module = importlib.import_module("codex_image_mcp.server")
-    config = importlib.import_module("codex_image_mcp.config")
-    assert Path(module.__file__).resolve().is_relative_to(source)
-
-    async def no_worker(self):
-        # Server lookup itself must not start or advance any queued render.
-        return None
-
-    monkeypatch.setattr(module.Service, "start", no_worker)
-
-    class NoDrawing:
-        async def generate(self, *args):
-            pytest.fail("Recovery must never invoke a drawing driver")
-
-    sock = socket.socket()
-    sock.bind(("127.0.0.1", 0))
-    settings = config.Settings(
-        binary="not-a-real-codex",
-        home=tmp_path / "unused-home",
-        state=tmp_path / "service-state",
-        secret=SECRET,
-        port=sock.getsockname()[1],
-    ).validated()
-    app = module.create_app(settings, NoDrawing())
-    server = uvicorn.Server(uvicorn.Config(app, log_level="critical", lifespan="on", access_log=False))
-    task = asyncio.create_task(server.serve(sockets=[sock]))
-    try:
-        async with asyncio.timeout(5):
-            while not server.started:
-                if task.done():
-                    await task
-                    raise RuntimeError("Isolated MCP startup failed")
-                await asyncio.sleep(0.01)
-        yield Bridge(f"http://127.0.0.1:{settings.port}/mcp", SECRET), app.service
-    finally:
-        server.should_exit = True
-        try:
-            await asyncio.wait_for(task, 5)
-        finally:
-            sock.close()
 
 
 @pytest.fixture

@@ -1,6 +1,5 @@
 """MCP client. Only trusted plugin code constructs signed contexts."""
 
-from copy import deepcopy
 from datetime import timedelta
 from typing import Awaitable, Callable, Optional
 import base64
@@ -16,18 +15,20 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 
-class BridgeError(ValueError):
-    """Machine-readable failure, never permission to retry or refund a request.
+# 保留既有错误类型和私有名称的导入兼容；内部新代码使用公开契约名称。
+from ..domain.errors import BackendError as BridgeError
+from .contracts import (
+    valid_text as _text, valid_digest as _digest, reference_args as _reference_args,
+    reference_digest as _reference_digest,
+    validate_asset as _validate_asset, validate_job as _validate_job,
+)
+from .contracts import reference_params
 
-    Remote text is deliberately not copied into the user-facing message. Even
-    an explicit rejection describes this call, not the fate of an earlier call.
-    """
+_reference_params = reference_params  # 兼容旧导入；内部调用使用公开契约。
 
-    def __init__(
-        self, code: str, *, kind: str, message: str = "绘图服务拒绝请求或响应无法确认，请核对原任务。"
-    ):
-        self.code, self.kind = code, kind
-        super().__init__(f"{message} [{code}]")
+
+class _DispatchBlocked(BridgeError):
+    """本地门禁拒绝，工具尚未派发。"""
 
 
 def _response_error(result) -> BridgeError:
@@ -45,109 +46,6 @@ def _response_error(result) -> BridgeError:
     if not isinstance(code, str) or re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", code) is None:
         code = "REMOTE_ERROR_UNKNOWN"
     return BridgeError(code, kind="remote")
-
-
-def _text(value, limit=200):
-    return isinstance(value, str) and bool(value.strip()) and len(value) <= limit
-
-
-def _digest(value):
-    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
-
-
-def _reference_args(mode: str, prompt: str, source: Optional[dict], references: list) -> dict:
-    valid = (
-        type(mode) is str and mode in {"create", "edit"} and _text(prompt, 4000)
-        and type(references) is list and 1 <= len(references) <= 3
-    )
-    if valid and mode == "create":
-        valid = source is None
-    elif valid:
-        valid = (
-            type(source) is dict and source.keys() == {"job_id", "sha256"}
-            and _text(source["job_id"]) and _digest(source["sha256"])
-        )
-    if valid:
-        valid = all(
-            type(item) is dict and item.keys() == {"asset_id", "sha256", "role"}
-            and _text(item["asset_id"]) and _digest(item["sha256"])
-            and type(item["role"]) is str and item["role"] in {"character", "style", "composition", "palette"}
-            for item in references
-        )
-    if not valid:
-        raise BridgeError("INVALID_ARGUMENTS", kind="local")
-    return deepcopy(dict(mode=mode, prompt=prompt, source=source, references=references))
-
-
-def _reference_params(action: str, params: dict) -> Optional[dict]:
-    """Translate only the explicit frozen reference transport, never infer a fallback."""
-    if type(params) is not dict:
-        raise BridgeError("INVALID_ARGUMENTS", kind="local")
-    if not {"transport_operation", "reference_inputs", "reference_contract"}.intersection(params):
-        return None
-    expected = {"prompt", "reference_inputs", "transport_operation", "reference_contract"}
-    if action == "edit":
-        expected |= {"source_job_id", "source_sha256"}
-    if action not in {"submit", "edit"} or params.keys() != expected or params["transport_operation"] != "render":
-        raise BridgeError("INVALID_ARGUMENTS", kind="local")
-    if type(params["reference_contract"]) is not int or params["reference_contract"] != 1:
-        raise BridgeError("INVALID_ARGUMENTS", kind="local")
-    source = None if action == "submit" else {
-        "job_id": params["source_job_id"], "sha256": params["source_sha256"],
-    }
-    return _reference_args(
-        "create" if action == "submit" else "edit", params["prompt"], source, params["reference_inputs"],
-    )
-
-
-def _reference_digest(args: dict) -> str:
-    canonical = json.dumps({"operation": "render", **args}, ensure_ascii=True, sort_keys=True,
-                           separators=(",", ":"))
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
-def _validate_asset(asset: dict) -> None:
-    if not (
-        type(asset) is dict and asset.keys() == {"asset_id", "sha256", "mime", "size_bytes"}
-        and _text(asset["asset_id"]) and _digest(asset["sha256"])
-        and type(asset["mime"]) is str and asset["mime"] in {"image/png", "image/jpeg", "image/webp"}
-        and type(asset["size_bytes"]) is int and 0 < asset["size_bytes"] <= 8 * 1024 * 1024
-    ):
-        raise BridgeError("INVALID_RESPONSE", kind="protocol")
-
-
-def _validate_job(job):
-    valid = (
-        isinstance(job, dict)
-        and {"job_id", "status", "turn_status", "error_code", "artifacts"} <= job.keys()
-        and _text(job["job_id"])
-        and isinstance(job["status"], str)
-        and job["status"]
-        in {"queued", "starting", "running", "artifact_ready", "completed", "failed", "outcome_unknown"}
-        and (job["turn_status"] is None or _text(job["turn_status"]))
-        # Nullable legacy turns are supported; an explicit non-completed turn
-        # contradicts completed and must not release an unresolved local hold.
-        and (job["status"] != "completed" or job["turn_status"] in {None, "completed"})
-        and (job["error_code"] is None or _text(job["error_code"]))
-        and isinstance(job["artifacts"], list)
-        and len(job["artifacts"]) <= 1
-    )
-    if valid:
-        for artifact in job["artifacts"]:
-            valid = (
-                isinstance(artifact, dict)
-                and {"asset_id", "sha256", "size_bytes", "mime_type"} <= artifact.keys()
-                and _text(artifact["asset_id"])
-                and _digest(artifact["sha256"])
-                and type(artifact["size_bytes"]) is int
-                and artifact["size_bytes"] > 0
-                and isinstance(artifact["mime_type"], str)
-                and artifact["mime_type"] in {"image/png", "image/jpeg", "image/webp"}
-            )
-            if not valid:
-                break
-    if not valid:
-        raise BridgeError("INVALID_RESPONSE", kind="protocol")
 
 
 def sign(secret: str, scope: dict, operation: str, args: dict) -> str:
@@ -172,8 +70,12 @@ class Bridge:
             raise ValueError("请检查 MCP 地址，并填写与宿主机服务一致的共享密钥（至少 32 字符）。")
         self.url, self.secret = url, secret
 
-    async def call(self, operation: str, scope: dict, args: dict):
-        result = await self._checked_exchange(operation, scope, args)
+    async def call(
+        self, operation: str, scope: dict, args: dict, *,
+        before_dispatch: Optional[Callable[[], bool]] = None,
+    ):
+        """可选同步门禁在握手完成后、派发工具前执行；返回 False 表示拒绝派发。"""
+        result = await self._checked_exchange(operation, scope, args, before_dispatch=before_dispatch)
         if operation == "result":
             for block in result.content:
                 if block.type == "image":
@@ -192,9 +94,17 @@ class Bridge:
                     raise BridgeError("INVALID_RESPONSE", kind="protocol") from exc
         raise BridgeError("INVALID_RESPONSE", kind="protocol", message="服务没有返回有效状态")
 
-    async def _checked_exchange(self, operation: str, scope: dict, args: dict):
+    async def _checked_exchange(
+        self, operation: str, scope: dict, args: dict, *,
+        before_dispatch: Optional[Callable[[], bool]] = None,
+    ):
         try:
-            result = await self._exchange(operation, scope, args)
+            if before_dispatch is None:
+                result = await self._exchange(operation, scope, args)
+            else:
+                result = await self._exchange(operation, scope, args, before_dispatch=before_dispatch)
+        except _DispatchBlocked:
+            raise
         except Exception as exc:
             # Cancellation propagates. No transport retry: a submit might have
             # been accepted even when the response/session could not be read.
@@ -413,7 +323,10 @@ class Bridge:
             raise BridgeError("RECEIPT_MISMATCH", kind="binding")
         return result
 
-    async def _exchange(self, operation: str, scope: dict, args: dict):
+    async def _exchange(
+        self, operation: str, scope: dict, args: dict, *,
+        before_dispatch: Optional[Callable[[], bool]] = None,
+    ):
         # Fresh short-lived MCP sessions avoid holding task-group contexts across plugin callbacks.
         async with httpx.AsyncClient(
             headers={"Authorization": "Bearer " + self.secret},
@@ -428,8 +341,9 @@ class Bridge:
             ):
                 async with ClientSession(read, write, read_timeout_seconds=timedelta(seconds=30)) as session:
                     await session.initialize()
-                    result = await session.call_tool(
-                        "codex_image_" + operation,
-                        {"envelope": sign(self.secret, scope, operation, args)},
-                    )
+                    envelope = {"envelope": sign(self.secret, scope, operation, args)}
+                    # 与 call_tool 之间不让出事件循环；守卫只属于这次调用。
+                    if before_dispatch is not None and before_dispatch() is not True:
+                        raise _DispatchBlocked("DISPATCH_BLOCKED", kind="local")
+                    result = await session.call_tool("codex_image_" + operation, envelope)
         return result

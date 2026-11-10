@@ -1,6 +1,6 @@
 [project]
 name = "maibot-codex-image-plugin"
-version = "0.11.1"
+version = "0.13.0"
 description = "MaiBot client for an independently deployed Codex image MCP service"
 requires-python = ">=3.12"
 dependencies = ["httpx>=0.28,<1", "mcp>=1.28.1,<2", "pillow>=11.3,<13"]
@@ -17,6 +17,14 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# 公开源码契约用 record_property 保存指纹；xunit1 支持这些审计属性。
+junit_family = "xunit1"
+addopts = "--strict-markers"
+markers = [
+    "unit: isolated behavior and SQLite tests without an external source tree or local server",
+    "local_integration: loopback MCP transport or local Node integration",
+    "external_contract: explicit public Host, SDK, adapter or service source contract",
+]
 
 [tool.ruff]
 line-length = 110

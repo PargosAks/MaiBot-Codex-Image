@@ -9,6 +9,13 @@ VERSION = json.loads((ROOT / "_manifest.json").read_text(encoding="utf-8"))["ver
 PLUGIN_FILES = (
     "domain/__init__.py", "creation/__init__.py", "host/__init__.py", "inspiration/__init__.py", "mcp_client/__init__.py", "workspace/__init__.py",
     "plugin.py", "mcp_client/bridge.py", "domain/delivery.py", "domain/policy.py", "domain/store.py", "creation/artist.py", "creation/thinking.py", "creation/recovery.py", "creation/editing.py", "creation/rendering.py",
+    # 职责拆分后的模块必须随完整插件包发布，不能依赖开发目录中的残留源码。
+    "creation/contracts.py", "creation/receipts.py", "creation/reviewing.py", "creation/sharing.py",
+    "domain/async_work.py", "domain/errors.py", "domain/image_validation.py", "mcp_client/contracts.py",
+    "workspace/images.py",
+    "domain/schema.py", "domain/sqlite_uow.py", "domain/ledger_repository.py",
+    "domain/review_repository.py", "domain/wake_repository.py",
+    "host/runtime_generation.py", "host/delivery_runtime.py",
     "host/host_runtime.py", "host/host_adapters.py", "workspace/studio.py", "host/studio_chat.py", "webui.json", "assets/studio.html",
     "domain/profiles.py", "domain/assets.py", "creation/references.py", "host/host_media.py",
     "inspiration/group_notebook.py", "inspiration/group_ingress.py", "inspiration/group_collection.py", "docs/group-inspiration.md",
@@ -19,6 +26,8 @@ PLUGIN_FILES = (
     "docs/quickstart.md", "docs/advanced.md", "docs/troubleshooting.md",
     "docs/development.md", "docs/validation.md", "docs/studio.md", "docs/retained-plan-recovery.md",
     "docs/architecture.md", "docs/plugin-audit-20261105.md",
+    "docs/refactor-20261110.md",
+    "docs/local-validation-20261110.md",
     "docs/artist-design.md", "docs/artist-stage-0.md", "docs/implementation-stage-1.md",
     "docs/implementation-stage-2.md",
     "docs/implementation-stage-3.md",

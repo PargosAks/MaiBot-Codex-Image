@@ -5,25 +5,8 @@ from types import SimpleNamespace
 import pytest
 
 from image_plugin_under_test import CodexImagePlugin, Config
-from conftest import SECRET, SCOPE
-
-
-class BridgeSpy:
-    def __init__(self):
-        self.calls = []
-
-    async def call(self, operation, scope, args):
-        self.calls.append((operation, scope, args))
-        return {"status": "ready"}
-
-
-class Sender:
-    def __init__(self):
-        self.texts = []
-
-    async def text(self, text, stream):
-        self.texts.append((text, stream))
-        return True
+from support.settings import SECRET, SCOPE
+from support.command_spies import BridgeSpy, Sender
 
 
 @pytest.mark.parametrize("allowed_users", [[], ["qq:someone-else"]])

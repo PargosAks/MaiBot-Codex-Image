@@ -4,10 +4,11 @@ import hashlib
 import importlib.util
 import json
 import shutil
+import tomllib
 import zipfile
 
 from image_plugin_under_test import Config
-from conftest import PLUGIN
+from support.settings import PLUGIN
 
 spec = importlib.util.spec_from_file_location("plugin_bundle_under_test", PLUGIN / "scripts/build_bundle.py")
 bundle = importlib.util.module_from_spec(spec)
@@ -15,10 +16,14 @@ spec.loader.exec_module(bundle)
 
 
 def inspect_plugin_bundle(destination):
+    # 发行文件名和归档内容分别对照源码元数据，避免构建器自证版本正确。
+    source_manifest = json.loads((PLUGIN / "_manifest.json").read_text(encoding="utf-8"))
+    project_version = tomllib.loads((PLUGIN / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+    assert source_manifest["version"] == project_version
     outputs = bundle.build(destination)
     assert len(outputs) == 1
     output, digest = outputs[0]
-    assert output.name == "MaiBot-Codex-Image-plugin-v0.11.1.zip"
+    assert output.name == f"MaiBot-Codex-Image-plugin-v{project_version}.zip"
     assert hashlib.sha256(output.read_bytes()).hexdigest() == digest
     with zipfile.ZipFile(output) as archive:
         names = set(archive.namelist())
@@ -49,7 +54,7 @@ def inspect_plugin_bundle(destination):
             "setup.sh",
         }
         manifest = json.loads(archive.read("_manifest.json"))
-        assert manifest["version"] == "0.11.1"
+        assert manifest == source_manifest
         assert {x["name"] for x in manifest["dependencies"]} == {"httpx", "mcp", "pillow"}
     assert (destination / "SHA256SUMS").read_text(encoding="ascii") == f"{digest}  {output.name}\n"
     return output, names

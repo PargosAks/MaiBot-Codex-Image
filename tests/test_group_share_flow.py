@@ -12,12 +12,17 @@ import pytest
 from image_plugin_under_test.creation.artist import stable_id
 from image_plugin_under_test.domain.policy import Limits, StoreError
 from protocol_fixture import PNG
-from test_group_thought_adoption_flow import (
-    AdoptionModel, HOST_SCOPE, adoption_host as adoption_host, advance,
-    host_chain as host_chain, public_host as public_host, remember, sync,
-    thought_host as thought_host,
+from support.group_adoption import (
+    AdoptionModel,
+    HOST_SCOPE,
+    adoption_host as adoption_host,
+    advance,
+    remember,
+    sync,
 )
-from test_host_integration import OWNER, PLATFORM, STREAM
+from support.host_chain import host_chain as host_chain, public_host as public_host
+from support.group_thought_host import thought_host as thought_host
+from support.host_chain import OWNER, PLATFORM, STREAM
 
 
 GROUP = "synthetic-group"
@@ -32,7 +37,7 @@ class ShareModel(AdoptionModel):
     def plan(self, context):
         result = super().plan(context)
         if self.create_without_note and not context["works"]:
-            from test_artist_flow import BRIEF
+            from support.artist_fakes import BRIEF
             result["decision"] = {
                 "action": "create", "brief": dict(BRIEF), "inspiration_keys": [],
                 "reason": "自主练习，不采用群念头",

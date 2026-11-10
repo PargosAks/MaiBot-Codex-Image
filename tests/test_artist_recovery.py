@@ -9,7 +9,8 @@ from image_plugin_under_test.creation.artist import Artist
 from image_plugin_under_test.domain.policy import Delegation, StoreError
 from image_plugin_under_test.domain.store import ArtistStore
 from image_plugin_under_test.creation.thinking import Thinking
-from test_artist_flow import SCOPE, step, studio  # noqa: F401
+from support.artist_fakes import SCOPE
+from support.artist_flow import step, studio as studio
 
 
 def test_external_rendering_is_explicit_and_does_not_enable_live_sending(studio):  # noqa: F811

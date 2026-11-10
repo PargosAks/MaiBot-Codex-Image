@@ -1,6 +1,5 @@
 """Current-event ingestion with synthetic images; no vision, draw or send calls."""
 
-from io import BytesIO
 from threading import Event
 from types import SimpleNamespace
 import asyncio
@@ -10,23 +9,15 @@ import json
 import struct
 import zlib
 
-from PIL import Image
 import pytest
 
 from image_plugin_under_test.host import host_media
 from image_plugin_under_test.host.host_runtime import ArtistSpace, HostRuntime
 from image_plugin_under_test.domain.policy import Delegation, Scope, StoreError
 from image_plugin_under_test.domain.store import ArtistStore
+from support.media_samples import image_bytes
 
 SCOPE = Scope("test", "media-stream", "media-owner")
-
-
-def image_bytes(fmt="PNG", *, animated=False):
-    output = BytesIO()
-    first = Image.new("RGB", (8, 6), "red")
-    options = {"save_all": True, "append_images": [Image.new("RGB", (8, 6), "blue")]} if animated else {}
-    first.save(output, format=fmt, **options)
-    return output.getvalue()
 
 
 def component(data=None, **kwargs):

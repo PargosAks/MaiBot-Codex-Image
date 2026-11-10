@@ -1,6 +1,6 @@
 """Suggestion receipts through the fixed public Host fixtures and real SQLite.
 
-Uses test_artist_studio_e2e's explicit CODEX_IMAGE_TEST_HOST_REPO contract.
+Shares the explicit CODEX_IMAGE_TEST_HOST_REPO contract with the Studio acceptance suite.
 Images, model boundaries and platform effects are synthetic; no live Host,
 subscription, image recognition or production service is used.
 
@@ -19,20 +19,22 @@ import json
 import pytest
 
 from image_plugin_under_test.host.host_media import UNREVIEWED_DESCRIPTION
-from test_artist_studio_e2e import (
+from support.studio_acceptance import (
     SCOPE,
     SPACE,
-    build_planner_request,
-    planner_host as planner_host,
-    public_host as public_host,
-    replyer_host as replyer_host,
     source_snapshot as source_snapshot,
     state_snapshot,
     studio_chain as studio_chain,
 )
-from test_profiles_flow import PROFILES
-from test_host_media import image_bytes
-import test_host_integration as host_fixture
+from support.studio_acceptance_host import (
+    build_planner_request,
+    planner_host as planner_host,
+    public_host as public_host,
+    replyer_host as replyer_host,
+)
+from support.catalog_examples import PROFILES
+from support.media_samples import image_bytes
+from support import host_chain as host_fixture
 
 
 SUGGESTION = "你要不要试试按照之前的角色设定画一张湖边散步的图，色彩柔和一些？"

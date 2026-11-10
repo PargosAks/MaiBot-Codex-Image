@@ -14,8 +14,8 @@ from image_plugin_under_test.mcp_client.bridge import BridgeError
 from image_plugin_under_test.creation.editing import ImageEdits
 from image_plugin_under_test.domain.policy import Delegation, Limits, Scope
 from image_plugin_under_test.domain.store import ArtistStore
-from conftest import SCOPE
-from test_mcp_recovery_integration import SOURCE, actual_mcp  # noqa: F401
+from support.settings import SCOPE
+from support.external_mcp import SOURCE, actual_mcp as actual_mcp
 
 pytestmark = pytest.mark.skipif(not SOURCE, reason="Independent MCP source is explicitly opt-in")
 
@@ -30,6 +30,10 @@ async def test_original_bytes_to_native_input_and_immutable_child(
     native = importlib.import_module("codex_image_mcp.codex")
     rpc_type = native.Rpc
     fake = Path(SOURCE).parent / "tests" / "fake_codex.py"
+    # 原生 IPC 契约还需要服务仓库的模拟 CLI；只有 src 的快照应立即报缺失，
+    # 避免子进程启动失败后被误判为编辑流程超时。
+    if not fake.is_file():
+        pytest.fail("Explicit CODEX_IMAGE_TEST_SERVICE_SOURCE requires adjacent tests/fake_codex.py")
 
     def rpc(argv, env, timeout):
         role = "worker" if 'cli_auth_credentials_store="ephemeral"' in argv else "broker"

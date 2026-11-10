@@ -33,7 +33,6 @@ Bundle integration must include workspace/studio.py, webui.json and assets/studi
 
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from io import BytesIO
 from pathlib import Path
 from typing import Callable, Iterator, Mapping, Optional
 import base64
@@ -41,11 +40,10 @@ import hashlib
 import json
 import sqlite3
 import time
-import warnings
 
-from PIL import Image, UnidentifiedImageError
 
 from ..domain.policy import Scope, StoreError, budget_day
+from .images import display_image
 
 
 MAX_PAGE = 50
@@ -195,8 +193,8 @@ class Studio:
             deadline = time.monotonic() + 2
             db.set_progress_handler(lambda: 1 if time.monotonic() > deadline else 0, 1000)
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version not in range(1, 10):
-                raise StoreError("SCHEMA_UNSUPPORTED", "Read-only Studio supports ledger schemas 1..9")
+            if version not in range(1, 11):
+                raise StoreError("SCHEMA_UNSUPPORTED", "Read-only Studio supports ledger schemas 1..10")
             db.execute("BEGIN")
             yield db
         except sqlite3.Error as exc:
@@ -208,6 +206,17 @@ class Studio:
     @staticmethod
     def _tables(db):
         return {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+
+    def single_work_for_stream(self, platform: str, stream_id: str) -> bool:
+        """Internal command guard; no authority or counters are exposed to chat."""
+        with self._open() as db:
+            if db is None or "single_work_policies" not in self._tables(db):
+                return False
+            for row in db.execute("SELECT s.scope FROM single_work_policies p JOIN spaces s USING(space_id) WHERE p.enabled=1"):
+                scope = json.loads(row[0])
+                if scope["platform"] == platform and scope["stream_id"] == stream_id:
+                    return True
+            return False
 
     def _space(self, db, space_id):
         scope = self._scope(space_id)
@@ -299,6 +308,16 @@ class Studio:
                 reasons.append("STATE_NOT_CREATED")
             else:
                 result["state_exists"] = True
+                if "single_work_policies" in self._tables(db):
+                    single = db.execute("SELECT work_id FROM single_work_policies WHERE space_id=? AND enabled=1",
+                                        (space_id,)).fetchone()
+                    if single is not None:
+                        counts = dict(db.execute("SELECT action,count(*) FROM operations WHERE space_id=? GROUP BY action",
+                                                 (space_id,)))
+                        result["single_work"] = {"enabled": True, "work_id": single[0],
+                                                 "create_used": bool(counts.get("submit", 0)),
+                                                 "edit_used": bool(counts.get("edit", 0)),
+                                                 "share_used": bool(counts.get("share", 0))}
                 result["authorization"].update(authorized=bool(space["authorized"]), version=space["auth_version"])
                 if not space["authorized"]:
                     reasons.append("AUTHORIZATION_REVOKED")
@@ -742,24 +761,8 @@ class Studio:
             data = row["data"]
             if not isinstance(data, bytes) or hashlib.sha256(data).hexdigest() != row["sha256"]:
                 raise StoreError("IMAGE_INVALID", "Stored image digest is invalid")
-            try:
-                with warnings.catch_warnings():
-                    warnings.simplefilter("error", Image.DecompressionBombWarning)
-                    with Image.open(BytesIO(data)) as original:
-                        actual_mime = Image.MIME.get(original.format)
-                        if actual_mime not in {"image/png", "image/jpeg", "image/webp"} or actual_mime != row["mime"]:
-                            raise StoreError("IMAGE_INVALID", "Stored image type is invalid")
-                        if original.width * original.height > MAX_IMAGE_PIXELS:
-                            raise StoreError("IMAGE_INVALID", "Stored image dimensions exceed display limit")
-                        original.load()
-                        width, height = original.size
-                        if thumbnail:
-                            original.thumbnail((320, 320))
-                            output = BytesIO()
-                            original.convert("RGB").save(output, format="JPEG", quality=80)
-                            data, actual_mime = output.getvalue(), "image/jpeg"
-            except (UnidentifiedImageError, OSError, Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
-                raise StoreError("IMAGE_INVALID", "Stored image cannot be decoded") from exc
+            # 每次仍从当前授权的数据库读取并核验摘要；仅复用昂贵的完整解码。
+            data, actual_mime, width, height = display_image(data, row["mime"], MAX_IMAGE_PIXELS, thumbnail)
             result = {"version_id": version_id, "thumbnail": thumbnail, "width": width, "height": height,
                       "sha256": row["sha256"], "mime": actual_mime}
             if thumbnail:

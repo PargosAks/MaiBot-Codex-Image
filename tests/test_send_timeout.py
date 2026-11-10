@@ -13,30 +13,15 @@ from image_plugin_under_test import Config
 from image_plugin_under_test.domain.delivery import Deliveries
 from image_plugin_under_test.host.host_adapters import HostSender, send_image_receipt
 from image_plugin_under_test.domain.policy import StoreError
-from test_artist_flow import SCOPE, finished, step, studio as studio_fixture
-from test_host_adapters import ctx as sdk_context_fixture
-from test_host_runtime import runner_bridge
-
-studio = studio_fixture
-ctx = sdk_context_fixture
-
-
-class UploadRPC:
-    def __init__(self):
-        self.calls = []
-        self.entered = asyncio.Event()
-        self.reply = asyncio.get_running_loop().create_future()
-
-    async def send_request(self, **kwargs):
-        self.calls.append(kwargs)
-        self.entered.set()
-        # The independent QQ upload is not cancelled when the caller stops waiting.
-        return await asyncio.wait_for(asyncio.shield(self.reply), kwargs['timeout_ms'] / 100000)
-
-    def complete(self):
-        self.reply.set_result(SimpleNamespace(error=None, payload={'result': {'sent': True}}))
+from support.artist_fakes import SCOPE
+from support.artist_flow import finished, step, studio as studio
+from support.sdk_context import ctx as ctx
+from support.host_rpc import runner_bridge
+from support.host_rpc import UploadRPC
 
 
+
+@pytest.mark.external_contract
 async def test_original_default_30s_expires_before_157s_upload(ctx):
     rpc = UploadRPC()
     ctx.sdk._rpc_call = runner_bridge(rpc)
@@ -52,6 +37,7 @@ async def test_original_default_30s_expires_before_157s_upload(ctx):
 
 
 @pytest.mark.parametrize('mode', ['slow-success', 'timeout', 'outer-timeout', 'cancel'])
+@pytest.mark.external_contract
 async def test_slow_host_share_and_late_receipt_preserve_ledgers(studio, ctx, tmp_path, mode):
     runtime, store, clock, model, renderer, _ = studio
     await finished(studio)
@@ -133,9 +119,9 @@ def test_config_rejects_invalid_send_timeout(value):
 
 @pytest.mark.parametrize('mode', ['command', 'watch'])
 async def test_manual_and_watch_entry_keep_slow_send_alive(tmp_path, mode):
-    from conftest import SCOPE as command_scope
+    from support.settings import SCOPE as command_scope
     from protocol_fixture import PNG
-    from test_mcp_plugin import plugin_instance
+    from support.command_plugin import plugin_instance
     from maibot_sdk.components import collect_components
 
     plugin, sender = await plugin_instance(tmp_path, 'http://127.0.0.1:9/mcp')

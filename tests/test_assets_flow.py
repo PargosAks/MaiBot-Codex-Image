@@ -4,7 +4,8 @@ from copy import deepcopy
 
 from image_plugin_under_test.domain.policy import Limits
 from image_plugin_under_test.creation.thinking import Thinking
-from test_artist_flow import BRIEF, SCOPE, finished, step, studio  # noqa: F401
+from support.artist_fakes import BRIEF, SCOPE
+from support.artist_flow import finished, step, studio as studio
 
 
 async def archive(studio):  # noqa: F811

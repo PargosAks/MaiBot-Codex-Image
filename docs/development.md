@@ -4,6 +4,24 @@
 
 根 `plugin.py` 保持 Host 入口；内部模块迁至 `domain/`、`creation/`、`host/`、`inspiration/`、`mcp_client/`、`workspace/`，页面为 `assets/studio.html`。职责与旧文件映射见[架构说明](architecture.md)。下方阶段沿革中的旧根文件名表示原实现阶段；新代码与测试使用对应子包路径。测试不导入 MaiBot 本体作为运行依赖。
 
+## 测试入口与分层
+
+从仓库根执行 `uv sync --locked`，随后使用同一个入口：
+
+```sh
+uv run --locked python scripts/check.py
+uv run --locked python scripts/check.py --suite unit
+uv run --locked python scripts/check.py --suite local
+uv run --locked python scripts/check.py --suite external
+uv run --locked python scripts/check.py --no-lint --suite unit tests/test_store_components.py
+```
+
+默认包含静态错误检查和全部 pytest 用例；`--no-lint` 用于已做静态检查后的定向回归。pytest 原入口和 `-k`、`--junitxml` 等选项保留。`unit` 包含真实临时 SQLite 与内存效果替身；`local` 使用回环 MCP 服务或 Node；`external` 验证显式提供的公开 Host、SDK、适配器或独立服务源码。它们都不使用生产状态或真实绘图。
+
+外部源码未提供时明确跳过。严格验证某个已准备好的外部契约，可加 `--require-external` 并指定对应文件；任何外部用例跳过都会使结果失败，避免把未执行当通过。选全部 external 前需准备下表的全部依赖。
+
+共享 fixture、模拟器、数据与公开 Host 装载器集中于 `tests/support/`；用例仍按功能放在原模块，不把所有测试合成一个大文件。历史 v7 迁移使用冻结 DDL，固定 Host 文件通过 Git 对象或指纹核验。新增测试复用 support，并声明依赖所属套件。
+
 ## 0.10.0 小画师工作区
 
 工作区与聊天摘要仅查询已有账本；档案写入由 Artist 处理。分别运行 `tests/test_studio*.py`、`tests/test_autonomous_catalog*.py`，再用 `tests/test_artist_studio_e2e.py` 验证从建档到原图、细化、评审、分享以及只读查询的联动。用临时数据和模拟外部效果，勿指向运行实例的数据目录。
@@ -21,9 +39,11 @@
 
 这些检查只加载指定的公开代码。它们不需要访问 VPS 或使用真实聊天、登录态与订阅。
 
+原生编辑 IPC 契约还需要独立服务仓库中与 `src/` 相邻的 `tests/fake_codex.py`，不能只提供生产源码快照。缺失该模拟 CLI 时立即报告依赖缺失。SnowLuma 超时契约同时需要上述 Host 与 SDK 公开来源；严格检查应完整设置依赖，不能把部分跳过视为通过。
+
 ## 范围
 
-本仓库维护小画师插件，基础命令兼容独立 MCP **0.5.0**。`plugin.py` 处理命令、Host 可信身份、配置回调及发送，`bridge.py` 处理 MCP 客户端与签名，`delivery.py` 在 Host 数据目录保存发送记录。后续能力按 [迭代计划](artist-iteration-plan.md) 分阶段扩展，不修改 MaiBot 本体。
+本仓库维护小画师插件，基础命令兼容独立 MCP **0.5.0**。`plugin.py` 处理 Host 入口，`host/` 负责运行代与发送，`mcp_client/bridge.py` 处理 MCP 客户端与签名，`domain/delivery.py` 在 Host 数据目录保存发送记录。后续能力按 [迭代计划](artist-iteration-plan.md) 分阶段扩展，不修改 MaiBot 本体。
 
 小画师阶段 0/1 新增 `store.py` / `policy.py` 离线底座；阶段 6 由受控 Host runtime 加载，不导入旧发送库或迁移服务数据。架构见 [设计](artist-design.md)，实际 API、隔离测试与未接入边界见 [阶段 1](implementation-stage-1.md)，环境版本见 [阶段 0](artist-stage-0.md)。后续异步运行接入 SQLite 时必须通过工作线程调用，不能阻塞 MaiBot 事件循环。
 
@@ -43,8 +63,7 @@
 
 ```sh
 uv sync --locked
-uv run --locked pytest -q
-uv run --locked ruff check --select E4,E7,E9,F plugin.py domain creation host inspiration mcp_client workspace scripts tests
+uv run --locked python scripts/check.py
 ```
 
 根 `pyproject.toml` / `uv.lock` 管理插件开发依赖。这些是开发命令，不是用户安装 MCP 的步骤，不应修改 MaiBot 已安装环境。定向检查可在 pytest 后指定相关文件；不再使用 `--project service` 或 `service/tests`。
@@ -72,7 +91,7 @@ uv run --locked python scripts/build_bundle.py
 
 ## 文档与验证交接
 
-同步核对 manifest、配置示例、插件配置版本、README 和本轮构建行为。实际检查范围和结果记入 [validation.md](validation.md)；上述 Ruff 命令只检查所选错误规则，不代表全部风格规则通过。
+同步核对 manifest、配置示例、插件配置版本、README 和本轮构建行为。实际检查范围和结果记入 [validation.md](validation.md)；统一入口中的 Ruff 只检查 `E4,E7,E9,F` 错误规则，不代表全部风格规则通过。
 
 群灵感与独立分享权限的[编号验收记录](group-inspiration-validation.md)配有[脱敏JSON摘要](validation/group-inspiration-20261104.json)。摘要保留测试计数、跳过原因及已测源码指纹；私有日志、配置、数据库、图片和原始JUnit留在维护环境，不随提交上传。文档整理后的包与历史部署包分别注明文件数和适用范围，不以新包摘要替换旧部署证据。
 

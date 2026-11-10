@@ -3,53 +3,16 @@
 Host stream lookup and post-filter receipts are synthetic. Everything persisted is under tmp_path.
 There is no fake render success: spending/artist effects are forbidden in this scenario.
 """
-import asyncio
 from dataclasses import replace
-from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
 
-from image_plugin_under_test import CodexImagePlugin
 from image_plugin_under_test.inspiration.group_collection import GroupCollection
 from image_plugin_under_test.inspiration.group_ingress import GroupBinding, GroupIngressCandidate, HostGroupReceipt
 from image_plugin_under_test.inspiration.group_notebook import DATABASE_NAME
-from image_plugin_under_test.host.host_runtime import HostRuntime
 from image_plugin_under_test.domain.policy import Scope
-
-
-@pytest.fixture
-async def groups(tmp_path, monkeypatch):
-    calls = []
-    async def host(method, *, payload, timeout_ms):
-        assert method == "cap.call"
-        assert payload["capability"] == "chat.get_stream_by_group_id"
-        target = payload["args"]["group_id"]
-        calls.append(target)
-        return {"success": True, "stream": {"platform": "qq", "group_id": target,
-                "stream_id": "stream-" + target, "is_group_session": True}}
-
-    async def parked(self, space_id):
-        await asyncio.Event().wait()
-
-    monkeypatch.setattr(HostRuntime, "_serve", parked)
-    plugin = CodexImagePlugin()
-    plugin._set_context(SimpleNamespace(paths=SimpleNamespace(data_dir=tmp_path), call_host_method=host))
-    spaces = [dict(space_id=g, platform="qq", group_id=g, stream_id="stream-" + g,
-                   user_id="owner", consent_ref="test-grant", continuous=True) for g in ("a", "b", "c")]
-    for item in spaces[:2]:
-        item["group_inspiration"] = True
-    plugin.set_plugin_config({"plugin": plugin.get_default_config()["plugin"],
-                              "connection": {"secret": "synthetic-local-only-key-" + "x" * 32,
-                                             "allowed_users": ["qq:owner"]},
-                              "autonomy": {"enabled": True, "spaces": spaces}})
-    await plugin.on_load()
-    try:
-        assert not plugin.startup_error
-        assert calls == ["a", "b", "c"]
-        yield plugin
-    finally:
-        await plugin.on_unload()
+from support.group_runtime import groups as groups
 
 
 class Simulation:

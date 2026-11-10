@@ -7,7 +7,8 @@ import sqlite3
 import pytest
 
 from image_plugin_under_test.domain.policy import Delegation, Limits, Scope, StoreError
-from image_plugin_under_test.domain.store import ArtistStore
+from image_plugin_under_test.domain.store import ArtistStore, SCHEMA_VERSION
+from support.historical_ledger import make_schema_7
 
 
 SCOPE = Scope("qq", "group-stream", "delegator")
@@ -284,29 +285,20 @@ def test_combined_inspirations_are_globally_sorted_for_artist_tail(ledger):
     assert {idea["origin"] for idea in ideas[-50:]} == {"chat", "idle", "group_thought"}
 
 
-def test_migration_7_to_8_preserves_every_existing_table_and_quota(ledger):
-    store, _ = ledger
-    store.remember_inspiration("s", SCOPE, key="normal", summary="retained", source_refs=[], origin="idle")
-    store.create_work("s", SCOPE, "old-work")
-    store.reserve("s", SCOPE, request_id="old-unknown", action="submit", work_id="old-work", params={})
-    store.mark_submitting("s", SCOPE, "old-unknown")
-    store.mark_unknown("s", SCOPE, "old-unknown", reason="receipt uncertain")
-    store.db.execute("DROP TABLE share_policy_claims")
-    store.db.execute("DROP TABLE group_share_policy")
-    store.db.execute("DROP TABLE group_thought_links")
-    store.db.execute("DROP TABLE group_thought_policy")
-    store.db.execute("PRAGMA user_version=7")
-    tables = [row[0] for row in store.db.execute("SELECT name FROM sqlite_master WHERE type='table'")]
-    before = {table: rows(store, table) for table in tables}
-    usage = store.budget_usage("s", SCOPE)
-    path = store.path
-    store.close()
-    # Compare migration effects on the same budget day, not today's wall clock.
-    migrated = ArtistStore(path, clock=store.clock)
+def test_schema_7_upgrades_to_current_preserving_every_existing_table_and_quota(tmp_path):
+    path = tmp_path / "artist-v7.sqlite3"
+    before = make_schema_7(path, SCOPE)
+    # 固定在历史记录的额度日，确保迁移保留已消耗和未知提交持有的额度。
+    migrated = ArtistStore(path, clock=lambda: datetime(2026, 11, 4, tzinfo=timezone.utc))
     try:
-        assert migrated.db.execute("PRAGMA user_version").fetchone()[0] == 9
-        assert {table: rows(migrated, table) for table in tables} == before
-        assert migrated.budget_usage("s", SCOPE) == usage
+        assert migrated.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert {table: rows(migrated, table) for table in before} == before
+        assert migrated.budget_usage("s", SCOPE) == {
+            "day": "2026-11-04",
+            "think": {"held": 0, "consumed": 1, "total": 1},
+            "render": {"held": 1, "consumed": 0, "total": 1},
+            "share": {"held": 0, "consumed": 0, "total": 0},
+        }
         assert migrated.get_operation("s", SCOPE, "old-unknown")["state"] == "unknown"
         assert sync(migrated)
     finally:

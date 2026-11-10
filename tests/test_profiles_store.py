@@ -19,16 +19,11 @@ from image_plugin_under_test.domain.profiles import (
     validate_series,
 )
 from image_plugin_under_test.domain.store import SCHEMA_VERSION, ArtistStore
+from support.profile_examples import PROFILE
 
 
 SCOPE = Scope("test", "creative-stream", "creative-owner")
 OTHER = Scope("test", "other-stream", "other-owner")
-PROFILE = {
-    "profile_id": "watercolor", "revision": 1,
-    "data": {"title": "水彩小品", "palette": "暖白与青蓝", "technique": "透明水彩",
-             "stable": {"人物": "短发", "画风": "柔和"},
-             "variable": {"光线": "清晨", "构图": "近景"}, "source": "用户明确设置"},
-}
 SERIES = {"series_id": "windows", "title": "窗边", "goal": "研究一天中的光线变化",
           "profile_id": "watercolor", "profile_revision": 1}
 CHOICE = {"profile_id": "watercolor", "profile_revision": 1, "series_id": "windows",

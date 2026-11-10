@@ -12,7 +12,8 @@ from image_plugin_under_test.mcp_client.bridge import BridgeError
 from image_plugin_under_test.domain.policy import StoreError
 from image_plugin_under_test.creation.references import ReferenceInputs
 from image_plugin_under_test.creation.thinking import Thinking
-from test_artist_flow import SCOPE, step, studio  # noqa: F401
+from support.artist_fakes import SCOPE
+from support.artist_flow import step, studio as studio
 
 
 def png():

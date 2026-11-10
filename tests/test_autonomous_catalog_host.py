@@ -7,9 +7,9 @@ import pytest
 
 from image_plugin_under_test.domain.policy import Scope
 from image_plugin_under_test.creation.thinking import Thinking
-from test_autonomous_catalog import NEW
-from test_host_integration import OWNER, PLATFORM, STREAM, host_chain, public_host  # noqa: F401
-from test_profiles_flow import PROFILES, SERIES
+from support.catalog_examples import NEW
+from support.host_chain import OWNER, PLATFORM, STREAM, host_chain as host_chain, public_host as public_host
+from support.catalog_examples import PROFILES, SERIES
 
 
 pytestmark = pytest.mark.skipif(

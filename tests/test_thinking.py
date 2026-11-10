@@ -8,22 +8,11 @@ import pytest
 
 from image_plugin_under_test.domain.policy import StoreError
 from image_plugin_under_test.creation.thinking import Thinking
+from support.thinking_examples import BRIEF, CONTEXT, ACCEPT
 
 
-BRIEF = {"intent": "练习光影", "subject": "窗边的花", "mood": "宁静", "prompt": "画窗边的花", "completion_criteria": "主体清晰"}
-CONTEXT = {
-    "events": [{"event_id": "chat1", "kind": "chat", "text": "喜欢花", "source_ref": "message1"},
-               {"event_id": "idle1", "kind": "idle", "text": "", "source_ref": None}],
-    "inspirations": [{"key": "flower", "summary": "花", "origin": "chat", "source_refs": ["chat1"]}],
-    "works": [{"work_id": "work1", "status": "planned", "brief": BRIEF, "reason": "练习", "best_version": None}],
-    "versions": [{"version_id": "v1", "parent_id": None, "sha256": "a" * 64, "mime": "image/png"}],
-    "persona": "安静的小画师",
-}
 CREATE = {"ideas": [{"summary": "花与光", "source_ids": ["chat1"]}],
               "decision": {"action": "create", "reason": "想练习", "brief": BRIEF, "inspiration_keys": ["flower"]}}
-ACCEPT = {"decision": "accept", "reason": "达到目标", "strengths": ["主体明确"], "issues": [], "best_version_id": "v1"}
-
-
 async def test_plan_and_idle_ideas():
     generate = AsyncMock(return_value=deepcopy(CREATE))
     assert await Thinking(generate).plan(dict(CONTEXT, works=[])) == CREATE

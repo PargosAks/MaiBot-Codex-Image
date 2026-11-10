@@ -9,8 +9,10 @@ import asyncio
 import hashlib
 import json
 
-from .artist import render_digest, stable_id
-from ..mcp_client.bridge import Bridge, BridgeError, _validate_job
+from .contracts import render_digest, stable_id
+from ..mcp_client.bridge import Bridge, BridgeError
+from ..mcp_client.contracts import validate_job
+from ..domain.async_work import join_worker
 from ..domain.policy import Scope, StoreError, nonempty
 from .recovery import ReadOnlyRecovery
 from ..domain.store import ArtistStore
@@ -24,7 +26,7 @@ def _receipt(operation, result):
         or result.get("request_digest") != render_digest("edit", operation["params"])
     ):
         raise StoreError("REQUEST_CONFLICT", "Receipt does not match the frozen edit")
-    _validate_job(result.get("job"))
+    validate_job(result.get("job"))
     job = result["job"]
     if operation["job_id"] not in {None, job["job_id"]}:
         raise StoreError("REQUEST_CONFLICT", "Receipt changed the bound job")
@@ -94,7 +96,7 @@ class ImageEdits:
         nonempty(prompt, "prompt")
         if len(prompt) > 4000:
             raise StoreError("INVALID_ARGUMENT", "Edit prompt exceeds 4000 characters")
-        operation = await self.recovery._db(
+        operation = await join_worker(
             self._reserve, space_id, scope, work_id, source_version_id, request_id, prompt
         )
         if operation["state"] != "reserved":
@@ -102,14 +104,14 @@ class ImageEdits:
         # Only the connection that changes reserved -> submitting may dispatch.
         # Cancellation waits for the DB worker, then retains any attempted hold.
         try:
-            operation = await self.recovery._db(self.store.mark_submitting, space_id, scope, request_id)
+            operation = await join_worker(self.store.mark_submitting, space_id, scope, request_id)
         except asyncio.CancelledError:
-            await self.recovery._db(self.recovery._unknown, space_id, scope, request_id, "EDIT_CANCELLED")
+            await join_worker(self.recovery._unknown, space_id, scope, request_id, "EDIT_CANCELLED")
             raise
         try:
 
             async def before_dispatch():
-                await self.recovery._db(self.store.validate_submitting, space_id, scope, request_id)
+                await join_worker(self.store.validate_submitting, space_id, scope, request_id)
 
             result = await self.bridge.edit(
                 json.loads(operation["scope_snapshot"]),
@@ -118,13 +120,13 @@ class ImageEdits:
                 before_dispatch=before_dispatch,
             )
             job = _receipt(operation, result)
-            return await self.recovery._db(self.recovery._apply, space_id, scope, request_id, job)
+            return await join_worker(self.recovery._apply, space_id, scope, request_id, job)
         except asyncio.CancelledError:
-            await self.recovery._db(self.recovery._unknown, space_id, scope, request_id, "EDIT_CANCELLED")
+            await join_worker(self.recovery._unknown, space_id, scope, request_id, "EDIT_CANCELLED")
             raise
         except Exception as exc:
             code = exc.code if isinstance(exc, (BridgeError, StoreError)) else "EDIT_ERROR"
-            await self.recovery._db(self.recovery._unknown, space_id, scope, request_id, code)
+            await join_worker(self.recovery._unknown, space_id, scope, request_id, code)
             raise
 
     def _collection(self, space_id, scope, request_id, source_version_id):
@@ -185,7 +187,7 @@ class ImageEdits:
         A stored version is never fetched again; its unresolved turn is still
         reconciled so image availability cannot strand or clear an unknown hold.
         """
-        operation, saved = await self.recovery._db(
+        operation, saved = await join_worker(
             self._collection, space_id, scope, request_id, source_version_id
         )
         if saved is not None:
@@ -218,13 +220,13 @@ class ImageEdits:
                 expected_mime=artifact["mime_type"],
                 expected_size=artifact["size_bytes"],
             )
-            return await self.recovery._db(
+            return await join_worker(
                 self._save, space_id, scope, operation, source_version_id, artifact, image
             )
         except asyncio.CancelledError:
-            await self.recovery._db(self.recovery._unknown, space_id, scope, request_id, "COLLECT_CANCELLED")
+            await join_worker(self.recovery._unknown, space_id, scope, request_id, "COLLECT_CANCELLED")
             raise
         except Exception as exc:
             code = exc.code if isinstance(exc, (BridgeError, StoreError)) else "COLLECT_ERROR"
-            await self.recovery._db(self.recovery._unknown, space_id, scope, request_id, code)
+            await join_worker(self.recovery._unknown, space_id, scope, request_id, code)
             raise

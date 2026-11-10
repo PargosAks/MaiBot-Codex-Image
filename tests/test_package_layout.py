@@ -30,6 +30,7 @@ import pkgutil
 import sqlite3
 import subprocess
 import sys
+import tomllib
 import zipfile
 
 import pytest
@@ -106,6 +107,10 @@ def test_release_real_host_registration_and_fresh_reload(release, host_site_pack
         manifest["id"] = "9-layout.other-plugin"
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     report = run_isolated(release, host_site_packages)
+    # 子进程报告的是实际安装包版本，由仓库的独立项目元数据校对。
+    source_manifest = json.loads((PLUGIN / "_manifest.json").read_text(encoding="utf-8"))
+    project_version = tomllib.loads((PLUGIN / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+    assert report["plugin_version"] == source_manifest["version"] == project_version
     assert report["cycles"] == 2
     assert report["webui_entry"] == "assets/studio.html"
     assert report["purged_module_count"] > len(PACKAGES)
@@ -241,6 +246,9 @@ async def _check_release(root, host_root, mode, forbidden):
     runtime_dir.mkdir()
     previous_modules = None
     previous_class = previous_config_class = previous_scope_class = None
+    # 配置版本独立于发行版本；对照安装包自带的配置示例。
+    example = tomllib.loads((root / "config.example.toml").read_text(encoding="utf-8"))
+    config_version = example["plugin"]["config_version"]
     baseline_tasks = asyncio.all_tasks()
     for cycle in range(2):
         [meta] = loader.discover_and_load([str(root.parent)])
@@ -260,7 +268,7 @@ async def _check_release(root, host_root, mode, forbidden):
 
         defaults = plugin.get_default_config()
         assert set(defaults) == {"plugin", "connection", "autonomy"}
-        assert defaults["plugin"]["config_version"] == "0.11.0"
+        assert defaults["plugin"]["config_version"] == config_version
         assert defaults["autonomy"]["enabled"] is False
         assert defaults["autonomy"]["spaces"] == []
         assert defaults["connection"]["allowed_users"] == []
@@ -272,7 +280,7 @@ async def _check_release(root, host_root, mode, forbidden):
         assert payload.plugin_version == manifest["version"]
         assert payload.default_config == defaults
         assert set(payload.config_schema["sections"]) == {"plugin", "connection", "autonomy"}
-        assert payload.config_schema["sections"]["plugin"]["fields"]["config_version"]["default"] == "0.11.0"
+        assert payload.config_schema["sections"]["plugin"]["fields"]["config_version"]["default"] == config_version
         autonomy = payload.config_schema["sections"]["autonomy"]["fields"]
         assert autonomy["enabled"]["default"] is False
         assert autonomy["persona"]["hidden"] is True

@@ -4,12 +4,11 @@ All authority/configuration methods are for a trusted adapter, not model tools.
 Use asyncio.to_thread when integrating this synchronous module with a Host loop.
 """
 
-from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import RLock
-from typing import Any, Callable, Dict, Iterator, Optional
+from typing import Any, Callable, Dict, Optional
 import hashlib
 import json
 import os
@@ -25,6 +24,8 @@ from .assets import (
     validate_archive,
     validate_references,
 )
+from .ledger_repository import ACTIVE_WORK as _ACTIVE_WORK
+from .ledger_repository import LedgerQueries, decode_fields, expected_authorization, require_authorized
 from .policy import (
     ACTIONS,
     CONSUMED,
@@ -47,9 +48,26 @@ from .profiles import (
     validate_choice,
     validate_creative,
 )
+from .review_repository import ReviewRepository
+from .schema import (
+    SCHEMA_VERSION,
+    _SCHEMA,
+    _SCHEMA_2,
+    _SCHEMA_3,
+    _SCHEMA_4,
+    _SCHEMA_5,
+    _SCHEMA_6,
+    _SCHEMA_7,
+    _SCHEMA_8,
+    _SCHEMA_9,
+    _SCHEMA_10,
+    upgrade_schema,
+)
+from .sqlite_uow import SqliteUnitOfWork
+from .wake_repository import WakeRepository
 
 
-SCHEMA_VERSION = 9
+# 只有明确未受理的拒绝才释放预算占用；请求冲突必须保留为未知。
 PREACCEPT_REJECTIONS = frozenset(
     {
         "INVALID_ARGUMENTS",
@@ -60,314 +78,66 @@ PREACCEPT_REJECTIONS = frozenset(
         "QUEUE_FULL",
     }
 )
-_SCHEMA = (
-    """CREATE TABLE spaces (
-        space_id TEXT PRIMARY KEY, scope TEXT NOT NULL, binding_id TEXT NOT NULL,
-        auth_version INTEGER NOT NULL DEFAULT 0, authorized INTEGER NOT NULL DEFAULT 0)""",
-    """CREATE TABLE grants (
-        space_id TEXT NOT NULL REFERENCES spaces, version INTEGER NOT NULL,
-        authorized INTEGER NOT NULL, source_ref TEXT NOT NULL, granted_by TEXT NOT NULL,
-        created_at TEXT NOT NULL, PRIMARY KEY(space_id, version))""",
-    """CREATE TABLE limits (
-        scope_key TEXT PRIMARY KEY, think INTEGER NOT NULL, render INTEGER NOT NULL,
-        share INTEGER NOT NULL, max_inflight INTEGER NOT NULL, max_revisions INTEGER NOT NULL)""",
-    """CREATE TABLE works (
-        space_id TEXT NOT NULL REFERENCES spaces, work_id TEXT NOT NULL,
-        created_at TEXT NOT NULL, PRIMARY KEY(space_id, work_id))""",
-    """CREATE TABLE operations (
-        id INTEGER PRIMARY KEY, space_id TEXT NOT NULL REFERENCES spaces, work_id TEXT,
-        request_id TEXT NOT NULL, action TEXT NOT NULL, category TEXT NOT NULL,
-        params_json TEXT NOT NULL, scope_snapshot TEXT NOT NULL, binding_id TEXT NOT NULL,
-        auth_version INTEGER NOT NULL, trigger TEXT NOT NULL, trigger_ref TEXT,
-        state TEXT NOT NULL, budget_day TEXT NOT NULL, job_id TEXT, evidence TEXT,
-        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-        UNIQUE(binding_id, scope_snapshot, request_id),
-        FOREIGN KEY(space_id, work_id) REFERENCES works(space_id, work_id))""",
-    "CREATE INDEX operation_budget ON operations(category, state, budget_day, space_id)",
-    """CREATE TABLE legacy_locks (
-        job TEXT PRIMARY KEY, original_state TEXT NOT NULL, state TEXT NOT NULL,
-        source_digest TEXT NOT NULL)""",
-    """CREATE TABLE legacy_migrations (
-        source_digest TEXT PRIMARY KEY, source_path TEXT NOT NULL, backup_path TEXT NOT NULL,
-        row_count INTEGER NOT NULL, created_at TEXT NOT NULL)""",
-)
-_SCHEMA_2 = (
-    """CREATE TABLE artist_state (
-        space_id TEXT PRIMARY KEY REFERENCES spaces, acked_through INTEGER NOT NULL DEFAULT 0,
-        next_due TEXT, backoff_until TEXT)""",
-    """CREATE TABLE artist_wakes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, space_id TEXT NOT NULL REFERENCES spaces,
-        event_id TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL, source_ref TEXT,
-        UNIQUE(space_id,event_id))""",
-    """CREATE TABLE artist_claims (
-        space_id TEXT NOT NULL REFERENCES spaces, token TEXT NOT NULL,
-        through INTEGER NOT NULL, state TEXT NOT NULL, auth_version INTEGER NOT NULL,
-        PRIMARY KEY(space_id,token))""",
-    "CREATE UNIQUE INDEX artist_active_claim ON artist_claims(space_id) WHERE state='active'",
-    """CREATE TABLE inspirations (
-        space_id TEXT NOT NULL REFERENCES spaces, key TEXT NOT NULL, summary TEXT NOT NULL,
-        source_refs TEXT NOT NULL, origin TEXT NOT NULL, expires_at TEXT NOT NULL,
-        consumed_by TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(space_id,key))""",
-    """CREATE TABLE artist_works (
-        space_id TEXT NOT NULL, work_id TEXT NOT NULL, status TEXT NOT NULL,
-        brief TEXT NOT NULL, inspiration_keys TEXT NOT NULL, reason TEXT,
-        pending_request TEXT, parent_version TEXT, edit_prompt TEXT, best_version TEXT, next_check_at TEXT,
-        PRIMARY KEY(space_id,work_id), FOREIGN KEY(space_id,work_id) REFERENCES works(space_id,work_id))""",
-    """CREATE TABLE versions (
-        space_id TEXT NOT NULL, version_id TEXT NOT NULL, work_id TEXT NOT NULL,
-        request_id TEXT NOT NULL, job_id TEXT NOT NULL, data BLOB NOT NULL,
-        sha256 TEXT NOT NULL, mime TEXT NOT NULL, parent_id TEXT, created_at TEXT NOT NULL,
-        PRIMARY KEY(space_id,version_id), UNIQUE(space_id,request_id),
-        FOREIGN KEY(space_id,work_id) REFERENCES works(space_id,work_id))""",
-    """CREATE TABLE reviews (
-        id INTEGER PRIMARY KEY, space_id TEXT NOT NULL REFERENCES spaces,
-        work_id TEXT NOT NULL, version_id TEXT NOT NULL, request_id TEXT NOT NULL,
-        review TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(space_id,request_id),
-        FOREIGN KEY(space_id,version_id) REFERENCES versions(space_id,version_id))""",
-)
-_ACTIVE_WORK = ("planned", "deferred", "creating", "review_pending")
 _VERSION_META = "space_id,version_id,work_id,request_id,job_id,sha256,mime,parent_id,created_at"
-_SCHEMA_3 = (
-    """CREATE TABLE review_snapshots (
-        space_id TEXT NOT NULL, version_id TEXT NOT NULL, auth_version INTEGER NOT NULL,
-        context TEXT NOT NULL, input_digest TEXT NOT NULL, PRIMARY KEY(space_id,version_id),
-        FOREIGN KEY(space_id,version_id) REFERENCES versions(space_id,version_id))""",
-)
-_SCHEMA_4 = (
-    """CREATE TABLE profile_versions (
-        space_id TEXT NOT NULL REFERENCES spaces, profile_id TEXT NOT NULL,
-        revision INTEGER NOT NULL, data TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1,
-        PRIMARY KEY(space_id,profile_id,revision))""",
-    """CREATE TABLE series (
-        space_id TEXT NOT NULL REFERENCES spaces, series_id TEXT NOT NULL, title TEXT NOT NULL,
-        goal TEXT NOT NULL, profile_id TEXT NOT NULL, profile_revision INTEGER NOT NULL,
-        active INTEGER NOT NULL DEFAULT 1, closed INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY(space_id,series_id), FOREIGN KEY(space_id,profile_id,profile_revision)
-        REFERENCES profile_versions(space_id,profile_id,revision))""",
-    """CREATE TABLE series_members (
-        space_id TEXT NOT NULL, series_id TEXT NOT NULL, work_id TEXT NOT NULL, objective TEXT NOT NULL,
-        PRIMARY KEY(space_id,work_id), UNIQUE(space_id,series_id,objective),
-        FOREIGN KEY(space_id,series_id) REFERENCES series(space_id,series_id),
-        FOREIGN KEY(space_id,work_id) REFERENCES artist_works(space_id,work_id))""",
-)
-_SCHEMA_5 = (
-    """CREATE TABLE asset_catalog (
-        space_id TEXT NOT NULL REFERENCES spaces, asset_id TEXT NOT NULL,
-        source_version_id TEXT NOT NULL, work_id TEXT NOT NULL, job_id TEXT NOT NULL,
-        sha256 TEXT NOT NULL, mime TEXT NOT NULL, size_bytes INTEGER NOT NULL,
-        roles TEXT NOT NULL, tags TEXT NOT NULL, reason TEXT NOT NULL, summary TEXT NOT NULL,
-        description TEXT NOT NULL, source_kind TEXT NOT NULL, review_request_id TEXT NOT NULL,
-        auth_version INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL,
-        PRIMARY KEY(space_id,asset_id), UNIQUE(space_id,source_version_id),
-        FOREIGN KEY(space_id,source_version_id) REFERENCES versions(space_id,version_id))""",
-    """CREATE TABLE asset_selection (
-        space_id TEXT NOT NULL, asset_id TEXT NOT NULL, position INTEGER NOT NULL,
-        auth_version INTEGER NOT NULL, selected INTEGER NOT NULL DEFAULT 1,
-        PRIMARY KEY(space_id,asset_id),
-        FOREIGN KEY(space_id,asset_id) REFERENCES asset_catalog(space_id,asset_id))""",
-)
-_SCHEMA_6 = (
-    # Rebuild both ends of the FK in one transaction. Renaming the replacement
-    # parent updates the replacement child's FK without disabling constraints.
-    """CREATE TABLE asset_catalog_v6 (
-        space_id TEXT NOT NULL REFERENCES spaces, asset_id TEXT NOT NULL,
-        source_version_id TEXT, work_id TEXT, job_id TEXT,
-        sha256 TEXT NOT NULL, mime TEXT NOT NULL, size_bytes INTEGER NOT NULL,
-        roles TEXT NOT NULL, tags TEXT NOT NULL, reason TEXT NOT NULL, summary TEXT NOT NULL,
-        description TEXT NOT NULL, source_kind TEXT NOT NULL, review_request_id TEXT,
-        auth_version INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL,
-        PRIMARY KEY(space_id,asset_id), UNIQUE(space_id,source_version_id),
-        FOREIGN KEY(space_id,source_version_id) REFERENCES versions(space_id,version_id),
-        CHECK ((source_kind='reviewed_work' AND source_version_id IS NOT NULL AND work_id IS NOT NULL
-                AND job_id IS NOT NULL AND review_request_id IS NOT NULL)
-            OR (source_kind='authorized_chat' AND source_version_id IS NULL AND work_id IS NULL
-                AND job_id IS NULL AND review_request_id IS NULL)))""",
-    "INSERT INTO asset_catalog_v6 SELECT * FROM asset_catalog",
-    """CREATE TABLE asset_selection_v6 (
-        space_id TEXT NOT NULL, asset_id TEXT NOT NULL, position INTEGER NOT NULL,
-        auth_version INTEGER NOT NULL, selected INTEGER NOT NULL DEFAULT 1,
-        PRIMARY KEY(space_id,asset_id),
-        FOREIGN KEY(space_id,asset_id) REFERENCES asset_catalog_v6(space_id,asset_id))""",
-    "INSERT INTO asset_selection_v6 SELECT * FROM asset_selection",
-    "DROP TABLE asset_selection",
-    "DROP TABLE asset_catalog",
-    "ALTER TABLE asset_catalog_v6 RENAME TO asset_catalog",
-    "ALTER TABLE asset_selection_v6 RENAME TO asset_selection",
-    """CREATE TABLE external_assets (
-        space_id TEXT NOT NULL, asset_id TEXT NOT NULL, event_id TEXT NOT NULL,
-        message_index INTEGER NOT NULL, data BLOB NOT NULL, consent_ref TEXT NOT NULL,
-        source_description TEXT NOT NULL,
-        PRIMARY KEY(space_id,asset_id), UNIQUE(space_id,event_id,message_index),
-        FOREIGN KEY(space_id,asset_id) REFERENCES asset_catalog(space_id,asset_id))""",
-    """CREATE TABLE reference_policy (
-        space_id TEXT PRIMARY KEY REFERENCES spaces, enabled INTEGER NOT NULL,
-        consent_ref TEXT NOT NULL, version INTEGER NOT NULL, auth_version INTEGER NOT NULL)""",
-    """CREATE TABLE asset_registrations (
-        space_id TEXT NOT NULL, asset_id TEXT NOT NULL, request_id TEXT NOT NULL,
-        binding_id TEXT NOT NULL, auth_version INTEGER NOT NULL, policy_version INTEGER NOT NULL,
-        consent_ref TEXT NOT NULL, sha256 TEXT NOT NULL, mime TEXT NOT NULL, size_bytes INTEGER NOT NULL,
-        state TEXT NOT NULL CHECK(state IN ('reserved','submitting','unknown','succeeded','failed')),
-        receipt TEXT, reason TEXT, PRIMARY KEY(space_id,asset_id), UNIQUE(binding_id,space_id,request_id),
-        FOREIGN KEY(space_id,asset_id) REFERENCES asset_catalog(space_id,asset_id))""",
-)
-
-
-_SCHEMA_7 = (
-    """CREATE TABLE creative_imports (
-        space_id TEXT PRIMARY KEY REFERENCES spaces, source_digest TEXT NOT NULL,
-        source_snapshot TEXT NOT NULL, auth_version INTEGER NOT NULL, created_at TEXT NOT NULL)""",
-    """CREATE TABLE creative_sources (
-        space_id TEXT NOT NULL REFERENCES spaces, kind TEXT NOT NULL, entity_id TEXT NOT NULL,
-        revision INTEGER NOT NULL, origin TEXT NOT NULL, source_ref TEXT, auth_version INTEGER,
-        snapshot TEXT NOT NULL, PRIMARY KEY(space_id,kind,entity_id,revision))""",
-    """INSERT INTO creative_sources SELECT space_id,'profile',profile_id,revision,
-        'legacy',NULL,NULL,data FROM profile_versions""",
-    """INSERT INTO creative_sources SELECT space_id,'series',series_id,1,
-        'legacy',NULL,NULL,json_object('series_id',series_id,'title',title,'goal',goal,
-        'profile_id',profile_id,'profile_revision',profile_revision) FROM series""",
-    """CREATE TABLE creative_decisions (
-        space_id TEXT NOT NULL REFERENCES spaces, request_id TEXT NOT NULL,
-        operation_id INTEGER NOT NULL REFERENCES operations,
-        decision TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(space_id,request_id))""",
-)
-
-
-_SCHEMA_8 = (
-    """CREATE TABLE group_thought_policy (
-        space_id TEXT PRIMARY KEY REFERENCES spaces, scope_snapshot TEXT NOT NULL,
-        platform TEXT NOT NULL, stream_id TEXT NOT NULL, group_id TEXT NOT NULL,
-        enabled INTEGER NOT NULL CHECK(enabled IN (0,1)), auth_version INTEGER NOT NULL,
-        UNIQUE(platform,stream_id), UNIQUE(platform,group_id))""",
-    """CREATE TABLE group_thought_links (
-        space_id TEXT NOT NULL REFERENCES group_thought_policy, note_id TEXT NOT NULL,
-        inspiration_key TEXT NOT NULL, summary TEXT NOT NULL, group_id TEXT NOT NULL,
-        adopted_by TEXT, adopted_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-        PRIMARY KEY(space_id,note_id), UNIQUE(note_id), UNIQUE(space_id,inspiration_key),
-        FOREIGN KEY(space_id,adopted_by) REFERENCES artist_works(space_id,work_id),
-        CHECK((adopted_by IS NULL AND adopted_at IS NULL)
-            OR (adopted_by IS NOT NULL AND adopted_at IS NOT NULL)))""",
-)
-
-
-_SCHEMA_9 = (
-    """CREATE TABLE group_share_policy (
-        space_id TEXT PRIMARY KEY REFERENCES spaces, scope_snapshot TEXT NOT NULL,
-        platform TEXT NOT NULL, stream_id TEXT NOT NULL, group_id TEXT NOT NULL,
-        mode TEXT NOT NULL CHECK(mode IN ('collect_only','original_group')),
-        auth_version INTEGER NOT NULL, policy_version INTEGER NOT NULL CHECK(policy_version>0),
-        UNIQUE(platform,stream_id), UNIQUE(platform,group_id))""",
-    """CREATE TABLE share_policy_claims (
-        operation_id INTEGER PRIMARY KEY REFERENCES operations,
-        policy_version INTEGER NOT NULL CHECK(policy_version>0))""",
-)
-
-
 class ArtistStore:
     def __init__(self, path: Path, *, clock: Optional[Callable[[], datetime]] = None):
-        self.path = Path(path)
-        self.clock = clock or (lambda: datetime.now(timezone.utc))
-        self.lock = RLock()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(self.path, timeout=10, isolation_level=None, check_same_thread=False)
-        self.db.row_factory = sqlite3.Row
-        self.db.execute("PRAGMA foreign_keys=ON")
+        self._uow = SqliteUnitOfWork(path, clock=clock)
         try:
-            with self._transaction():
-                version = self.db.execute("PRAGMA user_version").fetchone()[0]
-                if version == 0:
-                    tables = self.db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-                    if tables:
-                        raise StoreError("SCHEMA_UNSUPPORTED", "Unversioned nonempty database")
-                    for statement in _SCHEMA:
-                        self.db.execute(statement)
-                elif version not in {1, 2, 3, 4, 5, 6, 7, 8, SCHEMA_VERSION}:
-                    raise StoreError("SCHEMA_UNSUPPORTED", "Artist database schema is not supported")
-                if version in {0, 1}:
-                    for statement in _SCHEMA_2:
-                        self.db.execute(statement)
-                if version in {0, 1, 2}:
-                    for statement in _SCHEMA_3:
-                        self.db.execute(statement)
-                if version in {0, 1, 2, 3}:
-                    for statement in _SCHEMA_4:
-                        self.db.execute(statement)
-                if version in {0, 1, 2, 3, 4}:
-                    for statement in _SCHEMA_5:
-                        self.db.execute(statement)
-                if version in {0, 1, 2, 3, 4, 5}:
-                    for statement in _SCHEMA_6:
-                        self.db.execute(statement)
-                if version in {0, 1, 2, 3, 4, 5, 6}:
-                    for statement in _SCHEMA_7:
-                        self.db.execute(statement)
-                if version in {0, 1, 2, 3, 4, 5, 6, 7}:
-                    for statement in _SCHEMA_8:
-                        self.db.execute(statement)
-                if version in {0, 1, 2, 3, 4, 5, 6, 7, 8}:
-                    for statement in _SCHEMA_9:
-                        self.db.execute(statement)
-                    self.db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+            with self._uow.transaction():
+                # 保留本模块的版本和 DDL 入口，供历史台账兼容检查复用。
+                upgrade_schema(
+                    self.db,
+                    (_SCHEMA, _SCHEMA_2, _SCHEMA_3, _SCHEMA_4, _SCHEMA_5,
+                     _SCHEMA_6, _SCHEMA_7, _SCHEMA_8, _SCHEMA_9, _SCHEMA_10),
+                    target_version=SCHEMA_VERSION,
+                )
         except BaseException:
-            self.db.close()
+            self._uow.close()
             raise
+        self._queries = LedgerQueries(self.db)
+        self._reviews = ReviewRepository(self._uow, self._queries)
+        self._wakes = WakeRepository(self._uow, self._queries, self._reviews)
 
-    @contextmanager
-    def _transaction(self) -> Iterator[None]:
-        # BEGIN IMMEDIATE serializes checks and reservations across connections,
-        # not just across threads using this instance's RLock.
-        with self.lock:
-            self.db.execute("BEGIN IMMEDIATE")
-            try:
-                yield
-                self.db.execute("COMMIT")
-            except BaseException:
-                self.db.execute("ROLLBACK")
-                raise
+    @property
+    def path(self) -> Path:
+        return self._uow.path
 
-    def _now(self):
-        now = self.clock()
-        day = budget_day(now)
-        return now.astimezone(timezone.utc).isoformat(), day
+    @property
+    def db(self) -> sqlite3.Connection:
+        return self._uow.db
 
-    def _space(self, space_id: str, scope: Scope):
-        if not isinstance(scope, Scope):
-            raise StoreError("INVALID_SCOPE", "Only trusted-adapter Scope values are accepted")
-        row = self.db.execute("SELECT * FROM spaces WHERE space_id=?", (space_id,)).fetchone()
-        if row is None or row["scope"] != scope.snapshot():
-            raise StoreError("NOT_FOUND", "Space not found for this scope")
-        return row
+    @property
+    def lock(self) -> RLock:
+        return self._uow.lock
 
-    def _authorized(self, space):
-        if not space["authorized"]:
-            raise StoreError("AUTH_REQUIRED", "Continuous delegation is not active")
+    @property
+    def clock(self) -> Callable[[], datetime]:
+        return self._uow.clock
 
-    @staticmethod
-    def _expected_authorization(space, expected):
-        if expected is not None:
-            if type(expected) is not int or expected < 0:
-                raise StoreError("INVALID_ARGUMENT", "expected_auth_version must be a nonnegative integer")
-            if space["auth_version"] != expected:
-                raise StoreError("AUTH_CHANGED", "Authorization changed while processing this wake")
+    @clock.setter
+    def clock(self, clock: Callable[[], datetime]) -> None:
+        self._uow.clock = clock
 
     def create_space(self, space_id: str, scope: Scope, *, binding_id: str) -> Dict[str, Any]:
         nonempty(space_id, "space_id")
         nonempty(binding_id, "binding_id")
         if space_id == "*" or not isinstance(scope, Scope):
             raise StoreError("INVALID_SCOPE", "Reserved space_id or untyped scope")
-        with self._transaction():
+        with self._uow.transaction():
             old = self.db.execute("SELECT * FROM spaces WHERE space_id=?", (space_id,)).fetchone()
             if old and (old["scope"] != scope.snapshot() or old["binding_id"] != binding_id):
                 raise StoreError("OWNER_CONFLICT", "Space owner and service binding are immutable")
+            self._single_work_policy(space_id, scope)
             self.db.execute(
                 "INSERT OR IGNORE INTO spaces(space_id,scope,binding_id) VALUES(?,?,?)",
                 (space_id, scope.snapshot(), binding_id),
             )
-            return dict(self._space(space_id, scope))
+            return dict(self._queries.space(space_id, scope))
 
     def get_space(self, space_id: str, scope: Scope) -> Dict[str, Any]:
         """Read authority version and immutable binding for a trusted adapter."""
         with self.lock:
-            return dict(self._space(space_id, scope))
+            return dict(self._queries.space(space_id, scope))
 
     def configured_spaces(self) -> list[dict]:
         """Trusted Host administration only, for reconciling removed delegations."""
@@ -385,9 +155,9 @@ class ArtistStore:
     def _authorization(self, space_id, scope, active, source_ref, granted_by):
         nonempty(source_ref, "source_ref")
         nonempty(granted_by, "granted_by")
-        now, _ = self._now()
-        with self._transaction():
-            space = self._space(space_id, scope)
+        now, _ = self._uow.now()
+        with self._uow.transaction():
+            space = self._queries.space(space_id, scope)
             version = space["auth_version"] + 1
             self.db.execute(
                 "INSERT INTO grants VALUES(?,?,?,?,?,?)",
@@ -401,12 +171,12 @@ class ArtistStore:
 
     def set_global_limits(self, limits: Limits):
         """Trusted application administration; persists across all reopenings."""
-        with self._transaction():
+        with self._uow.transaction():
             self._set_limits("*", limits)
 
     def set_limits(self, space_id: str, scope: Scope, limits: Limits):
-        with self._transaction():
-            self._space(space_id, scope)
+        with self._uow.transaction():
+            self._queries.space(space_id, scope)
             self._set_limits(space_id, limits)
 
     def _set_limits(self, key, limits):
@@ -419,11 +189,107 @@ class ArtistStore:
             (key, *asdict(limits).values()),
         )
 
+    def _single_work_stream_policy(self, platform, stream_id):
+        return self.db.execute(
+            """SELECT p.* FROM single_work_policies AS p JOIN spaces AS s USING(space_id)
+            WHERE p.enabled=1 AND json_extract(s.scope,'$.platform')=?
+            AND json_extract(s.scope,'$.stream_id')=?""",
+            (platform, stream_id),
+        ).fetchone()
+
+    def _single_work_policy(self, space_id, scope):
+        policy = self._single_work_stream_policy(scope.platform, scope.stream_id)
+        if policy is not None and policy["space_id"] != space_id:
+            raise StoreError("SINGLE_WORK_SCOPE_CONFLICT", "This stream is locked to another space")
+        return policy
+
+    def configure_single_work(self, space_id: str, scope: Scope, enabled: bool = False) -> Dict[str, Any]:
+        """Latch the policy on an unused stream; only trusted configuration can enable it."""
+        with self._uow.transaction():
+            return self._configure_single_work(space_id, scope, enabled)
+
+    def configure_single_work_batch(self, items: list[tuple[str, Scope, bool]]) -> list[Dict[str, Any]]:
+        """Apply the complete trusted configuration atomically, including permanent latches."""
+        if not isinstance(items, list):
+            raise StoreError("INVALID_ARGUMENT", "items must be a list of single-work configurations")
+        entries = tuple(items)
+        with self._uow.transaction():
+            results = []
+            for item in entries:
+                if not isinstance(item, tuple) or len(item) != 3:
+                    raise StoreError("INVALID_ARGUMENT", "Each configuration must be a (space_id, scope, enabled) tuple")
+                results.append(self._configure_single_work(*item))
+            return results
+
+    def _configure_single_work(self, space_id: str, scope: Scope, enabled: bool) -> Dict[str, Any]:
+        """Caller owns the transaction so a later configuration failure rolls back new latches."""
+        if type(enabled) is not bool:
+            raise StoreError("INVALID_ARGUMENT", "enabled must be a boolean")
+        self._queries.space(space_id, scope)
+        policy = self._single_work_policy(space_id, scope)
+        if policy is not None and not enabled:
+            raise StoreError("SINGLE_WORK_LATCHED", "Single-work policy cannot be disabled")
+        if policy is None and enabled:
+            # Include prior aliases across owners and service bindings. A
+            # clean space ID cannot erase work or attempts in this stream.
+            history = self.db.execute(
+                """SELECT 1 FROM spaces AS s WHERE json_extract(s.scope,'$.platform')=?
+                AND json_extract(s.scope,'$.stream_id')=? AND (
+                    EXISTS(SELECT 1 FROM works AS w WHERE w.space_id=s.space_id)
+                    OR EXISTS(SELECT 1 FROM operations AS o
+                              WHERE o.space_id=s.space_id AND o.action IN ('submit','edit','share'))
+                ) LIMIT 1""",
+                (scope.platform, scope.stream_id),
+            ).fetchone()
+            if history is not None:
+                raise StoreError("SINGLE_WORK_HISTORY", "Single-work policy requires a stream without work or attempts")
+            self.db.execute("INSERT INTO single_work_policies(space_id,enabled) VALUES(?,1)", (space_id,))
+        return self._single_work_status(space_id)
+
+    def _single_work_status(self, space_id):
+        row = self.db.execute(
+            """SELECT work_id,
+                EXISTS(SELECT 1 FROM operations WHERE space_id=p.space_id AND action='submit') AS create_used,
+                EXISTS(SELECT 1 FROM operations WHERE space_id=p.space_id AND action='edit') AS edit_used,
+                EXISTS(SELECT 1 FROM operations WHERE space_id=p.space_id AND action='share') AS share_used
+            FROM single_work_policies AS p WHERE space_id=? AND enabled=1""",
+            (space_id,),
+        ).fetchone()
+        return {
+            "enabled": row is not None,
+            "work_id": row["work_id"] if row is not None else None,
+            **{key: bool(row[key]) if row is not None else False for key in ("create_used", "edit_used", "share_used")},
+        }
+
+    def single_work_status(self, space_id: str, scope: Scope) -> Dict[str, Any]:
+        """Read the lifetime claims, regardless of day, authorization or operation outcome."""
+        with self.lock:
+            self._queries.space(space_id, scope)
+            return self._single_work_status(space_id)
+
+    def single_work_for_stream(self, platform: str, stream_id: str) -> bool:
+        """Trusted manual-command guard: the latch applies to every owner of the stream."""
+        nonempty(platform, "platform")
+        nonempty(stream_id, "stream_id")
+        with self.lock:
+            return self._single_work_stream_policy(platform, stream_id) is not None
+
+    def _lock_single_work(self, space_id, scope, work_id):
+        policy = self._single_work_policy(space_id, scope)
+        if policy is None or policy["work_id"] == work_id:
+            return
+        if policy["work_id"] is not None:
+            raise StoreError("SINGLE_WORK_LIMIT", "This space already has its one permanent work")
+        # The deferred FK permits the claim before planning. The claim and
+        # work are committed together, or rolled back if any plan check fails.
+        self.db.execute("UPDATE single_work_policies SET work_id=? WHERE space_id=?", (work_id, space_id))
+
     def create_work(self, space_id: str, scope: Scope, work_id: str) -> Dict[str, Any]:
         nonempty(work_id, "work_id")
-        now, _ = self._now()
-        with self._transaction():
-            self._authorized(self._space(space_id, scope))
+        now, _ = self._uow.now()
+        with self._uow.transaction():
+            require_authorized(self._queries.space(space_id, scope))
+            self._lock_single_work(space_id, scope, work_id)
             self.db.execute("INSERT OR IGNORE INTO works VALUES(?,?,?)", (space_id, work_id, now))
             return dict(
                 self.db.execute(
@@ -434,30 +300,13 @@ class ArtistStore:
 
     def get_work(self, space_id: str, scope: Scope, work_id: str) -> Dict[str, Any]:
         with self.lock:
-            self._space(space_id, scope)
-            row = self.db.execute(
-                "SELECT * FROM works WHERE space_id=? AND work_id=?",
-                (space_id, work_id),
-            ).fetchone()
-            if row is None:
-                raise StoreError("NOT_FOUND", "Work not found in this space")
-            result = dict(row)
+            result = dict(self._queries.work(space_id, scope, work_id))
             result["revision_attempts"] = self.db.execute(
                 """SELECT count(*) FROM operations WHERE space_id=? AND work_id=?
                 AND action='edit' AND state!='rejected'""",
                 (space_id, work_id),
             ).fetchone()[0]
             return result
-
-    def _operation(self, space_id, scope, request_id):
-        self._space(space_id, scope)
-        row = self.db.execute(
-            "SELECT * FROM operations WHERE space_id=? AND request_id=?",
-            (space_id, request_id),
-        ).fetchone()
-        if row is None:
-            raise StoreError("NOT_FOUND", "Operation not found in this space")
-        return row
 
     @staticmethod
     def _snapshot(row):
@@ -467,13 +316,13 @@ class ArtistStore:
 
     def get_operation(self, space_id: str, scope: Scope, request_id: str) -> Dict[str, Any]:
         with self.lock:
-            return self._snapshot(self._operation(space_id, scope, request_id))
+            return self._snapshot(self._queries.operation(space_id, scope, request_id))
 
     def get_render_operation_by_job(self, space_id: str, scope: Scope, job_id: str) -> Dict[str, Any]:
         """Resolve a persisted render job without guessing among ambiguous bindings."""
         nonempty(job_id, "job_id")
         with self.lock:
-            self._space(space_id, scope)
+            self._queries.space(space_id, scope)
             rows = self.db.execute(
                 """SELECT * FROM operations WHERE space_id=? AND job_id=?
                 AND category='render' AND action IN ('submit','edit') LIMIT 2""",
@@ -487,7 +336,7 @@ class ArtistStore:
 
     def audit_operations(self, space_id: str, scope: Scope):
         with self.lock:
-            self._space(space_id, scope)
+            self._queries.space(space_id, scope)
             return [
                 self._snapshot(row)
                 for row in self.db.execute(
@@ -498,7 +347,7 @@ class ArtistStore:
 
     def audit_authorizations(self, space_id: str, scope: Scope):
         with self.lock:
-            self._space(space_id, scope)
+            self._queries.space(space_id, scope)
             return [
                 dict(row)
                 for row in self.db.execute(
@@ -523,9 +372,9 @@ class ArtistStore:
 
     def budget_usage(self, space_id: str, scope: Scope):
         """Read only this space; global usage is deliberately not exposed."""
-        _, day = self._now()
+        _, day = self._uow.now()
         with self.lock:
-            self._space(space_id, scope)
+            self._queries.space(space_id, scope)
             return {
                 "day": day,
                 **{
@@ -568,9 +417,9 @@ class ArtistStore:
             raise StoreError("INVALID_ARGUMENT", "Invalid share mode or authorization version")
         if bool(group_id) != (mode != "private"):
             raise StoreError("INVALID_ARGUMENT", "Only private mode has an empty group target")
-        with self._transaction():
-            space = self._space(space_id, scope)
-            self._expected_authorization(space, expected_auth_version)
+        with self._uow.transaction():
+            space = self._queries.space(space_id, scope)
+            expected_authorization(space, expected_auth_version)
             self._check_group_binding(space_id, scope, group_id)
             if mode == "private":
                 return {"mode": "private", "allowed": bool(space["authorized"])}
@@ -608,8 +457,8 @@ class ArtistStore:
 
     def sharing_policy(self, space_id, scope) -> Dict[str, Any]:
         """Read-only, identity-free permission summary for planning and Studio."""
-        with self._transaction():
-            return self._sharing_policy(space_id, self._space(space_id, scope))[0]
+        with self._uow.transaction():
+            return self._sharing_policy(space_id, self._queries.space(space_id, scope))[0]
 
     def _require_share_policy(self, space_id, space, operation=None):
         summary, policy = self._sharing_policy(space_id, space)
@@ -632,15 +481,15 @@ class ArtistStore:
     def check_share_target(self, space_id, scope, *, group_id) -> bool:
         """Validate a sender's Host-verified target against immutable storage."""
         self._share_group_id(group_id)
-        with self._transaction():
-            space = self._space(space_id, scope)
+        with self._uow.transaction():
+            space = self._queries.space(space_id, scope)
             targets = self.db.execute(
                 """SELECT group_id FROM group_share_policy WHERE space_id=?
                 UNION SELECT group_id FROM group_thought_policy WHERE space_id=?""", (space_id, space_id)
             ).fetchall()
             if ((not targets and group_id) or any(row["group_id"] != group_id for row in targets)):
                 raise StoreError("SHARE_TARGET_MISMATCH", "Sender target does not match the bound group")
-            self._authorized(space)
+            require_authorized(space)
             self._require_share_policy(space_id, space)
             return True
 
@@ -667,6 +516,51 @@ class ArtistStore:
                 if revisions + adding > row["max_revisions"]:
                     raise StoreError("REVISION_LIMIT", "Work revision limit exceeded")
 
+    def _check_single_work_operation(self, space, scope, action, work_id, payload, *, excluding=-1):
+        if action not in {"submit", "edit", "share"}:
+            return
+        space_id = space["space_id"]
+        policy = self._single_work_policy(space_id, scope)
+        if policy is None:
+            return
+        locked_work = policy["work_id"]
+        if locked_work is None or (work_id != locked_work and not (action == "share" and work_id is None)):
+            raise StoreError("SINGLE_WORK_LIMIT", "Operation must belong to the one permanent work")
+        if self.db.execute(
+            "SELECT 1 FROM operations WHERE space_id=? AND action=? AND id!=? LIMIT 1",
+            (space_id, action, excluding),
+        ).fetchone() is not None:
+            raise StoreError("SINGLE_WORK_LIMIT", f"Permanent {action} allowance is already used")
+        if action == "submit":
+            return
+
+        # The transport sends job and digest for edits, and job and version ID
+        # for shares. Resolve both through the persisted version and its render.
+        params = json.loads(payload)
+        edit = action == "edit"
+        if edit:
+            target = (params.get("source_job_id"), params.get("source_sha256"))
+            condition = "v.job_id=? AND v.sha256=? AND v.parent_id IS NULL AND o.action='submit'"
+            code = "SINGLE_WORK_SOURCE"
+        else:
+            target = (params.get("job_id"), params.get("version_id"))
+            condition = "v.job_id=? AND v.version_id=? AND o.action IN ('submit','edit')"
+            code = "SINGLE_WORK_VERSION"
+        if not all(isinstance(value, str) and value.strip() for value in target):
+            raise StoreError(code, "Operation requires a persisted image source")
+        version = self.db.execute(
+            f"""SELECT v.version_id, v.work_id FROM versions AS v
+            JOIN operations AS o ON o.space_id=v.space_id AND o.request_id=v.request_id
+                AND o.work_id=v.work_id AND o.job_id=v.job_id
+            WHERE v.space_id=? AND v.work_id=? AND o.scope_snapshot=? AND o.binding_id=?
+                AND o.category='render' AND o.state='succeeded' AND {condition}""",
+            (space_id, locked_work, space["scope"], space["binding_id"], *target),
+        ).fetchone()
+        if version is None:
+            raise StoreError(code, "Image does not match a successful render of the permanent work")
+        if not edit and self._reviews.accepted_review(space_id, scope, space, version) is None:
+            raise StoreError("REVIEW_REQUIRED", "Sharing requires explicit visual acceptance")
+
     def reserve(
         self,
         space_id: str,
@@ -689,10 +583,10 @@ class ArtistStore:
         if trigger_ref is not None:
             nonempty(trigger_ref, "trigger_ref")
         payload = parameters(params)
-        with self._transaction():
-            now, day = self._now()
-            space = self._space(space_id, scope)
-            self._expected_authorization(space, expected_auth_version)
+        with self._uow.transaction():
+            now, day = self._uow.now()
+            space = self._queries.space(space_id, scope)
+            expected_authorization(space, expected_auth_version)
             old = self.db.execute(
                 "SELECT * FROM operations WHERE binding_id=? AND scope_snapshot=? AND request_id=?",
                 (space["binding_id"], space["scope"], request_id),
@@ -707,9 +601,10 @@ class ArtistStore:
                     raise StoreError("REQUEST_CONFLICT", "Request identity is already bound to other content")
                 # Idempotent inspection never renews permission, retries or reserves again.
                 return self._snapshot(old)
-            self._authorized(space)
+            require_authorized(space)
             if action in {"submit", "edit"} and work_id is None:
                 raise StoreError("INVALID_ARGUMENT", "Render operations require a work_id")
+            self._check_single_work_operation(space, scope, action, work_id, payload)
             if work_id is not None:
                 work = self.db.execute(
                     "SELECT 1 FROM works WHERE space_id=? AND work_id=?",
@@ -756,7 +651,7 @@ class ArtistStore:
                     now,
                 ),
             )
-            operation = self._operation(space_id, scope, request_id)
+            operation = self._queries.operation(space_id, scope, request_id)
             if share_policy is not None:
                 self.db.execute(
                     "INSERT INTO share_policy_claims VALUES(?,?)", (operation["id"], share_policy["policy_version"])
@@ -764,15 +659,18 @@ class ArtistStore:
             return self._snapshot(operation)
 
     def mark_submitting(self, space_id: str, scope: Scope, request_id: str):
-        with self._transaction():
-            now, day = self._now()
-            row = self._operation(space_id, scope, request_id)
-            space = self._space(space_id, scope)
-            self._authorized(space)
+        with self._uow.transaction():
+            now, day = self._uow.now()
+            row = self._queries.operation(space_id, scope, request_id)
+            space = self._queries.space(space_id, scope)
+            require_authorized(space)
             if row["state"] != "reserved":
                 raise StoreError("INVALID_STATE", "Only a reserved operation can start once")
             if row["auth_version"] != space["auth_version"]:
                 raise StoreError("AUTH_CHANGED", "Authorization changed since reservation")
+            self._check_single_work_operation(
+                space, scope, row["action"], row["work_id"], row["params_json"], excluding=row["id"]
+            )
             if row["action"] == "share":
                 self._require_share_policy(space_id, space, row)
             self._check_budget(
@@ -786,30 +684,38 @@ class ArtistStore:
                 "UPDATE operations SET state='submitting',budget_day=?,updated_at=? WHERE id=?",
                 (day, now, row["id"]),
             )
-            return self._snapshot(self._operation(space_id, scope, request_id))
+            return self._snapshot(self._queries.operation(space_id, scope, request_id))
 
     def validate_submitting(self, space_id: str, scope: Scope, request_id: str) -> Dict[str, Any]:
         """Read-only dispatch check in one snapshot; never renew or refund a claim."""
-        with self._transaction():
-            _, day = self._now()
-            row = self._operation(space_id, scope, request_id)
-            space = self._space(space_id, scope)
+        with self._uow.transaction():
+            _, day = self._uow.now()
+            row = self._queries.operation(space_id, scope, request_id)
+            space = self._queries.space(space_id, scope)
             if row["state"] != "submitting" or row["job_id"] is not None:
                 raise StoreError("INVALID_STATE", "Dispatch requires an unbound submitting operation")
-            self._authorized(space)
+            require_authorized(space)
             if row["auth_version"] != space["auth_version"]:
                 raise StoreError("AUTH_CHANGED", "Authorization changed since reservation")
             if row["budget_day"] != day:
                 raise StoreError("BUDGET_DAY_CHANGED", "Dispatch cannot cross its recorded budget day")
+            self._check_single_work_operation(
+                space, scope, row["action"], row["work_id"], row["params_json"], excluding=row["id"]
+            )
             if row["action"] == "share":
                 self._require_share_policy(space_id, space, row)
             self._check_budget(
                 space_id, row["category"], day, adding=0, work_id=row["work_id"], edit=row["action"] == "edit"
             )
+            if row["action"] == "share":
+                # 历史锁可能在预留之后导入；真正发送前重查，排除自己的提交行。
+                self._check_share(
+                    space_id, scope, json.loads(row["params_json"]).get("job_id"), excluding=row["id"]
+                )
             return self._snapshot(row)
 
     def _update(self, row, state, evidence, job_id=None):
-        now, _ = self._now()
+        now, _ = self._uow.now()
         if job_id is not None:
             nonempty(job_id, "job_id")
         if row["job_id"] is not None and job_id not in (None, row["job_id"]):
@@ -820,8 +726,8 @@ class ArtistStore:
         )
 
     def mark_accepted(self, space_id: str, scope: Scope, request_id: str, *, job_id=None):
-        with self._transaction():
-            row = self._operation(space_id, scope, request_id)
+        with self._uow.transaction():
+            row = self._queries.operation(space_id, scope, request_id)
             if row["state"] not in {"submitting", "accepted"}:
                 raise StoreError("INVALID_STATE", "Acceptance requires an in-progress submission")
             if row["category"] == "render" and job_id is None:
@@ -830,8 +736,8 @@ class ArtistStore:
 
     def mark_unknown(self, space_id: str, scope: Scope, request_id: str, *, reason: str):
         nonempty(reason, "reason")
-        with self._transaction():
-            row = self._operation(space_id, scope, request_id)
+        with self._uow.transaction():
+            row = self._queries.operation(space_id, scope, request_id)
             if row["state"] not in {"submitting", "accepted", "unknown"}:
                 raise StoreError("INVALID_STATE", "Only an attempted operation can become unknown")
             self._update(row, "unknown", reason)
@@ -839,8 +745,8 @@ class ArtistStore:
     def reject(self, space_id: str, scope: Scope, request_id: str, *, code: str, evidence: str):
         nonempty(code, "code")
         nonempty(evidence, "evidence")
-        with self._transaction():
-            row = self._operation(space_id, scope, request_id)
+        with self._uow.transaction():
+            row = self._queries.operation(space_id, scope, request_id)
             if code == "REQUEST_CONFLICT":
                 if row["state"] in {"reserved", "submitting", "accepted", "unknown"}:
                     self._update(row, "unknown", evidence)
@@ -861,8 +767,8 @@ class ArtistStore:
     def cancel_reservation(self, space_id: str, scope: Scope, request_id: str, *, reason: str):
         """Local cancellation is safe only before the first external attempt."""
         nonempty(reason, "reason")
-        with self._transaction():
-            row = self._operation(space_id, scope, request_id)
+        with self._uow.transaction():
+            row = self._queries.operation(space_id, scope, request_id)
             if row["state"] != "reserved":
                 raise StoreError("INVALID_STATE", "Only an unstarted reservation may be cancelled")
             self._update(row, "rejected", f"local cancellation: {reason}")
@@ -873,8 +779,8 @@ class ArtistStore:
         if outcome not in CONSUMED:
             raise StoreError("INVALID_ARGUMENT", "Terminal outcome must be succeeded or failed")
         nonempty(evidence, "evidence")
-        with self._transaction():
-            row = self._operation(space_id, scope, request_id)
+        with self._uow.transaction():
+            row = self._queries.operation(space_id, scope, request_id)
             if row["state"] not in {"submitting", "accepted", outcome}:
                 raise StoreError(
                     "INVALID_STATE", "Unknown outcomes must be reconciled; reserved is not attempted"
@@ -896,8 +802,8 @@ class ArtistStore:
         if outcome not in {"accepted", "succeeded", "failed"}:
             raise StoreError("INVALID_ARGUMENT", "Lookup not_found cannot refund or authorize resubmission")
         nonempty(evidence, "evidence")
-        with self._transaction():
-            row = self._operation(space_id, scope, request_id)
+        with self._uow.transaction():
+            row = self._queries.operation(space_id, scope, request_id)
             if row["state"] != "unknown":
                 raise StoreError("INVALID_STATE", "Reconciliation only resolves unknown operations")
             if row["category"] == "render" and job_id is None and row["job_id"] is None:
@@ -908,9 +814,9 @@ class ArtistStore:
         """Explicit recovery after the previous worker has stopped, never on open."""
         if offline is not True:
             raise StoreError("OFFLINE_REQUIRED", "Stop previous workers before recovery")
-        now, _ = self._now()
-        with self._transaction():
-            self._space(space_id, scope)
+        now, _ = self._uow.now()
+        with self._uow.transaction():
+            self._queries.space(space_id, scope)
             return self.db.execute(
                 """UPDATE operations SET state='unknown',evidence='explicit offline recovery',updated_at=?
                 WHERE space_id=? AND state IN ('submitting','accepted')""",
@@ -921,7 +827,7 @@ class ArtistStore:
         """Conservative global lock; never exposes legacy ownerless record contents."""
         nonempty(job_id, "job_id")
         with self.lock:
-            self._space(space_id, scope)
+            self._queries.space(space_id, scope)
             return self.db.execute("SELECT 1 FROM legacy_locks WHERE job=?", (job_id,)).fetchone() is not None
 
     def _check_share(self, space_id, scope, job_id, *, excluding=-1):
@@ -946,8 +852,8 @@ class ArtistStore:
 
     def check_share(self, space_id: str, scope: Scope, job_id: str) -> bool:
         with self.lock:
-            space = self._space(space_id, scope)
-            self._authorized(space)
+            space = self._queries.space(space_id, scope)
+            require_authorized(space)
             self._require_share_policy(space_id, space)
             self._check_share(space_id, scope, job_id)
             return True
@@ -995,9 +901,9 @@ class ArtistStore:
             reader.execute("ROLLBACK")
             if reader.execute("PRAGMA data_version").fetchone()[0] != version_before:
                 raise StoreError("LEGACY_CHANGED", "Legacy writer changed the source during migration")
-            now, _ = self._now()
+            now, _ = self._uow.now()
             failure_code = "MIGRATION_FAILED"
-            with self._transaction():
+            with self._uow.transaction():
                 prior = self.db.execute(
                     "SELECT * FROM legacy_migrations WHERE source_digest=?",
                     (digest,),
@@ -1049,66 +955,21 @@ class ArtistStore:
                 raise StoreError("LEGACY_INVALID", "Unknown legacy delivery state")
         return rows
 
-    def _artist_state(self, space_id):
-        self.db.execute("INSERT OR IGNORE INTO artist_state(space_id) VALUES(?)", (space_id,))
-        return self.db.execute("SELECT * FROM artist_state WHERE space_id=?", (space_id,)).fetchone()
-
-    def _enqueue_wake(self, space_id, event_id, kind, text, source_ref):
-        prior = self.db.execute(
-            "SELECT * FROM artist_wakes WHERE space_id=? AND event_id=?",
-            (space_id, event_id),
-        ).fetchone()
-        if prior:
-            if (prior["kind"], prior["text"], prior["source_ref"]) != (kind, text, source_ref):
-                raise StoreError("REQUEST_CONFLICT", "Wake event already has different content")
-            return False
-        self.db.execute(
-            "INSERT INTO artist_wakes(space_id,event_id,kind,text,source_ref) VALUES(?,?,?,?,?)",
-            (space_id, event_id, kind, text, source_ref),
-        )
-        return True
-
     def enqueue_wake(self, space_id, scope, *, event_id, kind, text="", source_ref=None) -> bool:
-        nonempty(event_id, "event_id")
-        if kind not in {"chat", "idle", "completion"} or not isinstance(text, str):
-            raise StoreError("INVALID_ARGUMENT", "Unknown wake kind or invalid text")
-        if kind == "chat" or source_ref is not None:
-            nonempty(source_ref, "source_ref")
-        if len(event_id) > 200 or len(text) > 4096 or (source_ref is not None and len(source_ref) > 200):
-            raise StoreError(
-                "INVALID_ARGUMENT", "Wake text exceeds 4096 characters or identifier exceeds 200"
-            )
-        with self._transaction():
-            self._authorized(self._space(space_id, scope))
-            return self._enqueue_wake(space_id, event_id, kind, text, source_ref)
+        return self._wakes.enqueue_wake(space_id, scope, event_id=event_id, kind=kind, text=text, source_ref=source_ref)
 
     def schedule_wake(self, space_id, scope, *, interval_seconds) -> bool:
-        if type(interval_seconds) is not int or not 0 < interval_seconds <= 365 * 86400:
-            raise StoreError("INVALID_ARGUMENT", "interval_seconds must be a positive bounded integer")
-        with self._transaction():
-            self._authorized(self._space(space_id, scope))
-            now, _ = self._now()
-            current = datetime.fromisoformat(now)
-            state = self._artist_state(space_id)
-            if state["next_due"] and current < datetime.fromisoformat(state["next_due"]):
-                # A shorter configured interval must not inherit an old, distant
-                # deadline. Clamp once; subsequent ticks leave the earlier due
-                # time intact. Claims still enforce backoff and Artist enforces
-                # each work's next_check_at independently of this idle timer.
-                due = (current + timedelta(seconds=interval_seconds)).isoformat()
-                if datetime.fromisoformat(state["next_due"]) > datetime.fromisoformat(due):
-                    self.db.execute("UPDATE artist_state SET next_due=? WHERE space_id=?", (due, space_id))
-                return False
-            pending = self.db.execute(
-                "SELECT 1 FROM artist_wakes WHERE space_id=? AND kind='idle' AND id>? LIMIT 1",
-                (space_id, state["acked_through"]),
-            ).fetchone()
-            added = False if pending else self._enqueue_wake(space_id, f"idle:{now}", "idle", "", None)
-            self.db.execute(
-                "UPDATE artist_state SET next_due=? WHERE space_id=?",
-                ((current + timedelta(seconds=interval_seconds)).isoformat(), space_id),
-            )
-            return added
+        return self._wakes.schedule_wake(space_id, scope, interval_seconds=interval_seconds)
+
+    def schedule_progress_wake(self, space_id, scope, *, interval_seconds=15) -> bool:
+        """Advance existing work without shortening the idle inspiration timer.
+
+        State, queue and claim checks share the same transaction. The durable
+        event key bounds repeated receipt polling across workers and restarts;
+        a phase change can proceed on the next Host tick. No receipt is invented
+        and no model/drawing/sending operation is dispatched here.
+        """
+        return self._wakes.schedule_progress_wake(space_id, scope, interval_seconds=interval_seconds)
 
     def restore_planned_wait(
         self,
@@ -1131,289 +992,19 @@ class ArtistStore:
         completion claim. Repeating its identical key never resets newer timers.
         No work, authorization, operation, allowance or usage row is changed.
         """
-        if offline is not True:
-            raise StoreError("OFFLINE_REQUIRED", "Stop Host writers and hold RuntimeLease before recovery")
-        if type(expected_auth_version) is not int or expected_auth_version < 1:
-            raise StoreError("INVALID_ARGUMENT", "expected_auth_version must be a positive integer")
-        for name, value in (
-            ("work_id", work_id), ("last_wait_request_id", last_wait_request_id),
-            ("event_id", event_id), ("reason", reason),
-        ):
-            nonempty(value, name)
-            if len(value) > (500 if name == "reason" else 200):
-                raise StoreError("INVALID_ARGUMENT", "Recovery reason or identifier is too long")
-        request = {
-            "operation": "restore_planned_wait", "expected_auth_version": expected_auth_version,
-            "work_id": work_id, "last_wait_request_id": last_wait_request_id, "reason": reason,
-        }
-        with self._transaction():
-            space = self._space(space_id, scope)
-            self._expected_authorization(space, expected_auth_version)
-            if space["authorized"]:
-                raise StoreError("RECOVERY_UNSAFE", "Revoke delegation before restoring a planned wait")
-            if self.db.execute(
-                "SELECT 1 FROM artist_claims WHERE space_id=? AND state='active'", (space_id,)
-            ).fetchone() or self.db.execute(
-                """SELECT 1 FROM operations WHERE space_id=?
-                AND state IN ('reserved','submitting','accepted','unknown') LIMIT 1""", (space_id,)
-            ).fetchone() or self.db.execute(
-                """SELECT 1 FROM asset_registrations WHERE space_id=?
-                AND state IN ('reserved','submitting','unknown') LIMIT 1""", (space_id,)
-            ).fetchone():
-                raise StoreError("RECOVERY_UNSAFE", "Active claims or unresolved operations prohibit recovery")
-            work = self.db.execute(
-                "SELECT * FROM artist_works WHERE space_id=? AND work_id=?", (space_id, work_id)
-            ).fetchone()
-            if work is None:
-                raise StoreError("NOT_FOUND", "Planned work not found in this space")
-            if work["status"] != "planned" or work["pending_request"] or work["next_check_at"]:
-                raise StoreError("RECOVERY_UNSAFE", "Only an undeferred plan without a pending request can recover")
-            operation = self._operation(space_id, scope, last_wait_request_id)
-            work_digest = hashlib.sha256(canonical_json(dict(work)).encode("utf-8")).hexdigest()
-            wait_digest = hashlib.sha256(canonical_json(dict(operation)).encode("utf-8")).hexdigest()
-            prior = self.db.execute(
-                "SELECT * FROM artist_wakes WHERE space_id=? AND event_id=?", (space_id, event_id)
-            ).fetchone()
-            if prior:
-                try:
-                    receipt = json.loads(prior["text"])
-                except (TypeError, ValueError):
-                    receipt = None
-                if (
-                    prior["kind"] != "idle" or prior["source_ref"] != last_wait_request_id
-                    or not isinstance(receipt, dict) or receipt.get("request") != request
-                ):
-                    raise StoreError("REQUEST_CONFLICT", "Recovery event already has different content")
-                if receipt.get("work_digest") != work_digest or receipt.get("wait_digest") != wait_digest:
-                    raise StoreError("RECOVERY_UNSAFE", "Recovered work or wait has since changed")
-                return False
-            # A different key must not repeat a repair already recorded for this
-            # wait, even if no worker has consumed the first internal event yet.
-            if self.db.execute(
-                "SELECT 1 FROM artist_wakes WHERE space_id=? AND kind='idle' AND source_ref=?",
-                (space_id, last_wait_request_id),
-            ).fetchone():
-                raise StoreError("REQUEST_CONFLICT", "This wait already has a recovery event")
-            state = self.db.execute("SELECT * FROM artist_state WHERE space_id=?", (space_id,)).fetchone()
-            claim = self.db.execute(
-                "SELECT * FROM artist_claims WHERE space_id=? ORDER BY rowid DESC LIMIT 1", (space_id,)
-            ).fetchone()
-            latest = self.db.execute(
-                "SELECT id FROM operations WHERE space_id=? ORDER BY id DESC LIMIT 1", (space_id,)
-            ).fetchone()
-            grants = self.db.execute(
-                "SELECT version,authorized FROM grants WHERE space_id=? AND version IN (?,?) ORDER BY version",
-                (space_id, expected_auth_version - 1, expected_auth_version),
-            ).fetchall()
-            if (
-                state is None or claim is None or latest is None
-                or claim["state"] != "finished" or claim["through"] != state["acked_through"]
-                or claim["auth_version"] != expected_auth_version - 1
-                or [(row["version"], row["authorized"]) for row in grants]
-                != [(expected_auth_version - 1, 1), (expected_auth_version, 0)]
-                or latest["id"] != operation["id"]
-                or (operation["action"], operation["category"], operation["state"], operation["trigger_ref"],
-                    operation["auth_version"], operation["scope_snapshot"], operation["binding_id"])
-                != ("think", "think", "succeeded", str(claim["through"]), claim["auth_version"],
-                    space["scope"], space["binding_id"])
-            ):
-                raise StoreError("RECOVERY_UNSAFE", "Latest finished claim and old authorization do not prove this wait")
-            now, _ = self._now()
-            try:
-                params = json.loads(operation["params_json"])
-                result = json.loads(operation["evidence"])
-                decision = result["decision"]
-                delay = decision["delay_seconds"]
-                known_work = next(w for w in params["context"]["works"] if w["work_id"] == work_id)
-                backoff = datetime.fromisoformat(state["backoff_until"])
-                started = backoff - timedelta(seconds=delay)
-                proven = (
-                    params["task"] == "plan" and decision["action"] == "wait"
-                    and type(delay) is int and 60 <= delay <= 86400
-                    and known_work["status"] == "planned" and known_work["brief"] == json.loads(work["brief"])
-                    and datetime.fromisoformat(operation["updated_at"]) <= started <= datetime.fromisoformat(now)
-                    and datetime.fromisoformat(now) < backoff
-                )
-            except (KeyError, TypeError, ValueError, StopIteration, OverflowError):
-                proven = False
-            if not proven:
-                raise StoreError("RECOVERY_UNSAFE", "A successful explicit wait for the retained plan is required")
-            receipt = canonical_json({
-                "request": request, "work_digest": work_digest, "wait_digest": wait_digest,
-                "claim_token": claim["token"], "through": claim["through"],
-                "old_auth_version": claim["auth_version"], "operation_id": operation["id"],
-                "previous_next_due": state["next_due"], "previous_backoff_until": state["backoff_until"],
-                "restored_at": now,
-            })
-            if len(receipt) > 4096:
-                raise StoreError("INVALID_ARGUMENT", "Encoded recovery receipt exceeds 4096 characters")
-            self._enqueue_wake(space_id, event_id, "idle", receipt, last_wait_request_id)
-            self.db.execute(
-                "UPDATE artist_state SET next_due=?,backoff_until=NULL WHERE space_id=?", (now, space_id)
-            )
-            return True
-
-    def _chat_interrupts_wait(self, space, state) -> bool:
-        # Infer only a successful model wait from the existing durable ledger.
-        # A later released/recovered/active claim, or any later operation, must
-        # not borrow an old wait's evidence to bypass a failure backoff.
-        space_id = space["space_id"]
-        if self.db.execute(
-            """SELECT 1 FROM (SELECT kind FROM artist_wakes
-            WHERE space_id=? AND id>? ORDER BY id LIMIT 64) WHERE kind='chat' LIMIT 1""",
-            (space_id, state["acked_through"]),
-        ).fetchone() is None:
-            # Never wake a model for chat beyond the batch it will actually see,
-            # or skip/ack the preceding backlog merely to reach that chat.
-            return False
-        claim = self.db.execute(
-            "SELECT * FROM artist_claims WHERE space_id=? ORDER BY rowid DESC LIMIT 1", (space_id,)
-        ).fetchone()
-        if claim is None or claim["state"] != "finished" or claim["through"] != state["acked_through"]:
-            return False
-        operation = self.db.execute(
-            "SELECT * FROM operations WHERE space_id=? ORDER BY id DESC LIMIT 1", (space_id,)
-        ).fetchone()
-        if operation is None or (
-            operation["action"], operation["category"], operation["state"], operation["trigger_ref"],
-            operation["auth_version"], operation["scope_snapshot"], operation["binding_id"],
-        ) != (
-            "think", "think", "succeeded", str(claim["through"]),
-            claim["auth_version"], space["scope"], space["binding_id"],
-        ):
-            return False
-        try:
-            params, result = json.loads(operation["params_json"]), json.loads(operation["evidence"])
-        except (TypeError, ValueError):
-            return False
-        # The old claim's epoch proves the wait's origin, not current authority.
-        # claim_wake checks the live grant; dispatch still checks budgets/epochs
-        # and the existing unknown-operation locks, including after re-grant.
-        return (
-            isinstance(params, dict) and params.get("task") == "plan"
-            and isinstance(result, dict) and isinstance(result.get("decision"), dict)
-            and result["decision"].get("action") == "wait"
+        return self._wakes.restore_planned_wait(
+            space_id, scope, expected_auth_version=expected_auth_version, work_id=work_id,
+            last_wait_request_id=last_wait_request_id, event_id=event_id, reason=reason, offline=offline,
         )
 
     def claim_wake(self, space_id, scope, *, token):
-        nonempty(token, "token")
-        with self._transaction():
-            space = self._space(space_id, scope)
-            self._authorized(space)
-            state = self._artist_state(space_id)
-            now, _ = self._now()
-            if state["backoff_until"] and datetime.fromisoformat(now) < datetime.fromisoformat(
-                state["backoff_until"]
-            ):
-                if not self._chat_interrupts_wait(space, state):
-                    return None
-                # Proof, interruption and the new claim share BEGIN IMMEDIATE:
-                # chat arriving during model await/finish is never lost, and a
-                # second connection cannot clear a competing worker's backoff.
-                self.db.execute("UPDATE artist_state SET backoff_until=NULL WHERE space_id=?", (space_id,))
-            active = self.db.execute(
-                "SELECT * FROM artist_claims WHERE space_id=? AND state='active'",
-                (space_id,),
-            ).fetchone()
-            if active and active["token"] != token:
-                return None
-            if not active:
-                # Never recycle tokens: a delayed old worker must not ack a new batch.
-                if self.db.execute(
-                    "SELECT 1 FROM artist_claims WHERE space_id=? AND token=?", (space_id, token)
-                ).fetchone():
-                    return None
-                batch = self.db.execute(
-                    "SELECT id FROM artist_wakes WHERE space_id=? AND id>? ORDER BY id LIMIT 64",
-                    (space_id, state["acked_through"]),
-                ).fetchall()
-                if not batch:
-                    return None
-                through = batch[-1]["id"]
-                self.db.execute(
-                    "INSERT INTO artist_claims VALUES(?,?,?,'active',?)",
-                    (space_id, token, through, space["auth_version"]),
-                )
-                active = self.db.execute(
-                    "SELECT * FROM artist_claims WHERE space_id=? AND token=?", (space_id, token)
-                ).fetchone()
-            events = [
-                dict(row)
-                for row in self.db.execute(
-                    """SELECT event_id,kind,text,source_ref FROM artist_wakes
-                WHERE space_id=? AND id>? AND id<=? ORDER BY id""",
-                    (space_id, state["acked_through"], active["through"]),
-                )
-            ]
-            for event in events:
-                if event["kind"] == "idle" and event["source_ref"] is not None:
-                    try:
-                        audit = json.loads(event["text"])
-                    except (TypeError, ValueError):
-                        continue
-                    if (
-                        isinstance(audit, dict) and isinstance(audit.get("request"), dict)
-                        and audit["request"].get("operation") == "restore_planned_wait"
-                        and audit["request"].get("last_wait_request_id") == event["source_ref"]
-                    ):
-                        # The durable repair receipt is administrative evidence,
-                        # never fresh drawing inspiration supplied to a model.
-                        event["text"] = ""
-            return {
-                "token": token,
-                "through": active["through"],
-                "events": events,
-                "auth_version": active["auth_version"],
-            }
+        return self._wakes.claim_wake(space_id, scope, token=token)
 
     def finish_wake(self, space_id, scope, *, token, acknowledge=True, retry_after=0) -> None:
-        nonempty(token, "token")
-        if (
-            type(acknowledge) is not bool
-            or type(retry_after) is not int
-            or not (retry_after == 0 or 60 <= retry_after <= 86400)
-        ):
-            raise StoreError("INVALID_ARGUMENT", "Invalid wake acknowledgement or retry interval")
-        with self._transaction():
-            self._space(space_id, scope)
-            claim = self.db.execute(
-                "SELECT * FROM artist_claims WHERE space_id=? AND token=?", (space_id, token)
-            ).fetchone()
-            if claim is None or claim["state"] in {"recovered", "released"}:
-                raise StoreError("CLAIM_MISMATCH", "No active claim for this token")
-            if claim["state"] == "finished":
-                return
-            now, _ = self._now()
-            backoff = (
-                (datetime.fromisoformat(now) + timedelta(seconds=retry_after)).isoformat()
-                if retry_after
-                else None
-            )
-            if acknowledge:
-                self.db.execute(
-                    "UPDATE artist_state SET acked_through=max(acked_through,?) WHERE space_id=?",
-                    (claim["through"], space_id),
-                )
-            self.db.execute("UPDATE artist_state SET backoff_until=? WHERE space_id=?", (backoff, space_id))
-            self.db.execute(
-                "UPDATE artist_claims SET state=? WHERE space_id=? AND token=?",
-                ("finished" if acknowledge else "released", space_id, token),
-            )
+        self._wakes.finish_wake(space_id, scope, token=token, acknowledge=acknowledge, retry_after=retry_after)
 
     def recover_artist(self, space_id, scope, *, offline=False):
-        if offline is not True:
-            raise StoreError("OFFLINE_REQUIRED", "Stop previous workers before recovery")
-        with self._transaction():
-            self._space(space_id, scope)
-            now, _ = self._now()
-            self.db.execute(
-                "UPDATE artist_claims SET state='recovered' WHERE space_id=? AND state='active'", (space_id,)
-            )
-            return self.db.execute(
-                """UPDATE operations SET state='unknown',evidence='explicit offline recovery',updated_at=?
-                WHERE space_id=? AND state IN ('submitting','accepted')""",
-                (now, space_id),
-            ).rowcount
+        return self._wakes.recover_artist(space_id, scope, offline=offline)
 
     @staticmethod
     def _string_list(values, field):
@@ -1422,13 +1013,6 @@ class ArtistStore:
         for value in values:
             nonempty(value, field)
         return list(dict.fromkeys(values))
-
-    @staticmethod
-    def _decode(row, *fields):
-        result = dict(row)
-        for field in fields:
-            result[field] = json.loads(result[field])
-        return result
 
     def remember_inspiration(
         self,
@@ -1451,11 +1035,11 @@ class ArtistStore:
             raise StoreError("INVALID_ARGUMENT", "Chat inspirations require verified source references")
         if type(ttl_seconds) is not int or not 0 < ttl_seconds <= 365 * 86400:
             raise StoreError("INVALID_ARGUMENT", "ttl_seconds must be a positive bounded integer")
-        with self._transaction():
-            space = self._space(space_id, scope)
-            self._expected_authorization(space, expected_auth_version)
-            self._authorized(space)
-            now, _ = self._now()
+        with self._uow.transaction():
+            space = self._queries.space(space_id, scope)
+            expected_authorization(space, expected_auth_version)
+            require_authorized(space)
+            now, _ = self._uow.now()
             expires = (datetime.fromisoformat(now) + timedelta(seconds=ttl_seconds)).isoformat()
             self.db.execute("DELETE FROM inspirations WHERE space_id=? AND expires_at<=?", (space_id, now))
             old = self.db.execute(
@@ -1477,7 +1061,7 @@ class ArtistStore:
                              LIMIT 100)""",
                 (space_id, space_id),
             )
-            return self._decode(
+            return decode_fields(
                 self.db.execute(
                     "SELECT * FROM inspirations WHERE space_id=? AND key=?", (space_id, key)
                 ).fetchone(),
@@ -1515,10 +1099,10 @@ class ArtistStore:
             if note_id in notes and notes[note_id] != summary:
                 raise StoreError("REQUEST_CONFLICT", "A thought snapshot cannot change its summary")
             notes[note_id] = summary
-        with self._transaction():
-            space = self._space(space_id, scope)
-            self._expected_authorization(space, expected_auth_version)
-            self._authorized(space)
+        with self._uow.transaction():
+            space = self._queries.space(space_id, scope)
+            expected_authorization(space, expected_auth_version)
+            require_authorized(space)
             if not group_id:
                 if enabled or thoughts:
                     raise StoreError("INVALID_ARGUMENT", "Private spaces cannot import group thoughts")
@@ -1552,7 +1136,7 @@ class ArtistStore:
             )}
             if len(existing.keys() | notes.keys()) > 128:
                 raise StoreError("INVALID_ARGUMENT", "Group thought capacity is 128 persistent notes")
-            now, _ = self._now()
+            now, _ = self._uow.now()
             added = False
             for note_id, summary in notes.items():
                 collision = self.db.execute(
@@ -1576,7 +1160,7 @@ class ArtistStore:
                     (space_id, note_id, "group-thought:" + note_id, summary, group_id, now, now),
                 )
                 if enabled:
-                    self._enqueue_wake(space_id, "thought:" + note_id, "completion", "", None)
+                    self._wakes.enqueue_in_transaction(space_id, "thought:" + note_id, "completion", "", None)
                 added = True
             return added
 
@@ -1593,10 +1177,10 @@ class ArtistStore:
 
     def list_inspirations(self, space_id, scope):
         with self.lock:
-            self._authorized(self._space(space_id, scope))
-            now, _ = self._now()
+            require_authorized(self._queries.space(space_id, scope))
+            now, _ = self._uow.now()
             ideas = [
-                self._decode(row, "source_refs")
+                decode_fields(row, "source_refs")
                 for row in self.db.execute(
                     "SELECT * FROM inspirations WHERE space_id=? AND expires_at>? ORDER BY updated_at,key",
                     (space_id, now),
@@ -1609,15 +1193,6 @@ class ArtistStore:
                 for row in self._available_group_thoughts(space_id)
             )
             return sorted(ideas, key=lambda idea: (idea["updated_at"], idea["key"]))
-
-    def _artist_work(self, space_id, scope, work_id):
-        self._space(space_id, scope)
-        row = self.db.execute(
-            "SELECT * FROM artist_works WHERE space_id=? AND work_id=?", (space_id, work_id)
-        ).fetchone()
-        if row is None:
-            raise StoreError("NOT_FOUND", "Artist work not found in this space")
-        return self._decode(row, "brief", "inspiration_keys")
 
     def _check_active_work(self, space_id, work_id):
         row = self.db.execute(
@@ -1636,10 +1211,10 @@ class ArtistStore:
         """
         validate_catalog(profiles, series)
         profiles, series = json.loads(canonical_json([profiles, series]))
-        with self._transaction():
-            space = self._space(space_id, scope)
-            self._expected_authorization(space, expected_auth_version)
-            self._authorized(space)
+        with self._uow.transaction():
+            space = self._queries.space(space_id, scope)
+            expected_authorization(space, expected_auth_version)
+            require_authorized(space)
             self._configure_creative(space_id, profiles, series, space["auth_version"])
             validate_catalog(self.list_profiles(space_id, scope), self.list_series(space_id, scope), allow_revisions=True)
             return {"profiles": self.list_profiles(space_id, scope), "series": self.list_series(space_id, scope)}
@@ -1690,10 +1265,10 @@ class ArtistStore:
 
     def import_creative(self, space_id, scope, *, profiles, series, expected_auth_version):
         """Host reload imports old configuration once; it never synchronizes ownership."""
-        with self._transaction():
-            space = self._space(space_id, scope)
-            self._expected_authorization(space, expected_auth_version)
-            self._authorized(space)
+        with self._uow.transaction():
+            space = self._queries.space(space_id, scope)
+            expected_authorization(space, expected_auth_version)
+            require_authorized(space)
             if self.db.execute("SELECT 1 FROM creative_imports WHERE space_id=?", (space_id,)).fetchone():
                 return False
             # Existing schema-4/6 catalogues already represent an import, including
@@ -1710,15 +1285,15 @@ class ArtistStore:
             })
             self.db.execute("INSERT INTO creative_imports VALUES(?,?,?,?,?)", (
                 space_id, hashlib.sha256(snapshot.encode()).hexdigest(), snapshot,
-                space["auth_version"], self._now()[0],
+                space["auth_version"], self._uow.now()[0],
             ))
             return True
 
     def list_profiles(self, space_id, scope) -> list[dict]:
         with self.lock:
-            self._authorized(self._space(space_id, scope))
+            require_authorized(self._queries.space(space_id, scope))
             return [
-                self._decode(row, "data") for row in self.db.execute(
+                decode_fields(row, "data") for row in self.db.execute(
                     """SELECT profile_id,revision,data FROM profile_versions p WHERE space_id=? AND
                     (active=1 OR EXISTS (SELECT 1 FROM series s WHERE s.space_id=p.space_id
                     AND s.profile_id=p.profile_id AND s.profile_revision=p.revision AND s.active=1 AND s.closed=0))
@@ -1728,12 +1303,12 @@ class ArtistStore:
 
     def creative_catalog(self, space_id, scope) -> dict:
         """Freeze both visible collections together, including across connections."""
-        with self._transaction():
+        with self._uow.transaction():
             return {"profiles": self.list_profiles(space_id, scope), "series": self.list_series(space_id, scope)}
 
     def list_series(self, space_id, scope) -> list[dict]:
         with self.lock:
-            self._authorized(self._space(space_id, scope))
+            require_authorized(self._queries.space(space_id, scope))
             return [
                 dict(row) for row in self.db.execute(
                     """SELECT s.series_id,s.title,s.goal,s.profile_id,s.profile_revision FROM series AS s
@@ -1746,11 +1321,11 @@ class ArtistStore:
 
     def apply_catalog_decision(self, space_id, scope, *, request_id, expected_auth_version):
         """Apply only a paid, successful plan's frozen evidence, atomically and once."""
-        with self._transaction():
-            space = self._space(space_id, scope)
-            self._expected_authorization(space, expected_auth_version)
-            self._authorized(space)
-            op = self._operation(space_id, scope, request_id)
+        with self._uow.transaction():
+            space = self._queries.space(space_id, scope)
+            expected_authorization(space, expected_auth_version)
+            require_authorized(space)
+            op = self._queries.operation(space_id, scope, request_id)
             if (op["action"], op["category"], op["state"], op["auth_version"], op["binding_id"], op["scope_snapshot"]) != (
                 "think", "think", "succeeded", space["auth_version"], space["binding_id"], space["scope"],
             ):
@@ -1811,10 +1386,10 @@ class ArtistStore:
 
     def close_series(self, space_id, scope, series_id, expected_auth_version):
         nonempty(series_id, "series_id")
-        with self._transaction():
-            space = self._space(space_id, scope)
-            self._expected_authorization(space, expected_auth_version)
-            self._authorized(space)
+        with self._uow.transaction():
+            space = self._queries.space(space_id, scope)
+            expected_authorization(space, expected_auth_version)
+            require_authorized(space)
             old = self.db.execute(
                 "SELECT 1 FROM series WHERE space_id=? AND series_id=?", (space_id, series_id)
             ).fetchone()
@@ -1833,13 +1408,13 @@ class ArtistStore:
     def get_asset(self, space_id, scope, asset_id):
         """Scoped historical metadata; no image bytes or authorization renewal."""
         with self.lock:
-            self._space(space_id, scope)
+            self._queries.space(space_id, scope)
             row = self.db.execute(
                 "SELECT * FROM asset_catalog WHERE space_id=? AND asset_id=?", (space_id, asset_id)
             ).fetchone()
             if row is None:
                 raise StoreError("NOT_FOUND", "Asset not found in this space")
-            return self._decode(row, "roles", "tags")
+            return decode_fields(row, "roles", "tags")
 
     def configure_reference_policy(self, space_id, scope, *, enabled, consent_ref, expected_auth_version):
         if (
@@ -1849,10 +1424,10 @@ class ArtistStore:
             raise StoreError("INVALID_ARGUMENT", "Reference policy needs a boolean and bounded consent reference")
         if enabled:
             nonempty(consent_ref, "consent_ref")
-        with self._transaction():
-            space = self._space(space_id, scope)
-            self._expected_authorization(space, expected_auth_version)
-            self._authorized(space)
+        with self._uow.transaction():
+            space = self._queries.space(space_id, scope)
+            expected_authorization(space, expected_auth_version)
+            require_authorized(space)
             old = self.db.execute("SELECT * FROM reference_policy WHERE space_id=?", (space_id,)).fetchone()
             changed = old is None or (old["enabled"], old["consent_ref"], old["auth_version"]) != (
                 int(enabled), consent_ref, space["auth_version"],
@@ -1869,9 +1444,9 @@ class ArtistStore:
     def _reference_policy(self, space_id, scope, expected_auth_version):
         if type(expected_auth_version) is not int or expected_auth_version < 0:
             raise StoreError("INVALID_ARGUMENT", "An explicit current authorization version is required")
-        space = self._space(space_id, scope)
-        self._expected_authorization(space, expected_auth_version)
-        self._authorized(space)
+        space = self._queries.space(space_id, scope)
+        expected_authorization(space, expected_auth_version)
+        require_authorized(space)
         row = self.db.execute("SELECT * FROM reference_policy WHERE space_id=?", (space_id,)).fetchone()
         if row is None or not row["enabled"] or not row["consent_ref"].strip():
             raise StoreError("REFERENCE_AUTH_REQUIRED", "Explicit image-reference delegation is not active")
@@ -1883,7 +1458,7 @@ class ArtistStore:
     def validate_reference_authorization(self, space_id, scope, *, expected_auth_version):
         # Match grant and policy in one database snapshot, including writers
         # using another ArtistStore connection.
-        with self._transaction():
+        with self._uow.transaction():
             return self._reference_policy(space_id, scope, expected_auth_version)
 
     def import_asset(self, space_id, scope, *, event_id, message_index, data, mime, roles, tags,
@@ -1900,7 +1475,7 @@ class ArtistStore:
             ["authorized_chat", space_id, event_id, message_index]
         ).encode("utf-8")).hexdigest()
         metadata = ("来源元数据 source_metadata（图片内容未审阅，未进行图像分析）：" + description)[:1000]
-        with self._transaction():
+        with self._uow.transaction():
             policy = self._reference_policy(space_id, scope, expected_auth_version)
             if consent_ref != policy["consent_ref"]:
                 raise StoreError("REFERENCE_AUTH_CHANGED", "Image consent does not match the current delegation")
@@ -1923,7 +1498,7 @@ class ArtistStore:
             ).fetchone()
             if usage["count"] >= MAX_ASSETS or usage["bytes"] + len(data) > MAX_ASSET_BYTES:
                 raise StoreError("ASSET_QUOTA", "Space asset count or retained-image byte quota is exhausted")
-            now, _ = self._now()
+            now, _ = self._uow.now()
             self.db.execute(
                 """INSERT INTO asset_catalog(space_id,asset_id,source_version_id,work_id,job_id,sha256,mime,
                 size_bytes,roles,tags,reason,summary,description,source_kind,review_request_id,auth_version,created_at)
@@ -1957,16 +1532,16 @@ class ArtistStore:
 
     def get_asset_registration(self, space_id, scope, asset_id):
         with self.lock:
-            self._space(space_id, scope)
+            self._queries.space(space_id, scope)
             row = self.db.execute(
                 "SELECT * FROM asset_registrations WHERE space_id=? AND asset_id=?", (space_id, asset_id)
             ).fetchone()
             return self._registration_snapshot(row) if row is not None else None
 
     def reserve_asset_registration(self, space_id, scope, *, asset_id, expected_auth_version):
-        with self._transaction():
+        with self._uow.transaction():
             policy = self._reference_policy(space_id, scope, expected_auth_version)
-            space = self._space(space_id, scope)
+            space = self._queries.space(space_id, scope)
             old = self.get_asset_registration(space_id, scope, asset_id)
             if old is not None:
                 if old["binding_id"] != space["binding_id"]:
@@ -1994,9 +1569,9 @@ class ArtistStore:
             return self.get_asset_registration(space_id, scope, asset_id)
 
     def claim_asset_registration(self, space_id, scope, asset_id, expected_auth_version):
-        with self._transaction():
+        with self._uow.transaction():
             policy = self._reference_policy(space_id, scope, expected_auth_version)
-            space = self._space(space_id, scope)
+            space = self._queries.space(space_id, scope)
             old = self.get_asset_registration(space_id, scope, asset_id)
             if old is None:
                 raise StoreError("NOT_FOUND", "Registration reservation not found")
@@ -2024,7 +1599,7 @@ class ArtistStore:
         nonempty(reason, "reason")
         if len(reason) > 500:
             raise StoreError("INVALID_ARGUMENT", "Registration uncertainty reason is too long")
-        with self._transaction():
+        with self._uow.transaction():
             old = self.get_asset_registration(space_id, scope, asset_id)
             if old is None:
                 raise StoreError("NOT_FOUND", "Registration not found")
@@ -2043,7 +1618,7 @@ class ArtistStore:
         ):
             raise StoreError("INVALID_ARGUMENT", "Registration receipt must be exact, bounded asset metadata")
         payload = canonical_json(receipt)
-        with self._transaction():
+        with self._uow.transaction():
             old = self.get_asset_registration(space_id, scope, asset_id)
             if old is None:
                 raise StoreError("NOT_FOUND", "Registration not found")
@@ -2067,18 +1642,18 @@ class ArtistStore:
         validate_archive(roles, tags, reason)
         roles, tags = sorted(roles), sorted(tags)
         asset_id = "asset:" + hashlib.sha256(canonical_json([space_id, version_id]).encode("utf-8")).hexdigest()
-        with self._transaction():
-            space = self._space(space_id, scope)
-            self._expected_authorization(space, expected_auth_version)
-            self._authorized(space)
-            version = self._version(space_id, scope, version_id)
+        with self._uow.transaction():
+            space = self._queries.space(space_id, scope)
+            expected_authorization(space, expected_auth_version)
+            require_authorized(space)
+            version = self._queries.version(space_id, scope, version_id)
             if (
                 not isinstance(version["data"], bytes) or not version["data"]
                 or hashlib.sha256(version["data"]).hexdigest() != version["sha256"]
                 or version["mime"] not in {"image/png", "image/jpeg", "image/webp"}
             ):
                 raise StoreError("ARTIFACT_INVALID", "Archive source bytes failed verification")
-            proof = self._accepted_review(space_id, scope, space, version)
+            proof = self._reviews.accepted_review(space_id, scope, space, version)
             if proof is None:
                 raise StoreError("VERSION_NOT_ACCEPTED", "Only a version selected by a valid accepting review may be archived")
             old = self.db.execute(
@@ -2087,8 +1662,8 @@ class ArtistStore:
             if old is not None:
                 if (old["roles"], old["tags"], old["reason"]) != (canonical_json(roles), canonical_json(tags), reason):
                     raise StoreError("REQUEST_CONFLICT", "Archive roles, tags and reason are immutable")
-                self._asset_source(space_id, scope, self._decode(old, "roles", "tags"))
-                return self._decode(old, "roles", "tags")
+                self._asset_source(space_id, scope, decode_fields(old, "roles", "tags"))
+                return decode_fields(old, "roles", "tags")
             # Inactive entries still retain bytes and consume quota. Disabling
             # an asset cannot be used to evade the storage limit.
             usage = self.db.execute(
@@ -2107,7 +1682,7 @@ class ArtistStore:
             evidence_text = "评审理由：" + review_reason + "\n评审优点：" + "；".join(strengths)
             summary = evidence_text[:1000]
             description = (evidence_text + "\n入库用途说明：" + reason)[:2000]
-            now, _ = self._now()
+            now, _ = self._uow.now()
             self.db.execute(
                 """INSERT INTO asset_catalog(space_id,asset_id,source_version_id,work_id,job_id,sha256,mime,
                 size_bytes,roles,tags,reason,summary,description,source_kind,review_request_id,auth_version,created_at)
@@ -2127,10 +1702,10 @@ class ArtistStore:
             raise StoreError("INVALID_ARGUMENT", "Asset query and candidate limit must be bounded")
         terms = unicodedata.normalize("NFKC", query).casefold().split()
         with self.lock:
-            self._authorized(self._space(space_id, scope))
+            require_authorized(self._queries.space(space_id, scope))
             candidates = []
             for row in self.db.execute("SELECT * FROM asset_catalog WHERE space_id=? AND active=1", (space_id,)):
-                asset = self._decode(row, "roles", "tags")
+                asset = decode_fields(row, "roles", "tags")
                 tags = [unicodedata.normalize("NFKC", tag).casefold() for tag in asset["tags"]]
                 text = unicodedata.normalize("NFKC", asset["summary"] + " " + " ".join(asset["tags"])).casefold()
                 if terms and not all(term in text for term in terms):
@@ -2141,7 +1716,7 @@ class ArtistStore:
 
     def _asset_source(self, space_id, scope, asset):
         if asset["source_kind"] == "authorized_chat":
-            self._space(space_id, scope)
+            self._queries.space(space_id, scope)
             row = self.db.execute("SELECT data FROM external_assets WHERE space_id=? AND asset_id=?",
                                   (space_id, asset["asset_id"])).fetchone()
             if (
@@ -2151,7 +1726,7 @@ class ArtistStore:
                 raise StoreError("ARTIFACT_INVALID", "Original external image bytes changed")
             image = validate_asset_image(row["data"], asset["mime"])
             return image
-        version = self._version(space_id, scope, asset["source_version_id"])
+        version = self._queries.version(space_id, scope, asset["source_version_id"])
         if (
             any(version[key] != asset[key] for key in ("work_id", "job_id", "sha256", "mime"))
             or not isinstance(version["data"], bytes) or len(version["data"]) != asset["size_bytes"]
@@ -2177,10 +1752,10 @@ class ArtistStore:
         ):
             raise StoreError("INVALID_ARGUMENT", "Select at most three distinct bounded asset IDs")
         asset_ids = list(asset_ids)
-        with self._transaction():
-            space = self._space(space_id, scope)
-            self._expected_authorization(space, expected_auth_version)
-            self._authorized(space)
+        with self._uow.transaction():
+            space = self._queries.space(space_id, scope)
+            expected_authorization(space, expected_auth_version)
+            require_authorized(space)
             assets = [self.get_asset(space_id, scope, identifier) for identifier in asset_ids]
             for asset in assets:
                 if not asset["active"]:
@@ -2198,8 +1773,8 @@ class ArtistStore:
 
     def selected_assets(self, space_id, scope):
         with self.lock:
-            self._space(space_id, scope)
-            assets = [self._decode(row, "roles", "tags") for row in self.db.execute(
+            self._queries.space(space_id, scope)
+            assets = [decode_fields(row, "roles", "tags") for row in self.db.execute(
                 """SELECT a.* FROM asset_selection AS s JOIN asset_catalog AS a
                 ON a.space_id=s.space_id AND a.asset_id=s.asset_id
                 WHERE s.space_id=? AND s.selected=1 AND a.active=1 ORDER BY s.position,a.asset_id""", (space_id,),
@@ -2207,10 +1782,10 @@ class ArtistStore:
             return self._asset_details(assets)
 
     def deactivate_asset(self, space_id, scope, asset_id, expected_auth_version):
-        with self._transaction():
-            space = self._space(space_id, scope)
-            self._expected_authorization(space, expected_auth_version)
-            self._authorized(space)
+        with self._uow.transaction():
+            space = self._queries.space(space_id, scope)
+            expected_authorization(space, expected_auth_version)
+            require_authorized(space)
             self.get_asset(space_id, scope, asset_id)
             self.db.execute("UPDATE asset_catalog SET active=0 WHERE space_id=? AND asset_id=?", (space_id, asset_id))
 
@@ -2227,7 +1802,7 @@ class ArtistStore:
                 raise StoreError("NOT_FOUND", "Inactive asset cannot enter a new plan")
             if asset["source_kind"] == "authorized_chat":
                 active_policy = policy or self._reference_policy(
-                    space_id, scope, self._space(space_id, scope)["auth_version"]
+                    space_id, scope, self._queries.space(space_id, scope)["auth_version"]
                 )
                 original = self.db.execute("SELECT consent_ref FROM external_assets WHERE space_id=? AND asset_id=?",
                                             (space_id, asset["asset_id"])).fetchone()
@@ -2265,11 +1840,12 @@ class ArtistStore:
             raise StoreError("INVALID_ARGUMENT", "At most three reference choices are allowed")
         references = json.loads(canonical_json(references))
         keys = self._string_list(inspiration_keys, "inspiration_keys")
-        with self._transaction():
-            space = self._space(space_id, scope)
-            self._expected_authorization(space, expected_auth_version)
-            self._authorized(space)
-            now, _ = self._now()
+        with self._uow.transaction():
+            space = self._queries.space(space_id, scope)
+            expected_authorization(space, expected_auth_version)
+            require_authorized(space)
+            self._lock_single_work(space_id, scope, work_id)
+            now, _ = self._uow.now()
             old = self.db.execute(
                 "SELECT * FROM artist_works WHERE space_id=? AND work_id=?", (space_id, work_id)
             ).fetchone()
@@ -2288,7 +1864,7 @@ class ArtistStore:
                     or json.loads(old["inspiration_keys"]) != keys
                 ):
                     raise StoreError("REQUEST_CONFLICT", "Work brief and inspiration bindings are immutable")
-                return self._artist_work(space_id, scope, work_id)
+                return self._queries.artist_work(space_id, scope, work_id)
             self._check_active_work(space_id, work_id)
             policy = self._reference_policy(space_id, scope, expected_auth_version) if reference_usage == "image_input" else None
             snapshot, objective = None, None
@@ -2344,17 +1920,17 @@ class ArtistStore:
                         "UPDATE inspirations SET consumed_by=? WHERE space_id=? AND key=?",
                         (work_id, space_id, key),
                     )
-            return self._artist_work(space_id, scope, work_id)
+            return self._queries.artist_work(space_id, scope, work_id)
 
     def get_artist_work(self, space_id, scope, work_id):
         with self.lock:
-            return self._artist_work(space_id, scope, work_id)
+            return self._queries.artist_work(space_id, scope, work_id)
 
     def list_artist_works(self, space_id, scope):
         with self.lock:
-            self._space(space_id, scope)
+            self._queries.space(space_id, scope)
             return [
-                self._decode(row, "brief", "inspiration_keys")
+                decode_fields(row, "brief", "inspiration_keys")
                 for row in self.db.execute(
                     "SELECT * FROM artist_works WHERE space_id=? ORDER BY rowid",
                     (space_id,),
@@ -2374,9 +1950,9 @@ class ArtistStore:
         if not isinstance(changes, dict) or not changes.keys() <= allowed:
             raise StoreError("INVALID_ARGUMENT", "Unknown or immutable work fields")
         changes = dict(changes)
-        with self._transaction():
-            current = self._artist_work(space_id, scope, work_id)
-            space = self._space(space_id, scope)
+        with self._uow.transaction():
+            current = self._queries.artist_work(space_id, scope, work_id)
+            space = self._queries.space(space_id, scope)
             status = changes.get("status", current["status"])
             if status not in {*_ACTIVE_WORK, "finished", "abandoned"}:
                 raise StoreError("INVALID_ARGUMENT", "Unknown artist work status")
@@ -2392,11 +1968,11 @@ class ArtistStore:
             for key in ("parent_version", "best_version"):
                 if (
                     changes.get(key) is not None
-                    and self._version(space_id, scope, changes[key])["work_id"] != work_id
+                    and self._queries.version(space_id, scope, changes[key])["work_id"] != work_id
                 ):
                     raise StoreError("NOT_FOUND", "Version does not belong to this work")
             if changes.get("pending_request") is not None:
-                op = self._operation(space_id, scope, changes["pending_request"])
+                op = self._queries.operation(space_id, scope, changes["pending_request"])
                 if op["work_id"] != work_id or op["category"] != "render":
                     raise StoreError("NOT_FOUND", "Pending render does not belong to this work")
             for key in ("reason", "edit_prompt"):
@@ -2417,16 +1993,7 @@ class ArtistStore:
                     f"UPDATE artist_works SET {fields} WHERE space_id=? AND work_id=?",
                     (*changes.values(), space_id, work_id),
                 )
-            return self._artist_work(space_id, scope, work_id)
-
-    def _version(self, space_id, scope, version_id):
-        self._space(space_id, scope)
-        row = self.db.execute(
-            "SELECT * FROM versions WHERE space_id=? AND version_id=?", (space_id, version_id)
-        ).fetchone()
-        if row is None:
-            raise StoreError("NOT_FOUND", "Version not found in this space")
-        return dict(row)
+            return self._queries.artist_work(space_id, scope, work_id)
 
     def record_version(
         self, space_id, scope, *, work_id, version_id, request_id, job_id, data, mime, parent_id=None
@@ -2437,8 +2004,8 @@ class ArtistStore:
         if mime not in {"image/png", "image/jpeg", "image/webp"} or parent_id == version_id:
             raise StoreError("INVALID_ARGUMENT", "Invalid image MIME or self parent")
         digest = hashlib.sha256(data).hexdigest()
-        with self._transaction():
-            op = self._operation(space_id, scope, request_id)
+        with self._uow.transaction():
+            op = self._queries.operation(space_id, scope, request_id)
             if (
                 op["category"] != "render"
                 or op["work_id"] != work_id
@@ -2447,12 +2014,12 @@ class ArtistStore:
                 or job_id is None
             ):
                 raise StoreError("NOT_FOUND", "Version requires its original bound render job")
-            if parent_id is not None and self._version(space_id, scope, parent_id)["work_id"] != work_id:
+            if parent_id is not None and self._queries.version(space_id, scope, parent_id)["work_id"] != work_id:
                 raise StoreError("NOT_FOUND", "Parent version belongs to another work")
             if op["action"] == "edit":
                 if parent_id is None:
                     raise StoreError("REQUEST_CONFLICT", "An edit version requires its source parent")
-                parent = self._version(space_id, scope, parent_id)
+                parent = self._queries.version(space_id, scope, parent_id)
                 source = json.loads(op["params_json"])
                 if (source.get("source_job_id"), source.get("source_sha256")) != (
                     parent["job_id"],
@@ -2484,13 +2051,13 @@ class ArtistStore:
                 ):
                     raise StoreError("REQUEST_CONFLICT", "Version and request bindings are immutable")
                 return dict(old)
-            now, _ = self._now()
+            now, _ = self._uow.now()
             self.db.execute("INSERT INTO versions VALUES(?,?,?,?,?,?,?,?,?,?)", (space_id, *fields, now))
-            return self._version(space_id, scope, version_id)
+            return self._queries.version(space_id, scope, version_id)
 
     def get_version(self, space_id, scope, version_id):
         with self.lock:
-            return self._version(space_id, scope, version_id)
+            return self._queries.version(space_id, scope, version_id)
 
     def list_versions(self, space_id, scope, work_id):
         with self.lock:
@@ -2505,122 +2072,14 @@ class ArtistStore:
 
     def get_review_snapshot(self, space_id, scope, version_id) -> Optional[Dict[str, Any]]:
         """Historical metadata remains readable after delegation is withdrawn."""
-        with self.lock:
-            self._space(space_id, scope)
-            row = self.db.execute(
-                "SELECT * FROM review_snapshots WHERE space_id=? AND version_id=?", (space_id, version_id)
-            ).fetchone()
-            return self._decode(row, "context") if row is not None else None
-
-    def _validate_review_context(self, space_id, scope, version_id, context, *, check_best):
-        """Validate identities and bytes without putting media in the frozen JSON.
-
-        Only initial freezing consults the live best. Historical snapshots must
-        remain valid when applying a later review changes that best.
-        """
-        allowed = {
-            "persona", "events", "inspirations", "works", "versions", "current_work",
-            "current_version", "review_contract", "review_inputs", "profiles", "series", "assets", "asset_details",
-        }
-        if (
-            not isinstance(context, dict)
-            or not context.keys() <= allowed
-            or type(context.get("review_contract")) is not int
-            or context["review_contract"] != 2
-            or not isinstance(context.get("current_work"), dict)
-            or not isinstance(context.get("current_version"), dict)
-        ):
-            raise StoreError("INVALID_ARGUMENT", "A contract 2 review context is required")
-        current = self._version(space_id, scope, version_id)
-        work = self._artist_work(space_id, scope, current["work_id"])
-        work_meta, current_meta = context["current_work"], context["current_version"]
-        if work_meta.get("work_id") != work["work_id"]:
-            raise StoreError("NOT_FOUND", "Review context belongs to another work")
-        if (
-            not work_meta.keys() <= {"work_id", "brief", "best_version", "status", "reason"}
-            or "best_version" not in work_meta
-            or not current_meta.keys() <= {"version_id", "sha256", "mime", "parent_id"}
-            or any(current_meta.get(key) != current[key] for key in ("version_id", "sha256", "mime"))
-            or ("parent_id" in current_meta and current_meta["parent_id"] != current["parent_id"])
-        ):
-            raise StoreError("INVALID_ARGUMENT", "Review current metadata does not match its version")
-        if "brief" in work_meta and canonical_json(work_meta["brief"]) != canonical_json(work["brief"]):
-            raise StoreError("REQUEST_CONFLICT", "Review brief must match the immutable work plan")
-        best = work_meta["best_version"]
-        if best is not None:
-            nonempty(best, "best_version")
-        if check_best and best != work["best_version"]:
-            raise StoreError("REQUEST_CONFLICT", "Previous best changed before freezing the review")
-        expected_roles = {"current": version_id}
-        if current["parent_id"] is not None:
-            expected_roles["parent"] = current["parent_id"]
-        if best is not None:
-            expected_roles["previous_best"] = best
-        inputs = context.get("review_inputs")
-        if not isinstance(inputs, list) or not 1 <= len(inputs) <= 3:
-            raise StoreError("INVALID_ARGUMENT", "A review requires one to three distinct image versions")
-        seen_versions, roles = set(), {}
-        for item in inputs:
-            if not isinstance(item, dict) or item.keys() != {"version_id", "roles", "sha256", "mime"}:
-                raise StoreError("INVALID_ARGUMENT", "Review inputs must contain image metadata only")
-            identifier = nonempty(item["version_id"], "version_id")
-            assigned = item["roles"]
-            if (
-                identifier in seen_versions
-                or not isinstance(assigned, list)
-                or not assigned
-                or any(type(role) is not str or role not in expected_roles for role in assigned)
-                or len(set(assigned)) != len(assigned)
-            ):
-                raise StoreError("INVALID_ARGUMENT", "Review versions and roles must be unique")
-            seen_versions.add(identifier)
-            image = self._version(space_id, scope, identifier)
-            if image["work_id"] != work["work_id"]:
-                raise StoreError("NOT_FOUND", "All review inputs must belong to the current work")
-            if (
-                not isinstance(image["data"], bytes)
-                or not image["data"]
-                or hashlib.sha256(image["data"]).hexdigest() != image["sha256"]
-                or item["sha256"] != image["sha256"]
-                or item["mime"] != image["mime"]
-                or image["mime"] not in {"image/png", "image/jpeg", "image/webp"}
-            ):
-                raise StoreError("ARTIFACT_INVALID", "Review image metadata or bytes failed verification")
-            for role in assigned:
-                if role in roles or expected_roles[role] != identifier:
-                    raise StoreError("INVALID_ARGUMENT", "Review role does not match the original version")
-                roles[role] = identifier
-        if roles != expected_roles:
-            raise StoreError("INVALID_ARGUMENT", "Review must include current, parent and previous best")
-        return seen_versions
+        return self._reviews.get_review_snapshot(space_id, scope, version_id)
 
     def freeze_review_snapshot(
         self, space_id, scope, *, version_id, context, expected_auth_version
     ) -> Dict[str, Any]:
-        payload = canonical_json(context)
-        # Validate exactly the serialized inputs, detached from caller-owned
-        # dictionaries that could change while the transaction waits for a lock.
-        context = json.loads(payload)
-        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-        with self._transaction():
-            space = self._space(space_id, scope)
-            self._expected_authorization(space, expected_auth_version)
-            self._authorized(space)
-            old = self.db.execute(
-                "SELECT * FROM review_snapshots WHERE space_id=? AND version_id=?", (space_id, version_id)
-            ).fetchone()
-            if old is not None:
-                if old["auth_version"] != space["auth_version"]:
-                    raise StoreError("AUTH_CHANGED", "Review snapshot belongs to an older authorization")
-                if old["context"] != payload or old["input_digest"] != digest:
-                    raise StoreError("REQUEST_CONFLICT", "Review snapshot inputs are immutable")
-            self._validate_review_context(space_id, scope, version_id, context, check_best=old is None)
-            if old is None:
-                self.db.execute(
-                    "INSERT INTO review_snapshots(space_id,version_id,auth_version,context,input_digest) "
-                    "VALUES(?,?,?,?,?)", (space_id, version_id, space["auth_version"], payload, digest),
-                )
-            return self.get_review_snapshot(space_id, scope, version_id)
+        return self._reviews.freeze_review_snapshot(
+            space_id, scope, version_id=version_id, context=context, expected_auth_version=expected_auth_version,
+        )
 
     def version_accepted(self, space_id, scope, version_id, expected_auth_version=None) -> bool:
         """Prove acceptance using the successful original review, never work status.
@@ -2629,135 +2088,13 @@ class ArtistStore:
         an operation is still unknown. Malformed or mismatched evidence cannot
         certify an image, but is retained unchanged for investigation.
         """
-        with self._transaction():
-            space = self._space(space_id, scope)
-            self._expected_authorization(space, expected_auth_version)
-            target = self._version(space_id, scope, version_id)
-            if not space["authorized"]:
-                return False
-            return self._accepted_review(space_id, scope, space, target) is not None
-
-    def _accepted_review(self, space_id, scope, space, target):
-        """Shared proof check for acceptance and archiving, inside the caller's transaction."""
-        rows = self.db.execute(
-                """SELECT r.version_id,r.request_id,r.review,o.params_json,o.evidence FROM reviews AS r
-                JOIN operations AS o ON o.space_id=r.space_id AND o.request_id=r.request_id
-                WHERE r.space_id=? AND r.work_id=? AND o.work_id=r.work_id
-                AND o.action='think' AND o.category='think' AND o.state='succeeded'
-                AND o.auth_version=? AND o.scope_snapshot=? AND o.binding_id=? ORDER BY r.id""",
-                (space_id, target["work_id"], space["auth_version"], space["scope"], space["binding_id"]),
-            ).fetchall()
-        for row in rows:
-            try:
-                if self._review_accepts(space_id, scope, space, target, row):
-                    return row
-            except (StoreError, ValueError, TypeError, KeyError, RecursionError):
-                # Fail closed on corrupt historical evidence; do not rewrite
-                # it or interfere with any other valid review of the work.
-                continue
-        return None
-
-    def _review_accepts(self, space_id, scope, space, target, row) -> bool:
-        review, params = json.loads(row["review"]), json.loads(row["params_json"])
-        if (
-            not isinstance(review, dict)
-            or review.get("decision") != "accept"
-            or row["evidence"] != canonical_json(review)
-            or not isinstance(params, dict)
-            or params.get("task") != "review"
-            or params.get("version_id") != row["version_id"]
-        ):
-            return False
-        context = params.get("context")
-        if not isinstance(context, dict):
-            return False
-        current = self._version(space_id, scope, row["version_id"])
-        work_meta, current_meta = context.get("current_work"), context.get("current_version")
-        if (
-            current["work_id"] != target["work_id"]
-            or not isinstance(work_meta, dict)
-            or work_meta.get("work_id") != target["work_id"]
-            or not isinstance(current_meta, dict)
-            or any(current_meta.get(key) != current[key] for key in ("version_id", "sha256", "mime"))
-        ):
-            return False
-        contract = context.get("review_contract", 1)
-        operation_contract = params.get("review_contract", 1)
-        if type(contract) is not int or type(operation_contract) is not int or operation_contract != contract:
-            return False
-        selected = review.get("best_version_id", current["version_id"])
-        if selected != target["version_id"]:
-            return False
-        if contract == 1:
-            # Contract 1 supplied only the current image, even if its version
-            # catalogue let the model name an unseen historical best.
-            return (
-                selected == current["version_id"]
-                and isinstance(current["data"], bytes)
-                and bool(current["data"])
-                and hashlib.sha256(current["data"]).hexdigest() == current["sha256"]
-                and current["mime"] in {"image/png", "image/jpeg", "image/webp"}
-            )
-        if contract != 2:
-            return False
-        snapshot = self.get_review_snapshot(space_id, scope, current["version_id"])
-        digest = hashlib.sha256(canonical_json(context).encode("utf-8")).hexdigest()
-        if (
-            snapshot is None
-            or snapshot["auth_version"] != space["auth_version"]
-            or snapshot["input_digest"] != digest
-            or params.get("input_digest") != digest
-            or canonical_json(snapshot["context"]) != canonical_json(context)
-        ):
-            return False
-        visible = self._validate_review_context(
-            space_id, scope, current["version_id"], context, check_best=False
-        )
-        return selected in visible
+        return self._reviews.version_accepted(space_id, scope, version_id, expected_auth_version)
 
     def record_review(self, space_id, scope, *, version_id, request_id, review):
-        if not isinstance(review, dict):
-            raise StoreError("INVALID_ARGUMENT", "A validated review object is required")
-        payload = canonical_json(review)
-        with self._transaction():
-            version = self._version(space_id, scope, version_id)
-            op = self._operation(space_id, scope, request_id)
-            if (
-                op["action"] != "think"
-                or op["work_id"] != version["work_id"]
-                or op["state"] in {"reserved", "rejected", "failed"}
-            ):
-                raise StoreError(
-                    "NOT_FOUND", "Review must belong to an attempted think operation on this work"
-                )
-            old = self.db.execute(
-                "SELECT * FROM reviews WHERE space_id=? AND request_id=?", (space_id, request_id)
-            ).fetchone()
-            if old and (old["version_id"], old["review"]) != (version_id, payload):
-                raise StoreError("REQUEST_CONFLICT", "Review is immutable")
-            if not old:
-                now, _ = self._now()
-                self.db.execute(
-                    """INSERT INTO reviews(space_id,work_id,version_id,request_id,review,created_at)
-                                VALUES(?,?,?,?,?,?)""",
-                    (space_id, version["work_id"], version_id, request_id, payload, now),
-                )
-                old = self.db.execute(
-                    "SELECT * FROM reviews WHERE space_id=? AND request_id=?", (space_id, request_id)
-                ).fetchone()
-            return self._decode(old, "review")
+        return self._reviews.record_review(space_id, scope, version_id=version_id, request_id=request_id, review=review)
 
     def list_reviews(self, space_id, scope, work_id):
-        with self.lock:
-            self.get_work(space_id, scope, work_id)
-            return [
-                self._decode(row, "review")
-                for row in self.db.execute(
-                    "SELECT * FROM reviews WHERE space_id=? AND work_id=? ORDER BY id",
-                    (space_id, work_id),
-                )
-            ]
+        return self._reviews.list_reviews(space_id, scope, work_id)
 
     def close(self):
-        with self.lock:
-            self.db.close()
+        self._uow.close()

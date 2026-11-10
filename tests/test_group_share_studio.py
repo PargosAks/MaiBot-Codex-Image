@@ -161,6 +161,7 @@ def test_invalid_ledger_owner_cannot_read_sharing_policy(data):
     ("collect_only", False, "仅收藏"), ("original_group", True, "可自主分享到原群"),
     ("original_group", False, "可自主分享到原群"), ("private", True, "私聊原授权"),
 ])
+@pytest.mark.local_integration
 def test_sharing_dom_displays_permission_separately_from_results(mode, allowed, label):
     node = shutil.which("node")
     if node is None:

@@ -5,89 +5,34 @@ All model choices, image bytes and send receipts are synthetic; schedulers stay
 gated throughout. No running Host, MCP or QQ is used.
 """
 
-from copy import deepcopy
-import json
 
 import pytest
 
 from image_plugin_under_test.domain.policy import Limits, Scope
 from image_plugin_under_test.creation.thinking import Thinking
 from protocol_fixture import PNG
-from test_artist_flow import BRIEF, Model, SCOPE, step, studio as studio
-from test_group_thought_host import (
-    OTHER_STREAM, after, before, counts, host_chain as host_chain, output,
-    public_host as public_host, receipt, thought_host as thought_host,
+from support.artist_fakes import SCOPE
+from support.artist_flow import step, studio as studio
+from support.group_thought_host import (
+    OTHER_STREAM,
+    after,
+    counts,
+    thought_host as thought_host,
 )
-from test_host_integration import Harness, OWNER, PLATFORM, STREAM
+from support.host_chain import host_chain as host_chain, public_host as public_host
+from support.host_chain import OWNER, PLATFORM, STREAM
+from support.group_adoption import (
+    HOST_SCOPE,
+    AdoptionModel,
+    adoption_host as adoption_host,
+    remember,
+    sync,
+    advance,
+)
 
 
-HOST_SCOPE = Scope(PLATFORM, STREAM, OWNER)
 OTHER_SCOPE = Scope(PLATFORM, OTHER_STREAM, OWNER)
 NOTE = {"note_id": "gh_" + "1" * 64, "summary": "雨夜中亮着暖灯的便利店"}
-
-
-class AdoptionModel(Model):
-    """Script the choices, using only inspiration keys the Artist actually offers."""
-
-    def __init__(self):
-        super().__init__()
-        self.wait = False
-        self.force_create = False
-        self.plans = []
-
-    def plan(self, context):
-        self.plans.append(deepcopy(context))
-        notes = [idea for idea in context["inspirations"] if idea["origin"] == "group_thought"]
-        active = next((work for work in context["works"]
-                       if work["status"] not in {"finished", "abandoned"}), None)
-        finished = [work for work in context["works"] if work["status"] == "finished"]
-        if self.wait:
-            decision = {"action": "wait", "reason": "先保留构思，暂时不画", "delay_seconds": 300}
-        elif active and not self.force_create:
-            decision = {"action": "continue", "work_id": active["work_id"], "reason": "继续原计划"}
-        elif self.share and finished:
-            decision = {"action": "share", "work_id": finished[-1]["work_id"], "reason": "愿意分享这幅画"}
-        elif notes:
-            chosen = notes[0]
-            brief = {**BRIEF, "subject": chosen["summary"], "prompt": "用水彩描绘：" + chosen["summary"]}
-            decision = {"action": "create", "reason": "这条构思适合画成水彩", "brief": brief,
-                        "inspiration_keys": [chosen["key"]]}
-        else:
-            decision = {"action": "wait", "reason": "没有想采用的新构思"}
-        return {"ideas": [], "decision": decision}
-
-    async def __call__(self, request):
-        if request["task"] == "plan":
-            self.calls.append(deepcopy(request))
-            return self.plan(request["context"])
-        return await super().__call__(request)
-
-
-@pytest.fixture
-async def adoption_host(thought_host):
-    h = thought_host
-    h.adoption_model = AdoptionModel()
-
-    async def capability(plugin_id, name, args):
-        if name == "llm.generate":
-            messages = args["prompt"]
-            content = messages[1]["content"]
-            if len(content) == 1 and "不得规划或覆盖" not in messages[0]["content"]:
-                assert args["task_name"] == "utils"
-                h.calls.append((name, deepcopy(args)))
-                answer = h.adoption_model.plan(json.loads(content[0]["text"]))
-                return {"success": True, "response": json.dumps(answer, ensure_ascii=False),
-                        "model": "synthetic-group-adoption"}
-        # Retain the existing synthetic multimodal review and raw Host receipt
-        # handlers; they assert actual PNG bytes, routing and return_details.
-        return await Harness.capability(h, plugin_id, name, args)
-
-    for name in ("llm.generate", "send.image"):
-        h.capabilities.register_capability(name, capability)
-    await h.load(group=True)
-    h.plugin.group_thought_runtime.clock = lambda: h.clock().timestamp()
-    assert not h.gate.is_set()
-    return h
 
 
 def links(store, space="studio"):
@@ -98,26 +43,6 @@ def links(store, space="studio"):
 
 def group_ideas(store, space="studio", scope=HOST_SCOPE):
     return [idea for idea in store.list_inspirations(space, scope) if idea["origin"] == "group_thought"]
-
-
-async def remember(h, *, session=STREAM, tags=None):
-    token, _ = await before(h, session)
-    assert token
-    items = output(h, token, tags)
-    await after(h, items, session)
-    result = await receipt(h, token, tags, session=session)
-    assert result["success"] and result["structured_content"] == {"recorded": True}
-    return items
-
-
-async def sync(h, space="studio"):
-    return await h.plugin.group_thought_runtime.sync(space)
-
-
-async def advance(h, *, space="studio", seconds=300):
-    h.clock.advance(seconds)
-    await sync(h, space)
-    return await h.runtime.artists[space].tick()
 
 
 async def reload_host(h):

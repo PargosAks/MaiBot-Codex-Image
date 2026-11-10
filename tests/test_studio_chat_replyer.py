@@ -10,10 +10,9 @@ import logging
 
 import pytest
 
-from image_plugin_under_test import CodexImagePlugin
 from image_plugin_under_test.domain.policy import Scope
-from test_studio_chat import Harness, OTHER, SCOPE, payload, sdk  # noqa: F401
-from test_studio_chat_host import host  # noqa: F401
+from support.studio_chat import active_studio_plugin as active_studio_plugin, Harness, OTHER, SCOPE, payload, sdk as sdk
+from support.studio_chat_host import host as host
 
 
 MESSAGE_ID = "full-platform-message-id-not-a-model-alias"
@@ -230,19 +229,16 @@ def test_note_ttl_is_bounded(sdk, ttl):  # noqa: F811
 
 @pytest.mark.parametrize("text,pure", [("鲸鱼娘画了吗", True), ("上次那幅分享了吗", True),
                                       ("鲸鱼娘画了吗，背景换星空", False), ("请画鲸鱼娘", False)])
-async def test_integrated_receive_hook_notes_only_real_pure_query(sdk, text, pure):  # noqa: F811
+async def test_integrated_receive_hook_notes_only_real_pure_query(active_studio_plugin, sdk, text, pure):  # noqa: F811
     h = Harness(sdk, planner=False)
-    plugin = CodexImagePlugin()
-    config = plugin.build_default_config()
-    config["plugin"]["enabled"] = config["autonomy"]["enabled"] = True
-    plugin.set_plugin_config(config)
+    plugin = active_studio_plugin
     plugin.studio_chat = h.chat
     ingresses = []
 
     async def on_chat(*args):
         ingresses.append(args)
 
-    plugin.artist_runtime = SimpleNamespace(on_chat=on_chat)
+    plugin.artist_runtime.on_chat = on_chat
     await plugin.artist_chat(
         platform=SCOPE.platform, stream_id=SCOPE.stream_id, user_id=SCOPE.user_id,
         message_id=MESSAGE_ID, message={"processed_plain_text": text, "message_id": MESSAGE_ID,
@@ -276,6 +272,7 @@ def replyer_host(host):  # noqa: F811
 
 
 @pytest.mark.parametrize("match", [True, False])
+@pytest.mark.external_contract
 async def test_real_replyer_host_payload_roundtrip_reaches_visible_model_request(
         sdk, host, replyer_host, match):  # noqa: F811
     h = Harness(sdk, planner=False)

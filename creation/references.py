@@ -3,9 +3,9 @@
 import hashlib
 import json
 
-from ..mcp_client.bridge import BridgeError
+from ..domain.errors import BackendError
+from ..domain.async_work import join_worker
 from ..domain.policy import StoreError
-from .recovery import ReadOnlyRecovery
 
 
 class ReferenceInputs:
@@ -14,7 +14,7 @@ class ReferenceInputs:
         self.bridge, self.binding_id = bridge, binding_id
 
     async def _db(self, name, *args, **kwargs):
-        return await ReadOnlyRecovery._db(
+        return await join_worker(
             getattr(self.store, name), self.space_id, self.scope, *args, **kwargs,
         )
 
@@ -52,12 +52,12 @@ class ReferenceInputs:
     @staticmethod
     def _limits(health):
         if not isinstance(health, dict) or "reference_inputs_v1" not in health.get("capabilities", []):
-            raise BridgeError("REFERENCE_INPUTS_UNSUPPORTED", kind="capability")
+            raise BackendError("REFERENCE_INPUTS_UNSUPPORTED", kind="capability")
         limits = health.get("reference_limits")
         required = {"max_image_bytes", "max_references", "max_total_bytes", "max_asset_bytes"}
         if (not isinstance(limits, dict) or not required <= limits.keys()
                 or any(type(limits[key]) is not int or limits[key] <= 0 for key in required)):
-            raise BridgeError("INVALID_RESPONSE", kind="protocol")
+            raise BackendError("INVALID_RESPONSE", kind="protocol")
         return limits
 
     async def prepare(self, references, *, expected_auth_version, source_size=0):

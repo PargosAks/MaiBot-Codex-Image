@@ -7,10 +7,8 @@ import ast
 import asyncio
 import base64
 import hashlib
-import importlib.util
 import json
 import os
-import sys
 
 import pytest
 
@@ -23,71 +21,16 @@ from image_plugin_under_test.domain.policy import Delegation, Limits, Scope, Sto
 from image_plugin_under_test.domain.store import ArtistStore
 from image_plugin_under_test.creation.thinking import Thinking
 from protocol_fixture import PNG
+from support.sdk_context import WAIT, Context, ctx as ctx
 
 
 SCOPE = Scope("synthetic", "verified-stream", "delegating-owner")
 OTHER = Scope("synthetic", "other-stream", "other-owner")
-WAIT = {"ideas": [], "decision": {"action": "wait", "reason": "暂时收藏"}}
 REVIEW = {"decision": "accept", "reason": "主体清楚", "strengths": ["柔和"], "issues": []}
 
 
 class Denied(Exception):
     code = "E_CAPABILITY_DENIED"
-
-
-class Context:
-    def __init__(self, context_class=PluginContext):
-        self.sdk = context_class("isolated-adapter-test", rpc_call=self._rpc)
-        self.llm, self.send = self.sdk.llm, self.sdk.send
-        self.calls = []
-        self.rpc_timeouts = []
-        self.result = {"success": True, "response": json.dumps(WAIT)}
-        self.failure = None
-        self.handler = None
-
-    async def call_capability(self, capability, **payload):
-        self.calls.append((capability, payload))
-        if self.handler:
-            return await self.handler(capability, payload)
-        if self.failure:
-            raise self.failure
-        return self.result
-
-    async def call_host_method(self, method, *, payload, timeout_ms=None):
-        return await self.sdk.call_host_method(method, payload=payload, timeout_ms=timeout_ms)
-
-    async def _rpc(self, method, plugin_id, payload, timeout_ms=None):
-        assert method == "cap.call" and payload["capability"] in {"send.image", "llm.generate"}
-        assert set(payload) == {"capability", "args"}
-        self.rpc_timeouts.append(timeout_ms)
-        return await self.call_capability(payload["capability"], **payload["args"])
-
-
-@pytest.fixture(params=["2.16", "2.17"])
-def ctx(request):
-    if request.param == "2.16":
-        return Context()
-    source = os.environ.get("CODEX_IMAGE_TEST_SDK_SOURCE")
-    if not source:
-        pytest.skip("Set CODEX_IMAGE_TEST_SDK_SOURCE to opt in to public SDK source tests")
-    # SDK 2.17 uses absolute package imports. Load its public package briefly,
-    # then restore all module/path entries before any asynchronous test executes.
-    # The returned class retains its own module globals and real RPC methods.
-    previous = {key: value for key, value in sys.modules.items()
-                if key == "maibot_sdk" or key.startswith("maibot_sdk.")}
-    paths = list(sys.path)
-    try:
-        for key in previous:
-            del sys.modules[key]
-        sys.path.insert(0, str(Path(source)))
-        context_class = importlib.import_module("maibot_sdk.context").PluginContext
-    finally:
-        for key in list(sys.modules):
-            if key == "maibot_sdk" or key.startswith("maibot_sdk."):
-                del sys.modules[key]
-        sys.modules.update(previous)
-        sys.path[:] = paths
-    return Context(context_class)
 
 
 def thinking(ctx):
@@ -483,10 +426,12 @@ async def test_cancel_claim_waits_for_sqlite_worker_then_preserves_lock(sender_s
         release.set()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert not ctx.calls and delivery_state(journal) == "send_unknown"
+    # 取消发生在 SQLite 申请阶段；没有调用 Host，账本应记录已知未发送。
+    assert not ctx.calls and delivery_state(journal) == "send_failed"
 
 
 @pytest.mark.parametrize("multi_image", [False, True])
+@pytest.mark.external_contract
 def test_installed_host_public_parser_preserves_image_payload(multi_image):
     source = os.environ.get("CODEX_IMAGE_TEST_HOST_SOURCE")
     if not source:

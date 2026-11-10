@@ -1,75 +1,24 @@
 """Artist state machine; Host adapters explicitly opt into external effects."""
 
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Protocol
 import asyncio
 import hashlib
 import json
 import math
-import re
 import uuid
 
-from ..mcp_client.bridge import BridgeError
+from ..domain.errors import BackendError
+from ..domain.async_work import join_worker
 from ..domain.policy import Scope, StoreError, canonical_json
 from ..domain.profiles import CATALOG_ACTIONS, render_prompt
 from ..domain.assets import reference_prompt
 from ..domain.store import ArtistStore
 from .thinking import Thinking
-
-
-@dataclass(frozen=True)
-class RenderResult:
-    request_id: str
-    request_digest: str
-    job_id: str
-    state: str
-    image: Optional[bytes] = None
-    mime: str = "image/png"
-    sha256: Optional[str] = None
-    error_code: Optional[str] = None
-
-
-class Renderer(Protocol):
-    simulation: bool
-    supports_edit: bool
-
-    async def submit(
-        self, *, scope: Scope, request_id: str, prompt: str, source: Optional[dict]
-    ) -> RenderResult: ...
-
-    async def status(self, *, scope: Scope, job_id: str) -> RenderResult: ...
-
-    async def lookup(self, *, scope: Scope, request_id: str) -> Optional[RenderResult]: ...
-
-
-class Sender(Protocol):
-    simulation: bool
-
-    async def send(self, *, scope: Scope, version: dict) -> bool: ...
-
-
-def render_digest(action: str, params: dict) -> str:
-    if params.get("transport_operation") == "render":
-        if type(params.get("reference_contract")) is not int or params["reference_contract"] != 1:
-            raise StoreError("REQUEST_CONFLICT", "Unknown frozen reference contract")
-        payload = canonical_json({
-            "operation": "render", "mode": "create" if action == "submit" else "edit",
-            "prompt": params["prompt"],
-            "source": None if action == "submit" else {
-                "job_id": params["source_job_id"], "sha256": params["source_sha256"],
-            },
-            "references": params["reference_inputs"],
-        })
-    elif action == "submit":
-        payload = params["prompt"]
-    else:
-        payload = canonical_json({"operation": "edit", **params})
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def stable_id(kind: str, *parts: str) -> str:
-    return "artist:" + kind + ":" + hashlib.sha256(canonical_json(parts).encode()).hexdigest()
+# 这些名称保留原导入入口；实际契约由独立模块维护。
+from .contracts import ReceiptRenderer, Renderer, RenderResult, Sender, render_digest as render_digest, stable_id
+from .receipts import ReceiptService
+from .reviewing import ReviewService
+from .sharing import ShareService
 
 
 class Artist:
@@ -123,32 +72,8 @@ class Artist:
         self.lock = asyncio.Lock()
 
     async def _db(self, name: str, *args, **kwargs):
-        # Cancellation does not stop a SQLite worker thread. Join it before
-        # releasing this cycle or recording an uncertain external outcome.
-        task = asyncio.create_task(
-            asyncio.to_thread(
-                getattr(self.store, name),
-                self.space_id,
-                self.scope,
-                *args,
-                **kwargs,
-            )
-        )
-        try:
-            return await asyncio.shield(task)
-        except asyncio.CancelledError as cancelled:
-            while not task.done():
-                try:
-                    await asyncio.shield(task)
-                except asyncio.CancelledError:
-                    continue
-                except Exception:
-                    break
-            try:
-                task.result()
-            except Exception as exc:
-                raise cancelled from exc
-            raise
+        # 按持久空间绑定调用存储；取消后仍等线程收尾，不释放半笔操作。
+        return await join_worker(getattr(self.store, name), self.space_id, self.scope, *args, **kwargs)
 
     def _now(self) -> datetime:
         return self.store.clock().astimezone(timezone.utc)
@@ -181,6 +106,7 @@ class Artist:
 
     async def tick(self) -> dict:
         await self._db("schedule_wake", interval_seconds=self.idle_seconds)
+        await self._db("schedule_progress_wake")
         return await self.run_once()
 
     async def serve(self, stop: asyncio.Event) -> None:
@@ -254,6 +180,9 @@ class Artist:
                 for work in visible
             ],
         }
+        single_work = await self._db("single_work_status")
+        if single_work["enabled"]:
+            context["single_work"] = single_work
         catalog = await self._db("creative_catalog")
         profiles, series = catalog["profiles"], catalog["series"]
         if profiles:
@@ -404,6 +333,15 @@ class Artist:
                 return {"state": "idle"}
             retry = False
             pause_after = 0
+
+            def outcome(result):
+                nonlocal pause_after
+                if result.get("state") == "blocked":
+                    # Progress ticks must not turn a known transport/capability
+                    # failure into a rapid sequence of new planning calls.
+                    pause_after = max(pause_after, 300)
+                return result
+
             try:
                 context = await self._context(cycle["events"])
                 works = await self._db("list_artist_works")
@@ -419,14 +357,14 @@ class Artist:
                         response, _ = await self._think("inspire", context, cycle)
                         await self._remember(response, cycle)
                         if active["status"] == "creating":
-                            return polled
+                            return outcome(polled)
                     if (
                         active["next_check_at"]
                         and datetime.fromisoformat(active["next_check_at"]) > self._now()
                     ):
                         return {"state": "waiting", "work_id": active["work_id"]}
                     if active["status"] in {"creating", "review_pending"}:
-                        return await self._advance(active, context, cycle)
+                        return outcome(await self._advance(active, context, cycle))
                 else:
                     # A finished painting may still have an uncertain backend
                     # turn. Reconcile it without reopening its artistic review.
@@ -438,12 +376,17 @@ class Artist:
                                 if any(e["kind"] == "chat" for e in cycle["events"]):
                                     response, _ = await self._think("inspire", context, cycle)
                                     await self._remember(response, cycle)
-                                return polled
+                                return outcome(polled)
+                single_work = context.get("single_work", {})
+                if single_work.get("enabled") and active is None and (
+                    single_work.get("share_used") or any(w["status"] == "abandoned" for w in works)
+                ):
+                    return {"state": "single_work_stopped", "reason": "SINGLE_WORK_SPENT"}
                 response, thought_request = await self._think("plan", context, cycle)
                 await self._remember(response, cycle)
                 result = await self._decide(response["decision"], cycle, thought_request=thought_request)
                 pause_after = result.pop("wake_after", 0)
-                return result
+                return outcome(result)
             except asyncio.CancelledError:
                 retry = True
                 raise
@@ -484,6 +427,13 @@ class Artist:
                 "wake_after": decision.get("delay_seconds", self.idle_seconds),
             }
         if action == "create":
+            if cycle["events"] and all(
+                event["kind"] == "completion" and event["event_id"].startswith("progress:")
+                for event in cycle["events"]
+            ):
+                # Completion advances this painting; new creative work still
+                # needs the normal idle/chat wake and its existing budget.
+                return {"state": "waiting", "reason": "PROGRESS_EXISTING_WORK_ONLY"}
             work_id = stable_id("work", self.space_id, str(cycle["through"]))
             work = await self._db(
                 "plan_work",
@@ -591,8 +541,10 @@ class Artist:
         await self._db("mark_submitting", request_id)
         source = None if parent is None else {k: parent[k] for k in ("job_id", "sha256", "data", "mime")}
         try:
+            # 新适配器先交付回执；兼容原 Renderer 返回已经取得的图片字节。
+            submit = self.renderer.submit_receipt if isinstance(self.renderer, ReceiptRenderer) else self.renderer.submit
             result = await asyncio.wait_for(
-                self.renderer.submit(
+                submit(
                     scope=self.scope,
                     request_id=request_id,
                     prompt=params["prompt"],
@@ -601,7 +553,7 @@ class Artist:
                 self.timeout,
             )
         except BaseException as exc:
-            reason = exc.code if isinstance(exc, (BridgeError, StoreError)) else "SUBMIT_UNCONFIRMED"
+            reason = exc.code if isinstance(exc, (BackendError, StoreError)) else "SUBMIT_UNCONFIRMED"
             await self._db("mark_unknown", request_id, reason=reason)
             if isinstance(exc, asyncio.CancelledError):
                 raise
@@ -617,16 +569,18 @@ class Artist:
             return {"state": "planned"}
         try:
             if operation["job_id"]:
+                status = self.renderer.status_receipt if isinstance(self.renderer, ReceiptRenderer) else self.renderer.status
                 result = await asyncio.wait_for(
-                    self.renderer.status(scope=self.scope, job_id=operation["job_id"]), self.timeout
+                    status(scope=self.scope, job_id=operation["job_id"]), self.timeout
                 )
             else:
+                lookup = self.renderer.lookup_receipt if isinstance(self.renderer, ReceiptRenderer) else self.renderer.lookup
                 result = await asyncio.wait_for(
-                    self.renderer.lookup(scope=self.scope, request_id=operation["request_id"]), self.timeout
+                    lookup(scope=self.scope, request_id=operation["request_id"]), self.timeout
                 )
         except asyncio.CancelledError:
             raise
-        except (BridgeError, StoreError) as exc:
+        except (BackendError, StoreError) as exc:
             return {"state": "blocked", "reason": exc.code}
         except Exception:
             return {"state": "blocked", "reason": "LOOKUP_UNAVAILABLE"}
@@ -635,259 +589,13 @@ class Artist:
         return await self._receive(work, result)
 
     async def _receive(self, work: dict, result: RenderResult) -> dict:
-        request_id = work["pending_request"]
-        operation = await self._db("get_operation", request_id)
-        valid = (
-            isinstance(result, RenderResult)
-            and result.request_id == request_id
-            and result.request_digest == render_digest(operation["action"], operation["params"])
-            and isinstance(result.job_id, str)
-            and bool(result.job_id.strip())
-            and (not operation["job_id"] or operation["job_id"] == result.job_id)
-            and result.state in {"queued", "running", "completed", "failed", "outcome_unknown"}
-            and (
-                result.error_code is None
-                or (
-                    isinstance(result.error_code, str)
-                    and re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", result.error_code)
-                )
-            )
-        )
-        if not valid:
-            if operation["state"] in {"submitting", "accepted", "unknown"}:
-                await self._db("mark_unknown", request_id, reason="RECEIPT_MISMATCH")
-            return {"state": "blocked", "reason": "RECEIPT_MISMATCH"}
-        if (operation["state"] == "succeeded" and result.state != "completed") or (
-            operation["state"] == "failed" and result.state != "failed"
-        ):
-            return {"state": "blocked", "reason": "RECEIPT_MISMATCH"}
-        if operation["state"] == "unknown":
-            await self._db(
-                "reconcile",
-                request_id,
-                outcome="accepted",
-                evidence="Matching read-only receipt",
-                job_id=result.job_id,
-            )
-        elif operation["state"] == "submitting":
-            await self._db("mark_accepted", request_id, job_id=result.job_id)
-        if result.state in {"completed", "failed"}:
-            if operation["state"] not in {"succeeded", "failed"}:
-                await self._db(
-                    "settle",
-                    request_id,
-                    outcome="succeeded" if result.state == "completed" else "failed",
-                    evidence="Confirmed render terminal",
-                    job_id=result.job_id,
-                )
-        elif result.state == "outcome_unknown":
-            await self._db("mark_unknown", request_id, reason="RENDER_OUTCOME_UNKNOWN")
-        if result.image is not None:
-            if (
-                not isinstance(result.image, bytes)
-                or not 0 < len(result.image) <= 8 * 1024 * 1024
-                or result.mime not in {"image/png", "image/jpeg", "image/webp"}
-                or hashlib.sha256(result.image).hexdigest() != result.sha256
-            ):
-                return {"state": "blocked", "reason": "ARTIFACT_INVALID"}
-            version_id = stable_id("version", work["work_id"], request_id)
-            await self._db(
-                "record_version",
-                work_id=work["work_id"],
-                version_id=version_id,
-                request_id=request_id,
-                job_id=result.job_id,
-                data=result.image,
-                mime=result.mime,
-                parent_id=work["parent_version"],
-            )
-            if work["status"] in {"finished", "abandoned"}:
-                return {"state": work["status"], "reason": "reconciled"}
-            await self._change(
-                work["work_id"],
-                status="review_pending",
-                reason="",
-                best_version=work["best_version"] or version_id,
-            )
-            return {"state": "review_pending", "version_id": version_id}
-        if result.state == "failed":
-            if work["status"] in {"finished", "abandoned"}:
-                return {"state": work["status"], "reason": "reconciled"}
-            await self._change(
-                work["work_id"],
-                status="finished" if work["best_version"] else "abandoned",
-                reason=result.error_code or "RENDER_FAILED",
-            )
-            return {"state": "finished" if work["best_version"] else "abandoned"}
-        return {
-            "state": "creating",
-            "reason": "ARTIFACT_MISSING" if result.state == "completed" else result.state,
-        }
+        return await ReceiptService(db=self._db, change=self._change, renderer=self.renderer,
+                              scope=self.scope, timeout=self.timeout).receive(work, result)
 
     async def _review(self, work: dict, context: dict, cycle: dict) -> dict:
-        original = await self._db("get_operation", work["pending_request"])
-        if original["state"] in {"submitting", "accepted", "unknown"}:
-            await self._poll(work)
-        versions = await self._db("list_versions", work["work_id"])
-        current = next(v for v in versions if v["request_id"] == work["pending_request"])
-        version = await self._version(current["version_id"])
-        review_context = {
-            # Sharing permission is live planning policy, not a frozen visual
-            # review input. A later mode change must not rewrite old evidence.
-            **{key: value for key, value in context.items() if key != "sharing"},
-            "current_work": {k: work[k] for k in ("work_id", "brief", "best_version")},
-            "current_version": {k: version[k] for k in ("version_id", "sha256", "mime")},
-            "versions": [
-                {k: v.get(k) for k in ("version_id", "parent_id", "sha256", "mime")} for v in versions
-            ],
-        }
-        snapshot = await self._db("get_review_snapshot", version["version_id"])
-        operations = await self._db("audit_operations")
-        # An upgrade must finish the original single-image request, including a
-        # reserved call that never dispatched. Unknown calls keep their identity.
-        legacy = next((op for op in reversed(operations) if (
-            op["action"] == "think" and op["work_id"] == work["work_id"]
-            and op["params"].get("task") == "review"
-            and op["params"].get("version_id") == version["version_id"]
-            and op["params"].get("review_contract", 1) == 1
-            and op["state"] in {"reserved", "submitting", "accepted", "unknown", "succeeded"}
-        )), None)
-        images = None
-        if snapshot is None and legacy is not None:
-            review_context = legacy["params"]["context"]
-        else:
-            if snapshot is None:
-                inputs = {}
-                for role, version_id in (
-                    ("current", version["version_id"]),
-                    ("parent", version["parent_id"]),
-                    ("previous_best", work["best_version"]),
-                ):
-                    if version_id is None:
-                        continue
-                    item = await self._version(version_id)
-                    if item["work_id"] != work["work_id"]:
-                        raise StoreError("ARTIFACT_INVALID", "Review input belongs to another work")
-                    if version_id not in inputs:
-                        inputs[version_id] = {
-                            **{k: item[k] for k in ("version_id", "sha256", "mime")}, "roles": [],
-                        }
-                    inputs[version_id]["roles"].append(role)
-                review_context.update(review_contract=2, review_inputs=list(inputs.values()))
-                review_context["versions"] = [
-                    row for row in review_context["versions"] if row["version_id"] in inputs
-                ]
-                snapshot = await self._db(
-                    "freeze_review_snapshot", version_id=version["version_id"], context=review_context,
-                    expected_auth_version=cycle["auth_version"],
-                )
-            if snapshot["auth_version"] != cycle["auth_version"]:
-                raise StoreError("AUTH_CHANGED", "Frozen review belongs to an older authorization")
-            review_context = snapshot["context"]
-            if hashlib.sha256(canonical_json(review_context).encode("utf-8")).hexdigest() != snapshot["input_digest"]:
-                raise StoreError("ARTIFACT_INVALID", "Review snapshot digest mismatch")
-            images = []
-            for item in review_context["review_inputs"]:
-                picture = await self._version(item["version_id"])
-                if (picture["work_id"], picture["sha256"], picture["mime"]) != (
-                    work["work_id"], item["sha256"], item["mime"],
-                ):
-                    raise StoreError("ARTIFACT_INVALID", "Frozen review image changed")
-                images.append({**item, "data": picture["data"]})
-        reviews = await self._db("list_reviews", work["work_id"])
-        prior = next((r for r in reversed(reviews) if r["version_id"] == version["version_id"]), None)
-        if prior is not None:
-            review = prior["review"]
-            request_id = prior["request_id"]
-        else:
-            review, request_id = await self._think(
-                "review", review_context, cycle, work_id=work["work_id"], version=version, images=images
-            )
-            await self._db(
-                "record_review", version_id=version["version_id"], request_id=request_id, review=review
-            )
-        # A review row is audit history, not renewed authority. Both persisted
-        # reviews and newly recorded advice must still belong to this grant.
-        reviewed_operation = await self._db("get_operation", request_id)
-        if (
-            reviewed_operation["auth_version"] != cycle["auth_version"]
-            or await self._epoch() != cycle["auth_version"]
-        ):
-            raise StoreError("AUTH_CHANGED", "Review cannot cross authorization versions")
-        if reviewed_operation["state"] != "succeeded" or reviewed_operation["evidence"] != canonical_json(review):
-            raise StoreError("INVALID_DECISION", "Review must match its successful original operation")
-        if snapshot is not None and (
-            reviewed_operation["params"].get("review_contract") != 2
-            or reviewed_operation["params"].get("input_digest") != snapshot["input_digest"]
-        ):
-            raise StoreError("REQUEST_CONFLICT", "Review does not match its frozen inputs")
-        best = review.get(
-            "best_version_id",
-            version["version_id"]
-            if review["decision"] == "accept"
-            else work["best_version"] or version["version_id"],
-        )
-        if review["decision"] == "revise":
-            original = await self._db("get_operation", work["pending_request"])
-            if original["state"] not in {"succeeded", "failed"}:
-                # Evaluate available art, but reconcile the unresolved render
-                # before creating another revision. Never refund its hold.
-                await self._change(work["work_id"], reason="RENDER_UNRESOLVED")
-                return {"state": "blocked", "reason": "RENDER_UNRESOLVED"}
-            prompt = review["edit_prompt"] + "\n保留：" + review["preserve"]
-            await self._change(
-                work["work_id"],
-                status="planned",
-                parent_version=version["version_id"],
-                edit_prompt=prompt,
-                best_version=best,
-                pending_request=None,
-                reason=review["reason"],
-            )
-            return {"state": "planned", "reason": "revision"}
-        state = "finished" if review["decision"] == "accept" else "abandoned"
-        await self._change(work["work_id"], status=state, best_version=best, reason=review["reason"])
-        return {"state": state, "best_version": best}
+        return await ReviewService(db=self._db, version=self._version, think=self._think,
+                             poll=self._poll, epoch=self._epoch, change=self._change).review(work, context, cycle)
 
     async def _share(self, work: dict, cycle: dict) -> dict:
-        if work["status"] != "finished" or not work["best_version"]:
-            raise StoreError("INVALID_DECISION", "Only finished reviewed work can be shared")
-        if not await self._db(
-            "version_accepted", work["best_version"], expected_auth_version=cycle["auth_version"],
-        ):
-            raise StoreError("REVIEW_REQUIRED", "Autonomous sharing requires explicit visual acceptance")
-        version = await self._version(work["best_version"])
-        request_id = stable_id("share", work["work_id"], version["version_id"])
-        operation = await self._db(
-            "reserve",
-            request_id=request_id,
-            action="share",
-            work_id=work["work_id"],
-            params={"job_id": version["job_id"], "version_id": version["version_id"]},
-            expected_auth_version=cycle["auth_version"],
-        )
-        if operation["state"] != "reserved":
-            return {"state": "share_recorded", "outcome": operation["state"]}
-        await self._db("mark_submitting", request_id)
-        try:
-            # Let the Host RPC wait expire first, leaving time to persist its
-            # uncertain receipt before the Artist's outer cancellation runs.
-            result = await asyncio.wait_for(
-                self.sender.send(scope=self.scope, version=version),
-                self.send_timeout_seconds + self.share_preflight_seconds + 5,
-            )
-        except BaseException as exc:
-            await self._db("mark_unknown", request_id, reason="SEND_UNCONFIRMED")
-            if isinstance(exc, asyncio.CancelledError):
-                raise
-            return {"state": "share_unknown"}
-        if type(result) is not bool:
-            await self._db("mark_unknown", request_id, reason="SEND_RECEIPT_INVALID")
-            return {"state": "share_unknown"}
-        await self._db(
-            "settle",
-            request_id,
-            outcome="succeeded" if result else "failed",
-            evidence="Sender confirmed receipt",
-        )
-        return {"state": "shared" if result else "share_failed"}
+        return await ShareService(db=self._db, version=self._version, sender=self.sender, scope=self.scope,
+                            timeout=self.send_timeout_seconds + self.share_preflight_seconds + 5).share(work, cycle)
