@@ -36,7 +36,7 @@ _SUBMIT_REVOKED = "配置或运行状态已变更，本次尚未提交绘图。"
 
 
 class PluginSection(PluginConfigBase):
-    config_version: str = "0.12.0"
+    config_version: str = "0.13.0"
     enabled: bool = True
 
 
@@ -157,6 +157,11 @@ class CodexImagePlugin(MaiBotPlugin):
         return generation.ready and self._matches_generation(generation)
 
     def set_plugin_config(self, config: dict) -> None:
+        # SDK 对无效配置可能只保留原始字典并清空类型实例；新方向先校验，
+        # 避免全空白等输入使正常运行代和手动绘图连接一并失效。
+        autonomy = config.get("autonomy", {})
+        if isinstance(autonomy, dict) and "creative_direction" in autonomy:
+            Autonomy(creative_direction=autonomy["creative_direction"])
         super().set_plugin_config(config)
         if self._generation is not None:
             # SDK 先注入再调异步回调。这里立即停自主派发，手动命令在派发前

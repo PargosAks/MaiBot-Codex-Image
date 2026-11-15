@@ -6,9 +6,11 @@ from typing import Any, Dict, Mapping
 import ast
 import os
 
+from pydantic import ValidationError
 import pytest
 
-from image_plugin_under_test import Config
+from image_plugin_under_test import CodexImagePlugin, Config
+from image_plugin_under_test.creation.thinking import DEFAULT_CREATIVE_DIRECTION
 
 
 # Fixed Host 1.3.15 type contract; runs even without an installed public Host.
@@ -81,7 +83,6 @@ def overlay(request):
 
 
 def test_studio_catalog_is_importable_but_not_an_operator_form():
-    from image_plugin_under_test import CodexImagePlugin
     from support.catalog_examples import PROFILES, SERIES
 
     plugin = CodexImagePlugin()
@@ -106,6 +107,7 @@ def old_config(integer=False):
     for (section, key, _), value in zip(FIELDS, values):
         config[section][key] = int(value) if integer else value
     budget = dict(think=16, render=2, share=1, max_inflight=2, max_revisions=1)
+    config["autonomy"].pop("creative_direction")
     config["autonomy"].update(enabled=False, global_limits=budget,
                               spaces=[dict(space_id="synthetic", limits=deepcopy(budget))])
     return config
@@ -120,6 +122,7 @@ def test_upgrade_preserves_existing_values_and_does_not_alias(overlay, integer):
     overlay(target, old)
     expected = deepcopy(old)
     expected["plugin"]["config_version"] = new_version
+    expected["autonomy"]["creative_direction"] = DEFAULT_CREATIVE_DIRECTION
     assert target == expected
     assert target["autonomy"]["enabled"] is False
     for section, key, _ in FIELDS:
@@ -170,4 +173,29 @@ def test_send_timeout_upgrade_preserves_old_config_and_budgets(overlay, configur
     expected = deepcopy(old)
     expected["plugin"]["config_version"] = target["plugin"]["config_version"]
     expected["connection"]["send_timeout_seconds"] = 240.0 if configured is None else configured
+    expected["autonomy"]["creative_direction"] = DEFAULT_CREATIVE_DIRECTION
     assert target == expected and old == before
+
+
+def test_creative_direction_overlay_preserves_custom_value_and_is_visible_in_webui(overlay):
+    direction = "麦麦在排练。\n优先画清动作与神情。"
+    target = Config().model_dump()
+    overlay(target, {"autonomy": {"creative_direction": direction}})
+    plugin = CodexImagePlugin()
+    plugin.set_plugin_config(target)
+    assert plugin.config.autonomy.creative_direction == direction
+    fields = plugin.get_webui_config_schema()["sections"]["autonomy"]["fields"]
+    assert not fields["creative_direction"].get("hidden", False)
+
+
+@pytest.mark.parametrize("length", [0, 2001])
+def test_creative_direction_config_rejects_out_of_range_lengths(length):
+    with pytest.raises(ValidationError, match=r"autonomy\.creative_direction"):
+        Config.model_validate({"autonomy": {"creative_direction": "画" * length}})
+
+
+@pytest.mark.parametrize("direction", [" ", "\t", "\n", "\u3000", "\x1c"],
+                         ids=["space", "tab", "newline", "ideographic-space", "file-separator"])
+def test_creative_direction_config_rejects_whitespace_only(direction):
+    with pytest.raises(ValidationError, match=r"autonomy\.creative_direction"):
+        Config.model_validate({"autonomy": {"creative_direction": direction}})

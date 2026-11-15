@@ -32,7 +32,7 @@ uv run --locked python scripts/check.py --no-lint --suite unit tests/test_store_
 | --- | --- |
 | `CODEX_IMAGE_TEST_HOST_REPO` | 含固定提交 `062d45cf` 的公开 MaiBot Git 仓库 |
 | `CODEX_IMAGE_TEST_HOST_SOURCE`、`CODEX_IMAGE_TEST_STUDIO_HOST_SOURCE` | 对应 Host 的公开 `src` 目录 |
-| `CODEX_IMAGE_TEST_HOST_SITE_PACKAGES` | 已安装公开 MaiBot 包的 site-packages 根；新增发行包 Loader 检查需要真实 Host，不能只提供 SDK |
+| `CODEX_IMAGE_TEST_HOST_SITE_PACKAGES` | 已安装的公开 MaiBot 包的 site-packages，或含 `src/plugin_runtime/runner/plugin_loader.py` 与 `pyproject.toml` 的公开 Host 源码根（如 `/MaiMBot`）。源码根没有 MaiBot 安装元数据时，读取同一根目录的 `[project]`，要求 `name` 为 `MaiBot`（不区分大小写），`version` 为合法版本字符串。仅提供 SDK 不足以运行 Loader 检查；显式路径或元数据无效时测试失败。 |
 | `CODEX_IMAGE_TEST_SDK_SOURCE` | 包含公开 SDK 2.17 的 site-packages；插件开发环境为 SDK 2.16 |
 | `CODEX_IMAGE_TEST_DASHBOARD_SOURCE` | 含 `src/` 的 Dashboard 源码目录，页面桥接测试使用 Node |
 | `CODEX_IMAGE_TEST_SERVICE_SOURCE`、`CODEX_IMAGE_TEST_SNOWLUMA_SOURCE` | 独立 MCP 的 `src` 目录及公开适配器源码快照 |

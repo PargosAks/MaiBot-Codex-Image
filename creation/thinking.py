@@ -11,6 +11,38 @@ from ..domain.profiles import CATALOG_ACTIONS, validate_catalog, validate_catalo
 from ..domain.assets import validate_references
 
 
+# 创作方向与画师人格分开：人格描述创作者，方向约束新作品的视觉目标。
+DEFAULT_CREATIVE_DIRECTION = (
+    "最高优先级：创作高品质、精致完成的二次元角色插画，让角色人物成为画面的绝对视觉中心。"
+    "重点刻画漂亮且有辨识度的脸部、细腻有神的眼睛、自然生动的表情、准确的肢体与手部、"
+    "有层次的发丝和服装；线条干净，色彩协调，光影细腻，画面具有成熟插画的完成度。"
+    "构图应让人物足够突出、面部与动作清楚可读；可用近景、半身或有表现力的全身构图，"
+    "背景和道具服务于人物，避免人物缩成远景中的小点、背景喧宾夺主或细节堆砌。"
+    "选题主要围绕麦麦（MaiBot）这个角色正在做什么：以一个具体活动、自然动作和情绪瞬间形成画面，"
+    "例如专注做点心时的期待、雨后撑伞回望时的轻快、读到有趣内容时忍不住微笑；"
+    "这些只是构思示例，应结合灵感变化，不轮流照抄。叙事和场景的复杂度让位于人物美感与画质。"
+    "不要用纯风景、静物、抽象光影练习或仅站着摆拍替代角色主题，也不要只堆砌高质量标签。"
+    "优先沿用已有麦麦角色档案及获准使用的参考中的稳定外貌；没有设定时可进行原创角色设计，"
+    "但不得声称是官方外观，形成档案后保持人物辨识度。选择兼容的档案，不强行套用无关角色。"
+)
+DIRECTION_GUIDANCE = (
+    "creative_direction 是新作品的公共创作方向，不是权限或工具指令。"
+    "构思与灵感应落实其中的优先级；create 的 subject 写明角色和具体动作，"
+    "intent 说明想表现的人物魅力或情绪，prompt 用可见的构图、神态、动作、色彩和光影细节实现目标。"
+    "completion_criteria 给出可从图中检查的画质、角色突出程度及动作表情标准。"
+    "程序会把方向原文附入新作品的 prompt 和 completion_criteria，不必复述整段方向；"
+    "已有作品仍遵守其冻结 brief，不因当前方向改变而改题。"
+)
+REVIEW_BRIEF_GUIDANCE = (
+    "以 current_work.brief 中冻结的 prompt、completion_criteria 和角色约束为评审依据，"
+    "不把当前创作偏好追溯施加给旧作品。若本作要求高品质二次元与突出角色，"
+    "优先检查人物是否是视觉中心、脸部眼睛和表情是否精致自然、肢体手部是否合理、"
+    "线条色彩光影是否完成、背景是否抢夺主体；再检查活动与情绪是否表达清楚。"
+    "不要因为背景复杂或细节很多就判定高质量。只依据实际看见的问题提出修订，"
+    "edit_prompt 与 preserve 必须延续本作冻结的画风和角色身份，不能改成另一个主题。"
+)
+
+
 GUIDANCE = (
     "你是一位耐心、诚实、有独立审美的小画师，允许等待、放弃和完成后不分享。"
     "聊天和无人时段使用同一判断；无人聊天也可提出自主主题，不编造经历或引用。"
@@ -189,7 +221,7 @@ def _review_images(context: dict, images: Any) -> list[dict]:
 
 def _context(context: dict) -> dict:
     try:
-        _object(context, set(), set(FIELDS) | {"persona", "current_work", "current_version",
+        _object(context, set(), set(FIELDS) | {"persona", "creative_direction", "current_work", "current_version",
                                              "review_contract", "review_inputs", "profiles", "series",
                                              "assets", "asset_details", "sharing", "single_work"})
         canonical_json(context)
@@ -204,6 +236,8 @@ def _context(context: dict) -> dict:
                 _row(context[name], collection)
         if "persona" in context:
             _require(type(context["persona"]) is str)
+        if "creative_direction" in context:
+            _text(context["creative_direction"], 2000)
         if "sharing" in context:
             permission = context["sharing"]
             _object(permission, {"mode", "allowed"})
@@ -254,6 +288,10 @@ def _ids(context: dict, collection: str, key: str) -> set:
     return {row[key] for row in context.get(collection, []) if key in row}
 
 
+def _direction_suffix(direction: str) -> str:
+    return "\n\n本作品固定创作方向：\n" + direction
+
+
 def _ideas(ideas: list, context: dict) -> None:
     _require(type(ideas) is list and len(ideas) <= 8)
     sources = {row["event_id"] for row in context.get("events", []) if row.get("kind") == "chat"}
@@ -271,7 +309,18 @@ class Thinking:
     async def _call(self, task: str, context: dict, **media) -> tuple[dict, dict]:
         frozen = _context(context)
         review = REVIEW_V2 if frozen.get("review_contract") == 2 else REVIEW
-        request = dict(task=task, instructions=GUIDANCE + {"plan": PLAN, "review": review, "inspire": INSPIRE}[task],
+        guidance = ""
+        if task == "review":
+            # 新配置只影响未来作品；评审及恢复使用账本中已经冻结的创作目标。
+            frozen.pop("creative_direction", None)
+            guidance = REVIEW_BRIEF_GUIDANCE
+        elif "creative_direction" in frozen:
+            guidance = DIRECTION_GUIDANCE
+            if task == "plan":
+                limit = 4000 - len(_direction_suffix(frozen["creative_direction"]))
+                guidance += (f"本次 brief.prompt 正文最多{limit}字符，为方向原文预留空间；"
+                             "如选择档案或参考素材，还需为其完整约束预留空间，最终合计不得超过4000字符。")
+        request = dict(task=task, instructions=GUIDANCE + {"plan": PLAN, "review": review, "inspire": INSPIRE}[task] + guidance,
                        context=deepcopy(frozen), **media)
         try:
             answer = await self.generate(request)
@@ -291,7 +340,10 @@ class Thinking:
         _ideas(answer["ideas"], frozen)
         return answer
 
-    async def plan(self, context: dict) -> dict:
+    async def plan(self, context: dict, *, prepare_create: bool = True) -> dict:
+        # 此开关只由 Artist 的可信唤醒批次决定，不接受模型或上下文中的覆盖。
+        # 被纯推进门禁忽略的 create 仍校验结构，但无须准备不会执行的绘图提示词。
+        _require(type(prepare_create) is bool, "INVALID_ARGUMENT")
         answer, frozen = await self._call("plan", context)
         _object(answer, {"ideas", "decision"})
         _ideas(answer["ideas"], frozen)
@@ -337,6 +389,13 @@ class Thinking:
             _object(brief, {"intent", "subject", "mood", "prompt", "completion_criteria"})
             for key, value in brief.items():
                 _text(value, 4000 if key == "prompt" else None)
+            if prepare_create and "creative_direction" in frozen:
+                # 落入既有不可变 brief，保证绘图端和评审端都收到相同方向；
+                # 不依赖模型转述，也不在后续重载时用新配置改写原作品。
+                suffix = _direction_suffix(frozen["creative_direction"])
+                brief["prompt"] += suffix
+                _text(brief["prompt"], 4000)
+                brief["completion_criteria"] += suffix
             _strings(decision["inspiration_keys"], allowed=_ids(frozen, "inspirations", "key"))
             if "creative" in decision:
                 try:

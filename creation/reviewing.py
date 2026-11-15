@@ -28,8 +28,9 @@ class ReviewService:
         current = next(v for v in versions if v["request_id"] == work["pending_request"])
         version = await self.version(current["version_id"])
         review_context = {
-            # Live planning permissions/counters are not frozen visual evidence.
-            **{key: value for key, value in context.items() if key not in {"sharing", "single_work"}},
+            # 规划时的方向与权限不覆盖原作品；评审标准已经冻结在该作品的 brief 中。
+            **{key: value for key, value in context.items()
+               if key not in {"sharing", "single_work", "creative_direction"}},
             "current_work": {k: work[k] for k in ("work_id", "brief", "best_version")},
             "current_version": {k: version[k] for k in ("version_id", "sha256", "mime")},
             "versions": [

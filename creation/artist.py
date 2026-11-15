@@ -13,7 +13,7 @@ from ..domain.policy import Scope, StoreError, canonical_json
 from ..domain.profiles import CATALOG_ACTIONS, render_prompt
 from ..domain.assets import reference_prompt
 from ..domain.store import ArtistStore
-from .thinking import Thinking
+from .thinking import DEFAULT_CREATIVE_DIRECTION, Thinking
 # 这些名称保留原导入入口；实际契约由独立模块维护。
 from .contracts import ReceiptRenderer, Renderer, RenderResult, Sender, render_digest as render_digest, stable_id
 from .receipts import ReceiptService
@@ -32,6 +32,7 @@ class Artist:
         sender: Sender,
         *,
         persona: str = "热爱观察与绘画的小画师",
+        creative_direction: str = DEFAULT_CREATIVE_DIRECTION,
         idle_seconds: int = 300,
         timeout_seconds: float = 30,
         send_timeout_seconds: float = 240.0,
@@ -53,6 +54,8 @@ class Artist:
             raise StoreError("INVALID_ARGUMENT", "idle_seconds must be 60..86400")
         if not isinstance(persona, str) or not persona.strip() or len(persona) > 4000:
             raise StoreError("INVALID_ARGUMENT", "A bounded public persona is required")
+        if type(creative_direction) is not str or not creative_direction.strip() or len(creative_direction) > 2000:
+            raise StoreError("INVALID_ARGUMENT", "A bounded creative direction is required")
         if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (float, int)):
             raise StoreError("INVALID_ARGUMENT", "Invalid timeout")
         if not 0 < timeout_seconds <= 300:
@@ -67,6 +70,7 @@ class Artist:
         self.store, self.space_id, self.scope = store, space_id, scope
         self.thinking, self.renderer, self.sender = thinking, renderer, sender
         self.persona, self.idle_seconds, self.timeout = persona, idle_seconds, timeout_seconds
+        self.creative_direction = creative_direction
         self.send_timeout_seconds = send_timeout_seconds
         self.reference_inputs = reference_inputs
         self.lock = asyncio.Lock()
@@ -158,13 +162,37 @@ class Artist:
             raise StoreError("ARTIFACT_INVALID", "Stored image failed integrity verification")
         return version
 
+    @staticmethod
+    def _progress_only(cycle: dict) -> bool:
+        """纯推进唤醒只能处理已有作品；预检和执行必须使用同一判断。"""
+        return bool(cycle["events"]) and all(
+            event["kind"] == "completion" and event["event_id"].startswith("progress:")
+            for event in cycle["events"]
+        )
+
     async def _context(self, events: list) -> dict:
         ideas = [i for i in await self._db("list_inspirations") if i["consumed_by"] is None]
         works = await self._db("list_artist_works")
         visible = [w for w in works if w["status"] not in {"finished", "abandoned"}]
         visible += [w for w in works if w["status"] in {"finished", "abandoned"}][-20:]
+        summaries = []
+        for work in visible:
+            summary = {
+                **{k: work.get(k) for k in ("work_id", "status", "brief", "best_version")},
+                "reason": work.get("reason") or "",
+            }
+            if work["status"] in {"finished", "abandoned"}:
+                # 历史作品只用于回忆选题和选择分享，不重复携带长方向、档案和参考约束。
+                # 这里只生成上下文投影；原 brief、当前作品及冻结评审快照均保持完整。
+                summary["brief"] = {
+                    key: work["brief"][key][:200] for key in ("intent", "subject", "mood")
+                    if key in work["brief"]
+                }
+                summary["reason"] = summary["reason"][:200]
+            summaries.append(summary)
         context = {
             "persona": self.persona,
+            "creative_direction": self.creative_direction,
             "sharing": await self._db("sharing_policy"),
             "events": [
                 {k: event.get(k) for k in ("event_id", "kind", "text", "source_ref")} for event in events
@@ -172,13 +200,7 @@ class Artist:
             "inspirations": [
                 {k: idea.get(k) for k in ("key", "summary", "origin", "source_refs")} for idea in ideas[-50:]
             ],
-            "works": [
-                {
-                    **{k: work.get(k) for k in ("work_id", "status", "brief", "best_version")},
-                    "reason": work.get("reason") or "",
-                }
-                for work in visible
-            ],
+            "works": summaries,
         }
         single_work = await self._db("single_work_status")
         if single_work["enabled"]:
@@ -276,6 +298,7 @@ class Artist:
         if operation["state"] != "reserved":
             raise StoreError("THINK_UNKNOWN", "Previous thought is unresolved; no replay")
         await self._db("mark_submitting", request_id)
+        validating_plan = False
         try:
             saved = operation["params"]["context"]
             if task == "review":
@@ -290,9 +313,28 @@ class Artist:
             elif task == "inspire":
                 result = await asyncio.wait_for(self.thinking.inspire(saved), self.timeout)
             else:
-                result = await asyncio.wait_for(self.thinking.plan(saved), self.timeout)
+                result = await asyncio.wait_for(
+                    self.thinking.plan(saved, prepare_create=not self._progress_only(cycle)), self.timeout,
+                )
+                if result["decision"]["action"] == "create" and not self._progress_only(cycle):
+                    validating_plan = True
+                    # 方向、档案和素材都算入同一长度上限。预检必须早于结算成功
+                    # 和灵感落账，否则超长计划会被当成成功回执反复复用。
+                    # 纯推进批次的新建建议会在 _decide 忽略，无须预检并触发重试消费。
+                    decision = result["decision"]
+                    await self._db(
+                        "preview_plan_prompt", prompt=decision["brief"]["prompt"],
+                        creative=decision.get("creative"), references=decision.get("references"),
+                        reference_usage="image_input" if self.reference_inputs else "text_context",
+                        expected_auth_version=cycle["auth_version"],
+                    )
         except asyncio.CancelledError:
-            await self._db("mark_unknown", request_id, reason="THINK_CANCELLED")
+            if validating_plan:
+                # 模型已返回，取消发生在本地只读校验；没有外部结果未知。
+                # _db 已等待校验线程收尾，记明确失败后才传播取消，允许后续重新规划。
+                await self._db("settle", request_id, outcome="failed", evidence="PLAN_VALIDATION_CANCELLED")
+            else:
+                await self._db("mark_unknown", request_id, reason="THINK_CANCELLED")
             raise
         except Exception as exc:
             if isinstance(exc, (TimeoutError, OSError)) or (
@@ -300,6 +342,11 @@ class Artist:
             ):
                 await self._db("mark_unknown", request_id, reason="THINK_UNCONFIRMED")
                 raise StoreError("THINK_UNKNOWN", "Model outcome is unknown; no replay") from None
+            if validating_plan and isinstance(exc, StoreError):
+                # 预检失败仍是一次已执行的规划，保留原错误用于退避或授权停止，
+                # 不能把无效计划记成成功，也不把授权变化误报成模型失败。
+                await self._db("settle", request_id, outcome="failed", evidence=exc.code)
+                raise
             await self._db("settle", request_id, outcome="failed", evidence="THINK_FAILED")
             raise StoreError("THINK_FAILED", "Model/validation failed; review is still pending") from None
         await self._db("settle", request_id, outcome="succeeded", evidence=canonical_json(result))
@@ -427,10 +474,7 @@ class Artist:
                 "wake_after": decision.get("delay_seconds", self.idle_seconds),
             }
         if action == "create":
-            if cycle["events"] and all(
-                event["kind"] == "completion" and event["event_id"].startswith("progress:")
-                for event in cycle["events"]
-            ):
+            if self._progress_only(cycle):
                 # Completion advances this painting; new creative work still
                 # needs the normal idle/chat wake and its existing budget.
                 return {"state": "waiting", "reason": "PROGRESS_EXISTING_WORK_ONLY"}

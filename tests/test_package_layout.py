@@ -1,9 +1,9 @@
 """Exercise the release, not conftest's source package or its import cache.
 
 The loader belongs to Host, not maibot-plugin-sdk. Set
-CODEX_IMAGE_TEST_HOST_SITE_PACKAGES to a public installed Host package when it
-is not available in this workspace's local test tools. Missing Host is an
-explicit skip; there is deliberately no replacement plugin loader.
+CODEX_IMAGE_TEST_HOST_SITE_PACKAGES to the installed Host's site-packages or a
+public Host source root when it is not available in the local test tools.
+An undiscovered Host is an explicit skip; there is no replacement loader.
 
 Host logging, instance paths and local-SDK discovery are isolated. Registration
 executes three unchanged methods extracted from Host's Runner AST, with its
@@ -13,6 +13,7 @@ registration payloads, not a running Host, permissions, browser or IPC delivery.
 
 # ruff: noqa: I001
 # Parent AGENTS.md requires from-imports before plain imports.
+from packaging.version import InvalidVersion, Version
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any, cast
@@ -107,7 +108,7 @@ def test_release_real_host_registration_and_fresh_reload(release, host_site_pack
         manifest["id"] = "9-layout.other-plugin"
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     report = run_isolated(release, host_site_packages)
-    # 子进程报告的是实际安装包版本，由仓库的独立项目元数据校对。
+    # 用仓库项目元数据独立核对子进程报告的插件发行版本。
     source_manifest = json.loads((PLUGIN / "_manifest.json").read_text(encoding="utf-8"))
     project_version = tomllib.loads((PLUGIN / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
     assert report["plugin_version"] == source_manifest["version"] == project_version
@@ -122,10 +123,30 @@ def test_missing_release_dependency_cannot_fall_back_to_checkout(release, host_s
     assert report["rejected_missing_dependency"] is True
 
 
+def _host_version(host_root):
+    for dist in importlib.metadata.distributions(path=[str(host_root)]):
+        if (dist.metadata.get("Name") or "").lower() == "maibot":
+            return dist.version
+
+    # 源码部署有真实 Loader，却可能没有 MaiBot 的安装元数据；只信任同一根目录的项目声明。
+    project_file = host_root / "pyproject.toml"
+    project = tomllib.loads(project_file.read_text(encoding="utf-8")).get("project", {})
+    name = project.get("name") if isinstance(project, dict) else None
+    version = project.get("version") if isinstance(project, dict) else None
+    if not isinstance(name, str) or name.lower() != "maibot":
+        raise ValueError(f"{project_file}: project.name must be MaiBot")
+    if not isinstance(version, str) or version != version.strip():
+        raise ValueError(f"{project_file}: project.version must be a valid version string")
+    try:
+        Version(version)
+    except InvalidVersion:
+        raise ValueError(f"{project_file}: project.version must be a valid version string") from None
+    return version
+
+
 def _host_modules(host_root, sandbox):
     """Load unchanged public Host modules without starting its application."""
-    host_version = next(dist.version for dist in importlib.metadata.distributions(path=[str(host_root)])
-                        if dist.metadata["Name"].lower() == "maibot")
+    host_version = _host_version(host_root)
     for name in ("src", "src.common", "src.plugin_runtime", "src.plugin_runtime.runner",
                  "src.plugin_runtime.protocol"):
         module = ModuleType(name)

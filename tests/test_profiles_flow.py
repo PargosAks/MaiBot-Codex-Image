@@ -48,6 +48,39 @@ async def test_profile_snapshot_reaches_render_and_review_after_configuration_ch
     assert len(renderer.calls) == 1
 
 
+async def test_profile_prompt_overflow_fails_plan_and_retries_with_shorter_body(studio):  # noqa: F811
+    runtime, store, _, model, renderer, sender = studio
+    configure(store)
+    suffix = "\n\n本作品固定创作方向：\n" + runtime.creative_direction
+
+    async def decide(request):
+        result = await model(request)
+        decision = result["decision"]
+        if decision["action"] == "create":
+            decision["creative"] = deepcopy(CHOICE)
+            if len(model.calls) == 1:
+                decision["brief"]["prompt"] = "画" * (4000 - len(suffix))
+                result["ideas"] = [{"summary": "超长方案不应留下灵感", "source_ids": []}]
+        return result
+
+    runtime.thinking = Thinking(decide)
+    assert (await runtime.tick()) == {"state": "blocked", "reason": "PROMPT_TOO_LONG"}
+    (failed,) = store.audit_operations("s", SCOPE)
+    assert (failed["action"], failed["state"], failed["evidence"]) == ("think", "failed", "PROMPT_TOO_LONG")
+    assert store.list_inspirations("s", SCOPE) == store.list_artist_works("s", SCOPE) == []
+    assert renderer.calls == sender.calls == []
+    assert (await runtime.run_once())["state"] == "idle" and len(model.calls) == 1
+
+    assert (await step(studio))["state"] == "planned" and len(model.calls) == 2
+    assert store.get_operation("s", SCOPE, failed["request_id"]) == failed
+    (work,) = store.list_artist_works("s", SCOPE)
+    assert work["brief"]["creative"]["profile"] == PROFILES[0]["data"]
+    assert (await step(studio))["state"] == "review_pending"
+    (render,) = renderer.calls
+    assert "warm amber" in render["prompt"] and len(render["prompt"]) <= 4000
+    assert not sender.calls
+
+
 async def test_model_cannot_change_stable_profile_attributes(studio):  # noqa: F811
     runtime, store, _, model, renderer, sender = studio
     configure(store)

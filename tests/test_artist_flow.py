@@ -1,6 +1,7 @@
 """End-to-end simulated artist cycles over real SQLite, with no Host/network."""
 
 from dataclasses import replace
+from threading import Event
 import asyncio
 
 import pytest
@@ -73,20 +74,31 @@ async def test_invalid_action_does_not_poison_cached_plan(studio):
     assert len(renderer.calls) == 1
 
 
-@pytest.mark.parametrize("failure", ["timeout", "connection"])
+@pytest.mark.parametrize("failure", ["timeout", "connection", "cancel"])
 async def test_uncertain_thinking_keeps_hold_and_does_not_replay_after_reopen(studio, failure):
     runtime, store, clock, _, renderer, sender = studio
     calls = []
+    entered = asyncio.Event()
 
     async def unconfirmed(request):
         calls.append(request)
         if failure == "connection":
             raise ConnectionError("simulated lost response")
+        entered.set()
         await asyncio.Event().wait()
 
     runtime.thinking = Thinking(unconfirmed)
-    runtime.timeout = 0.01
-    assert (await runtime.tick())["reason"] == "THINK_UNKNOWN"
+    if failure == "cancel":
+        task = asyncio.create_task(runtime.tick())
+        try:
+            await asyncio.wait_for(entered.wait(), 3)
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+    else:
+        runtime.timeout = 0.01
+        assert (await runtime.tick())["reason"] == "THINK_UNKNOWN"
     assert store.audit_operations("s", SCOPE)[0]["state"] == "unknown"
     reopened = ArtistStore(store.path, clock=clock)
     try:
@@ -97,6 +109,54 @@ async def test_uncertain_thinking_keeps_hold_and_does_not_replay_after_reopen(st
         assert len(reopened.audit_operations("s", SCOPE)) == 1
         assert reopened.budget_usage("s", SCOPE)["think"] == {"held": 1, "consumed": 0, "total": 1}
         assert renderer.calls == sender.calls == []
+    finally:
+        reopened.close()
+
+
+async def test_cancel_during_plan_preflight_joins_worker_and_allows_retry_after_reopen(studio, monkeypatch):
+    runtime, store, clock, model, renderer, sender = studio
+    entered, release, preview_finished = Event(), Event(), Event()
+    original_preview = store.preview_plan_prompt
+
+    def held_preview(*args, **kwargs):
+        entered.set()
+        try:
+            assert release.wait(5), "Test did not release prompt preflight"
+            return original_preview(*args, **kwargs)
+        finally:
+            preview_finished.set()
+
+    monkeypatch.setattr(store, "preview_plan_prompt", held_preview)
+    task = asyncio.create_task(runtime.tick())
+    try:
+        assert await asyncio.to_thread(entered.wait, 3), "Plan never reached prompt preflight"
+        assert len(model.calls) == 1 and model.calls[0]["task"] == "plan"
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done() and not preview_finished.is_set()
+    finally:
+        release.set()
+        if not task.cancelling():
+            task.cancel()
+        (outcome,) = await asyncio.gather(task, return_exceptions=True)
+    assert isinstance(outcome, asyncio.CancelledError) and preview_finished.is_set()
+
+    (failed,) = store.audit_operations("s", SCOPE)
+    assert (failed["action"], failed["state"], failed["evidence"]) == (
+        "think", "failed", "PLAN_VALIDATION_CANCELLED",
+    )
+    assert store.list_inspirations("s", SCOPE) == store.list_artist_works("s", SCOPE) == []
+    assert renderer.calls == sender.calls == []
+
+    reopened = ArtistStore(store.path, clock=clock)
+    try:
+        restored = Artist(reopened, "s", SCOPE, Thinking(model), renderer, sender)
+        assert (await restored.tick())["state"] == "idle" and len(model.calls) == 1
+        clock.advance()
+        assert (await restored.tick())["state"] == "planned" and len(model.calls) == 2
+        assert reopened.get_operation("s", SCOPE, failed["request_id"]) == failed
+        (work,) = reopened.list_artist_works("s", SCOPE)
+        assert work["status"] == "planned" and renderer.calls == sender.calls == []
     finally:
         reopened.close()
 
@@ -176,13 +236,43 @@ async def test_running_work_collects_new_ideas_without_overwriting_plan(studio):
     runtime, store, _, model, renderer, _ = studio
     renderer.pending = True
     await runtime.tick()
+    planned = store.list_artist_works("s", SCOPE)[0]["brief"]
     assert (await step(studio))["state"] == "creating"
     await runtime.on_chat(message_id="later", text="下一幅可以画落叶")
     await runtime.run_once()
     work = store.list_artist_works("s", SCOPE)[0]
-    assert work["brief"] == BRIEF and len(renderer.calls) == 1
-    assert any(c["task"] == "inspire" for c in model.calls)
+    assert work["brief"] == planned and len(renderer.calls) == 1
+    (inspire,) = [c for c in model.calls if c["task"] == "inspire"]
+    assert inspire["context"]["creative_direction"] == runtime.creative_direction
     assert any(i["summary"] == "下一幅可以画落叶" for i in store.list_inspirations("s", SCOPE))
+
+
+async def test_render_and_first_review_use_frozen_brief_after_direction_changes(studio):
+    runtime, store, clock, model, renderer, sender = studio
+    assert (await runtime.tick())["state"] == "planned"
+    work = store.list_artist_works("s", SCOPE)[0]
+    brief = work["brief"]
+    assert brief["prompt"].startswith(BRIEF["prompt"])
+    assert brief["completion_criteria"].startswith(BRIEF["completion_criteria"])
+    assert all(brief[key].endswith(runtime.creative_direction) for key in ("prompt", "completion_criteria"))
+
+    new_direction = "以后改画麦麦在舞台上演奏，保留自然的手势。"
+    updated = Artist(store, "s", SCOPE, Thinking(model), renderer, sender, creative_direction=new_direction)
+    clock.advance()
+    assert (await updated.tick())["state"] == "review_pending"
+    assert renderer.calls[0]["prompt"] == brief["prompt"]
+    clock.advance()
+    assert (await updated.tick())["state"] == "finished"
+
+    (review,) = [call for call in model.calls if call["task"] == "review"]
+    context = review["context"]
+    assert context["current_work"]["brief"] == brief
+    assert "creative_direction" not in context and new_direction not in review["instructions"]
+    snapshot = store.get_review_snapshot("s", SCOPE, context["current_version"]["version_id"])
+    assert snapshot["context"]["current_work"]["brief"] == brief
+    assert "creative_direction" not in snapshot["context"]
+    assert store.get_artist_work("s", SCOPE, work["work_id"])["brief"] == brief
+    assert len(renderer.calls) == 1 and not sender.calls
 
 
 async def test_deferred_plan_waits_until_due_instead_of_timer_forcing_draw(studio):

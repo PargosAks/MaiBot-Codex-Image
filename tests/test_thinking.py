@@ -23,14 +23,55 @@ async def test_plan_and_idle_ideas():
     assert "不编造经历" in generate.call_args.args[0]["instructions"]
 
 
+async def test_create_freezes_direction_in_brief_without_mutating_input_or_model_reply():
+    direction = "麦麦专心烤点心，优先刻画手部动作和期待的表情。"
+    context = dict(deepcopy(CONTEXT), works=[], creative_direction=direction)
+    answer = deepcopy(CREATE)
+    original_context, original_answer = deepcopy((context, answer))
+
+    async def generate(request):
+        assert request["context"]["creative_direction"] == direction
+        assert "角色和具体动作" in request["instructions"]
+        request["context"]["creative_direction"] = "模型不可改写方向"
+        return answer
+
+    result = await Thinking(generate).plan(context)
+    suffix = "\n\n本作品固定创作方向：\n" + direction
+    brief = result["decision"]["brief"]
+    assert brief["prompt"] == BRIEF["prompt"] + suffix
+    assert brief["completion_criteria"] == BRIEF["completion_criteria"] + suffix
+    assert (context, answer) == (original_context, original_answer)
+
+
+@pytest.mark.parametrize("total_length", [4000, 4001])
+async def test_create_prompt_limit_includes_full_frozen_direction(total_length):
+    direction = "画" * 2000
+    suffix = "\n\n本作品固定创作方向：\n" + direction
+    answer = deepcopy(CREATE)
+    body = "景" * (total_length - len(suffix))
+    answer["decision"]["brief"]["prompt"] = body
+    context = dict(CONTEXT, works=[], creative_direction=direction)
+    generate = AsyncMock(return_value=answer)
+    if total_length == 4000:
+        result = await Thinking(generate).plan(context)
+        assert result["decision"]["brief"]["prompt"] == body + suffix
+    else:
+        with pytest.raises(StoreError, check=lambda exc: exc.code == "INVALID_DECISION"):
+            await Thinking(generate).plan(context)
+    generate.assert_awaited_once()
+
+
 async def test_inspire_only_accumulates_ideas_and_copies_context():
     context = deepcopy(CONTEXT)
+    context["creative_direction"] = "优先构思麦麦在做什么"
     context["works"][0]["status"] = "creating"
     before = deepcopy(context)
     answer = {"ideas": deepcopy(CREATE["ideas"])}
 
     async def generate(request):
         assert request["task"] == "inspire" and "不得规划" in request["instructions"]
+        assert "构思与灵感应落实其中的优先级" in request["instructions"]
+        assert request["context"]["creative_direction"] == context["creative_direction"]
         request["context"]["works"][0]["brief"]["intent"] = "changed"
         return answer
 
@@ -174,11 +215,14 @@ async def test_invalid_plan(mutation):
 async def test_review_preserves_bytes_and_context_without_mutation():
     context = deepcopy(CONTEXT)
     context.update(current_work=deepcopy(context["works"][0]), current_version=deepcopy(context["versions"][0]))
+    context["creative_direction"] = "新方向：麦麦在天台练舞"
     before, image = deepcopy(context), b"synthetic-original-bytes"
 
     async def generate(request):
         assert request["task"] == "review" and request["image"] is image and request["mime"] == "image/png"
-        assert request["context"] == before
+        assert request["context"] == {key: value for key, value in before.items() if key != "creative_direction"}
+        assert context["creative_direction"] not in request["instructions"]
+        assert "人物是否是视觉中心" in request["instructions"]
         request["context"]["versions"].append({"version_id": "foreign"})
         request["context"]["current_work"]["brief"]["prompt"] = "changed"
         return dict(ACCEPT, best_version_id="foreign")

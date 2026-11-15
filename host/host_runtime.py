@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Literal
 
 from maibot_sdk import Field, PluginConfigBase
+from pydantic import field_validator
 
 from ..creation.artist import Artist
 from ..domain.assets import ASSET_ROLES
@@ -18,7 +19,7 @@ from ..domain.async_work import join_task as joined
 from .host_media import IMAGE_ONLY_TEXT, UNREVIEWED_DESCRIPTION, current_images
 from ..domain.policy import Delegation, Limits, Scope, StoreError, nonempty
 from ..domain.store import ArtistStore
-from ..creation.thinking import Thinking
+from ..creation.thinking import DEFAULT_CREATIVE_DIRECTION, Thinking
 
 logger = logging.getLogger(__name__)
 
@@ -69,8 +70,20 @@ class Autonomy(PluginConfigBase):
     idle_seconds: int = Field(default=300, ge=60, le=86400)
     timeout_seconds: float = Field(default=30.0, gt=0, le=300)
     persona: str = Field(default="热爱观察与绘画的小画师", min_length=1, max_length=4000)
+    creative_direction: str = Field(
+        default=DEFAULT_CREATIVE_DIRECTION, min_length=1, max_length=2000, pattern=r"\S",
+        description="新作品的创作方向：默认高品质二次元、突出麦麦角色与具体动作；修改后已有作品保留原计划",
+    )
     plan_task: str = Field(default="utils", min_length=1, max_length=100)
     review_task: str = Field(default="vlm", min_length=1, max_length=100)
+
+    @field_validator("creative_direction")
+    @classmethod
+    def validate_creative_direction(cls, value: str) -> str:
+        # 正则引擎对控制分隔符的空白定义不同；与 Artist 的 strip 判空保持一致。
+        if not value.strip():
+            raise ValueError("creative_direction must be a nonempty string")
+        return value
 
 
 class RuntimeLease:
@@ -187,6 +200,7 @@ class HostRuntime:
         if desired:
             if not cfg.persona.strip():
                 raise StoreError("INVALID_ARGUMENT", "A bounded public persona is required")
+            nonempty(cfg.creative_direction, "creative_direction")
             nonempty(cfg.plan_task, "plan_task")
             nonempty(cfg.review_task, "review_task")
         for item, _scope in desired.values():
@@ -230,7 +244,8 @@ class HostRuntime:
                 plugin._artist_renderer(self.store, item.space_id, scope, binding),
                 HostSender(plugin.ctx, plugin.journal, store=self.store, space_id=item.space_id, scope=scope,
                            timeout_seconds=plugin.config.connection.send_timeout_seconds, group_id=item.group_id),
-                persona=cfg.persona, idle_seconds=cfg.idle_seconds, timeout_seconds=cfg.timeout_seconds,
+                persona=cfg.persona, creative_direction=cfg.creative_direction,
+                idle_seconds=cfg.idle_seconds, timeout_seconds=cfg.timeout_seconds,
                 send_timeout_seconds=plugin.config.connection.send_timeout_seconds,
                 share_preflight_seconds=SHARE_TARGET_TIMEOUT_SECONDS if item.group_id else 0.0,
                 allow_network_renderer=True, allow_host_sender=True,

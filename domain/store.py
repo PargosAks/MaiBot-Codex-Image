@@ -1818,6 +1818,25 @@ class ArtistStore:
                 reference.update(policy_version=policy["version"], consent_ref=policy["consent_ref"])
         return frozen
 
+    def preview_plan_prompt(
+        self, space_id, scope, *, prompt, creative=None, references=None,
+        reference_usage="text_context", expected_auth_version,
+    ):
+        """只读预检最终提示词；不能代替 plan_work 入库时的事务校验。"""
+        if reference_usage not in ("text_context", "image_input"):
+            raise StoreError("INVALID_ARGUMENT", "Invalid reference usage")
+        references = [] if references is None else references
+        if not isinstance(references, list) or len(references) > 3:
+            raise StoreError("INVALID_ARGUMENT", "At most three reference choices are allowed")
+        with self._uow.transaction():
+            space = self._queries.space(space_id, scope)
+            expected_authorization(space, expected_auth_version)
+            require_authorized(space)
+            creative_snapshot = self._freeze_creative(space_id, scope, creative) if creative is not None else None
+            policy = self._reference_policy(space_id, scope, expected_auth_version) if reference_usage == "image_input" else None
+            frozen_refs = self._freeze_references(space_id, scope, references, usage=reference_usage, policy=policy)
+            return reference_prompt(render_prompt(prompt, creative_snapshot), frozen_refs)
+
     def plan_work(
         self, space_id, scope, *, work_id, brief, inspiration_keys, creative=None, references=None,
         reference_usage="text_context", expected_auth_version=None
