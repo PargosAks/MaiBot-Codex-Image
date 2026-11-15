@@ -70,6 +70,8 @@ uv run --locked python scripts/check.py
 
 ## 回归重点
 
+- 真实单作品验收的通用观察入口为 `scripts/acceptance_observer.py`，定向回归为 `tests/test_acceptance_observer.py`，沿用 `scripts/check.py --suite unit`。它是维护工具，不进入插件发行包。观察到 render `unknown`、已有图片或暂时没有领取记录，均不能触发重载；必须等待原任务终态、同图成功评审、作品状态更新及领取退出。超时、读库失败或模型 unknown 仅保留现场，不在异常分支自动暂停、恢复配置或重试。
+- 本观察器用于明确限定的单作品、三次思考验收（立项、继续绘图、原图评审）。运行助手必须在启动前通过实际 Host 设置限额、固定香港额度日和观察时限，收尾前确认额度已耗尽，避免空闲采样后又启动新规划。还须先核对原图 SHA、冻结评审快照、授权版本、原请求绑定和当前生效配置，再调用暂停；收到 Host 实际应用成功回执后才恢复生产。不能只用图片、评审行或一次 `active_claims=0` 代替这些条件，也不能自动核销未知记录以使验收通过。
 - Host 可信上下文决定归属，顶层与嵌套身份冲突时拒绝；模型参数不能定义身份。
 - 空白名单、未授权用户、缺失身份及配置错误明确拒绝；保存配置和插件重载不启停 MCP。
 - 保持 `codex_image_submit/status/result/health` 和签名 `scope/op/args/iat`；兼容服务校验 Bearer、HMAC、操作绑定、时效及归属。
